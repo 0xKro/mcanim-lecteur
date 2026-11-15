@@ -1,0 +1,29 @@
+{
+  "name": "mcanim-lecteur",
+  "version": "0.1.0",
+  "description": "Lecteur CPU d'animations Minecraft : transforme une scene JSON en MP4 (personnages animes dans un vrai terrain). Ce paquet ne contient AUCUN fichier du jeu : le kit de base est recupere au premier lancement.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "bin": {
+    "mcanim": "bin/mcanim.js",
+    "mcanim-kit": "bin/kit.js",
+    "mcanim-fabriquer-kit": "bin/fabriquer-kit.js",
+    "mcanim-image": "bin/image.js"
+  },
+  "files": [
+    "src/",
+    "bin/",
+    "ATTRIBUTIONS.md"
+  ],
+  "scripts": {
+    "controle": "node scripts/controle-fichiers-jeu.js",
+    "test": "node --test test/*.test.js"
+  }
+}

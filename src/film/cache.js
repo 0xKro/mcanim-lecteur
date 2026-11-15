@@ -11,10 +11,19 @@ import { dossierKit } from '../rendu/scene.js';
 
 export const BASE_ZONES = 'https://raw.githubusercontent.com/0xKro/mcanim-zones/main';
 
+let AVERTI = false;
+function inscriptible(d) {
+  try { fs.mkdirSync(d, { recursive: true }); fs.accessSync(d, fs.constants.W_OK); return true; } catch { return false; }
+}
+// Dossier de cache : MCANIM_CACHE, sinon ~/.cache/mcanim. S'il n'est pas inscriptible (installation d'un autre utilisateur, disque
+// en lecture seule...), on prend un dossier temporaire et on le dit en UNE ligne (sur stderr) avec la marche a suivre.
 export function dossierCache(env = process.env) {
   const d = env.MCANIM_CACHE || path.join(os.homedir(), '.cache', 'mcanim');
-  fs.mkdirSync(d, { recursive: true });
-  return d;
+  if (inscriptible(d)) return d;
+  const secours = path.join(os.tmpdir(), 'mcanim-cache');
+  if (!inscriptible(secours)) throw new Error(`dossier de cache non inscriptible : ${d} ; choisis-en un avec MCANIM_CACHE=/un/dossier`);
+  if (!AVERTI) { AVERTI = true; console.error(`mcanim : cache ${d} non inscriptible, j'utilise ${secours} (pour choisir : MCANIM_CACHE=/un/dossier)`); }
+  return secours;
 }
 
 // ---------------------------------------------------------------- kit
@@ -34,6 +43,22 @@ export function adresseZone(id, base = BASE_ZONES) {
 
 const dormir = (ms) => new Promise((ok) => setTimeout(ok, ms));
 
+// Telecharge `url` depuis le relais (ou lit un dossier local si `base` n'est pas une adresse http). Reessaie : GitHub peut
+// mettre quelques secondes a servir un fichier tout juste depose (404 passager). Utilise pour les zones et les skins.
+async function telechargerRelais(url, base, { essais, attente, quoi }) {
+  if (!/^https?:/i.test(base)) return fs.readFileSync(url);      // dossier local (essais) : <dossier>/z/xx/id.mcz
+  let derniere;
+  for (let i = 0; i < essais; i++) {
+    const net = new Net();
+    try { return (await net.buffer(url, { retries: 1 })).body; } catch (e) {
+      derniere = e;
+      if (e.status && e.status !== 404 && e.status < 500) break;
+    } finally { net.close(); }
+    if (i < essais - 1) await dormir(attente * (i + 1));
+  }
+  throw new Error(`${quoi} introuvable (${derniere?.message ?? 'erreur reseau'})`);
+}
+
 // Telecharge la zone si elle n'est pas deja dans le cache. `zh` (facultatif) : empreinte attendue ; une copie du cache
 // qui ne correspond pas est retelechargee une fois. Retourne { chemin, octets, sha256, telechargee }.
 export async function obtenirZone(id, { zh, env = process.env, essais = 6, attente = 1500, log = () => {} } = {}) {
@@ -47,27 +72,33 @@ export async function obtenirZone(id, { zh, env = process.env, essais = 6, atten
     log('zone en cache differente de celle du jeton : nouveau telechargement');
   }
   const base = env.MCANIM_ZONES || BASE_ZONES;
-  const url = adresseZone(id, base);
-  let octets;
-  if (!/^https?:/i.test(base)) {            // dossier local (essais) : <dossier>/z/xx/id.mcz
-    octets = fs.readFileSync(url);
-  } else {
-    let derniere;
-    for (let i = 0; i < essais; i++) {
-      const net = new Net();
-      try { octets = (await net.buffer(url, { retries: 1 })).body; break; } catch (e) {
-        derniere = e;
-        // GitHub peut mettre quelques secondes a servir un fichier tout juste depose (404 passager)
-        if (e.status && e.status !== 404 && e.status < 500) break;
-      } finally { net.close(); }
-      if (i < essais - 1) await dormir(attente * (i + 1));
-    }
-    if (!octets) throw new Error(`zone ${id} introuvable (${derniere?.message ?? 'erreur reseau'})`);
-  }
+  const octets = await telechargerRelais(adresseZone(id, base), base, { essais, attente, quoi: `zone ${id}` });
   const tmp = chemin + '.part';
   fs.writeFileSync(tmp, octets);
   fs.renameSync(tmp, chemin);
   return { chemin, octets, sha256: sha256Base64url(octets), telechargee: true };
+}
+
+// ---------------------------------------------------------------- skins du relais ("@<id>")
+export const ID_SKIN = /^[A-Za-z0-9_-]{22}$/;
+export function adresseSkin(id, base = BASE_ZONES) {
+  if (!ID_SKIN.test(id)) throw new Error(`identifiant de skin incorrect : "@${id}" (22 caracteres attendus apres @)`);
+  return `${base.replace(/\/+$/, '')}/s/${id.slice(0, 2)}/${id}.png`;
+}
+
+// Telecharge le PNG du skin "@id" (meme relais, meme cache et memes reessais que les zones : MCANIM_ZONES change la base).
+// Retourne { chemin, octets, telechargee }. La taille (64x64 ou 64x32) est controlee par resoudreSkin.
+export async function obtenirSkinRelais(id, { env = process.env, essais = 6, attente = 1500 } = {}) {
+  const dossier = path.join(dossierCache(env), 'skins');
+  fs.mkdirSync(dossier, { recursive: true });
+  const chemin = path.join(dossier, `${id}.png`);
+  if (fs.existsSync(chemin)) return { chemin, octets: fs.readFileSync(chemin), telechargee: false };
+  const base = env.MCANIM_ZONES || BASE_ZONES;
+  const octets = await telechargerRelais(adresseSkin(id, base), base, { essais, attente, quoi: `skin @${id}` });
+  const tmp = chemin + '.part';
+  fs.writeFileSync(tmp, octets);
+  fs.renameSync(tmp, chemin);
+  return { chemin, octets, telechargee: true };
 }
 
 // ---------------------------------------------------------------- pack de ressources

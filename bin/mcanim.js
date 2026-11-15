@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // mcanim : lecteur d'animations Minecraft. Commandes (voir docs/CONCEPTION.md, partie 7) :
-//   mcanim terrain <zone> [--pas N]
+//   mcanim terrain <zone> [--pas N] [--chemin x1,z1,x2,z2]
 //   mcanim empreinte <scene.json>
 //   mcanim rendre <scene.json> --jeton <jeton> [--sortie f.mp4] [--pack pack.zip] [--skin nom=fichier.png]
 //   mcanim kit
@@ -11,10 +11,13 @@ import { fileURLToPath } from 'node:url';
 import { lireScene } from '../src/film/scene.js';
 import { empreinte } from '../src/film/empreinte.js';
 import { verifierJeton } from '../src/film/jeton.js';
+import { noteSkinsDeRepli } from '../src/perso/skin.js';
+import { resumeCamera } from '../src/film/camera.js';
 import { obtenirZone, trouverKit, appliquerPack } from '../src/film/cache.js';
 
 const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai terrain)
-  mcanim terrain <zone> [--pas 8]     telecharge la zone et le kit, resume du terrain
+  mcanim terrain <zone> [--pas 8]     telecharge la zone et le kit, resume du terrain (chemins, clairieres, eau)
+  mcanim terrain <zone> --chemin x1,z1,x2,z2   verifie un trajet droit : libre, ou premier obstacle
   mcanim empreinte <scene.json>       controle la scene, affiche empreinte et duree
   mcanim rendre <scene.json> --jeton <jeton> [--sortie f.mp4] [--pack pack.zip] [--skin nom=fichier.png]
   mcanim kit                          recupere le kit de base
@@ -52,8 +55,13 @@ async function commandeKit() {
 }
 
 async function commandeTerrain(argv) {
-  const { pos, opt } = lireArgs(argv, { valeurs: ['pas'] });
-  if (pos.length !== 1) throw new Usage('usage : mcanim terrain <zone> [--pas N]');
+  const { pos, opt } = lireArgs(argv, { valeurs: ['pas', 'chemin'] });
+  if (pos.length !== 1) throw new Usage('usage : mcanim terrain <zone> [--pas N] [--chemin x1,z1,x2,z2]');
+  let seg = null;
+  if (opt.chemin !== undefined) {
+    seg = opt.chemin.split(',').map(Number);
+    if (seg.length !== 4 || seg.some((v) => !Number.isFinite(v))) throw new Usage('--chemin : quatre nombres x1,z1,x2,z2 (ex. --chemin -262,-656,-218,-656)');
+  }
   const t0 = Date.now();
   const pas = opt.pas ? Number(opt.pas) : undefined;
   if (pas !== undefined && !(pas >= 1 && pas <= 64)) throw new Usage('--pas : nombre entre 1 et 64');
@@ -64,7 +72,11 @@ async function commandeTerrain(argv) {
   const { chargerScene } = await import('../src/rendu/scene.js');
   const rs = await chargerScene({ zonePath: chemin, kitDir: kit, travailleurs: 0 });
   try {
-    dire(JSON.stringify(rs.resumeTerrain(pas ? { pas } : undefined)));
+    if (seg) dire(rs.verifierChemin(...seg));
+    else {
+      dire(JSON.stringify(rs.resumeTerrain(pas ? { pas } : undefined)));
+      dire("Fais marcher l'acteur le long d'un des chemins ; hors chemin, il traversera des arbres.");
+    }
     dire(`(${sec(Date.now() - t0)} s)`);
   } finally { await rs.fermer(); }
 }
@@ -110,9 +122,10 @@ async function commandeRendre(argv) {
   const r = await rendreVideo({ scene, zonePath: zone.chemin, kitDir: kit, sortie, surcharges, log: dire, ssaa });
 
   const repli = r.skins.filter((s) => s.repli);
-  const notes = [...r.notes, ...repli.map((s) => `skin de repli (Mojang injoignable) : ${s.detail}`)];
+  const notes = [...r.notes];
+  if (repli.length) notes.push(noteSkinsDeRepli(repli));
   if (notes.length) dire('notes : ' + notes.join(' ; '));
-  dire(`OK ${sortie} | ${r.duree} s | ${r.images} images | ${sec(r.secondes * 1000)} s de calcul | camera corrigee sur ${r.corrections} image(s) | skins de repli : ${repli.length} | ${(r.taille / 1048576).toFixed(1)} Mo | memoire max ${r.memoireMaxMo} Mo`);
+  dire(`OK ${sortie} | ${r.duree} s | ${r.images} images | ${sec(r.secondes * 1000)} s de calcul | ${resumeCamera(r.camera, r.images) ?? 'camera sans correction'} | skins de repli : ${repli.length} | ${(r.taille / 1048576).toFixed(1)} Mo | memoire max ${r.memoireMaxMo} Mo`);
 }
 
 async function main() {

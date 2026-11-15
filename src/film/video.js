@@ -30,7 +30,7 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
   let tmpAudio = null;
   try {
     const { personnages, infos } = await preparerPersonnages(scene, { kitDir, surcharges, baseDir });
-    const terrain = { solEn: (x, z) => rs.solEn(x, z), estLibre: (x, y, z) => rs.estLibre(x, y, z) };
+    const terrain = { solEn: (x, z) => rs.solEn(x, z), estLibre: (x, y, z) => rs.estLibre(x, y, z), solide: (x, y, z) => rs.estSolidePourCamera(x, y, z) };
     const anim = animer(scene, terrain);
     const images = anim.images;
 
@@ -85,7 +85,7 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
     await fini;
     return {
       sortie, images: n, duree: scene.duree, secondes: (Date.now() - t0) / 1000, secondesRendu: (Date.now() - tRendu) / 1000,
-      corrections: anim.corrections, skins: infos, notes: [...anim.notes, ...plan.notes], pas: plan.nbPas, evenementsSon: plan.evenements.length,
+      corrections: anim.corrections, camera: anim.camera, skins: infos, notes: [...anim.notes, ...plan.notes], pas: plan.nbPas, evenementsSon: plan.evenements.length,
       memoireMaxMo: Math.round(process.resourceUsage().maxRSS / 1024), taille: fs.statSync(sortie).size,
     };
   } finally {

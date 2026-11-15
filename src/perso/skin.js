@@ -5,6 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { decoderPNG } from '../rendu/png.js';
 import { Net } from '../net.js';
+import { obtenirSkinRelais, ID_SKIN } from '../film/cache.js';
 
 // ---------------------------------------------------------------- conversion
 // Copies de rectangles (sx, sy, ox, oy, l, h) avec miroir horizontal : (sx+x, sy+y) -> (sx+ox+l-1-x, sy+oy+y).
@@ -57,6 +58,32 @@ export function lirePng(octets) {
   return convertirSkin(im.rgba, im.largeur, im.hauteur);
 }
 
+// Skin du relais "@<id>" : PNG 64x64 ou 64x32 seulement (autre taille : refuse, le relais ne doit contenir que de vrais skins).
+export function lireSkinRelais(octets, id) {
+  const im = decoderPNG(octets);
+  if (!(im.largeur === 64 && (im.hauteur === 64 || im.hauteur === 32))) throw new Error(`skin "@${id}" : image de ${im.largeur}x${im.hauteur}, un skin fait 64x64 ou 64x32`);
+  return { ...convertirSkin(im.rgba, im.largeur, im.hauteur), slim: devinerSlim(im.rgba, im.largeur, im.hauteur) };
+}
+
+// Bras fins (slim) ? Dans un skin 64x64 a bras fins, la colonne de trop du dos du bras est transparente (x=55, y 20..31 pour le
+// bras droit ; x=47, y 52..63 pour le gauche). Un skin 64x32, ou entierement opaque, est "wide". Sert seulement quand la scene
+// ne dit pas `modele`.
+export function devinerSlim(rgba, l, h) {
+  if (l !== 64 || h !== 64) return false;
+  const vide = (x, y0, y1) => { for (let y = y0; y <= y1; y++) if (rgba[(y * 64 + x) * 4 + 3] !== 0) return false; return true; };
+  return vide(55, 20, 31) && vide(47, 52, 63);
+}
+
+// Une seule ligne quand Mojang est injoignable : quel skin par defaut a ete pris, et comment avoir le vrai.
+// `infos` : les elements { acteur, detail: "pseudo -> skin" } dont `repli` est vrai.
+export function noteSkinsDeRepli(infos) {
+  const nom = (i) => i.detail.replace(/^.* -> /, '');
+  const debut = infos.length === 1
+    ? `skin '${infos[0].acteur}' : Mojang injoignable, skin par defaut '${nom(infos[0])}' utilise`
+    : `Mojang injoignable, skins par defaut utilises (${infos.map((i) => `${i.acteur} -> ${nom(i)}`).join(', ')})`;
+  return `${debut} ; pour le vrai skin : utilise le skin '@…' donne par lister_avatars, ou --skin ${infos[0].acteur}=fichier.png`;
+}
+
 // ---------------------------------------------------------------- skins par defaut du kit
 export function nomsParDefaut(kitDir, modele = 'wide') {
   const d = path.join(kitDir, 'assets', 'minecraft', 'textures', 'entity', 'player', modele);
@@ -102,7 +129,7 @@ async function skinMojang(pseudo, fabriqueNet) {
 // Retourne { rgba, modele ('wide'|'slim'), origine, detail, repli (bool) }.
 //   description : texte du champ `skin`. surcharge : chemin PNG donne par --skin nom=fichier.png.
 //   modele : 'wide' | 'slim' | null (null = a deviner).
-export async function resoudreSkin({ description, modele, kitDir, surcharge, fabriqueNet = () => new Net({ connectTimeout: 2000 }), baseDir = process.cwd(), mojang = skinMojang }) {
+export async function resoudreSkin({ description, modele, kitDir, surcharge, fabriqueNet = () => new Net({ connectTimeout: 2000 }), baseDir = process.cwd(), mojang = skinMojang, relais = obtenirSkinRelais, env = process.env }) {
   const choisir = (m) => m ?? 'wide';
   if (surcharge) {
     const f = path.resolve(baseDir, surcharge);
@@ -119,6 +146,14 @@ export async function resoudreSkin({ description, modele, kitDir, surcharge, fab
     const f = path.resolve(baseDir, desc);
     if (!fs.existsSync(f)) throw new Error(`fichier de skin introuvable : ${desc}`);
     return { rgba: lirePng(fs.readFileSync(f)).rgba, modele: m, origine: 'fichier', detail: path.basename(f), repli: false };
+  }
+  // skin du relais : "@<id>" (22 caracteres), donne par lister_avatars
+  if (desc.startsWith('@')) {
+    const id = desc.slice(1);
+    if (!ID_SKIN.test(id)) throw new Error(`skin "${desc}" : apres @ il faut un identifiant de 22 caracteres (lettres, chiffres, - et _), comme celui de lister_avatars`);
+    const { octets } = await relais(id, { env });
+    const r = lireSkinRelais(octets, id);
+    return { rgba: r.rgba, modele: modele ?? (r.slim ? 'slim' : 'wide'), origine: 'relais', detail: '@' + id, repli: false };
   }
   // pseudo Minecraft
   if (!/^[A-Za-z0-9_]{1,16}$/.test(desc)) throw new Error(`skin "${desc}" : ni skin par defaut, ni fichier PNG, ni pseudo Minecraft valide`);

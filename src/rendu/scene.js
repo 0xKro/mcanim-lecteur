@@ -9,6 +9,7 @@ import { BibliothequeTextures } from './textures.js';
 import { BibliothequeModeles } from './modeles.js';
 import { CouleursBiomes } from './teinte.js';
 import { mailler, courbeLumiere } from './maillage.js';
+import { trouverChemins, trouverClairieres, trouverEau, evaluerSegment, verifierChemin } from './chemins.js';
 import { Rasteriseur, MODE_OPAQUE, MODE_DECOUPE, MODE_MELANGE } from './raster.js';
 
 const ICI = path.dirname(fileURLToPath(import.meta.url));
@@ -166,12 +167,13 @@ class Scene {
   _preparerAcces() {
     const { pal, PX, PY, PZ, etats, kind } = this.maillage.interne;
     const n = etats.length;
-    this.collision = new Uint8Array(n); this.feuillesP = new Uint8Array(n);
+    this.collision = new Uint8Array(n); this.feuillesP = new Uint8Array(n); this.solideCam = new Uint8Array(n);
     for (let i = 0; i < n; i++) {
-      if (i === 1) { this.collision[i] = 1; continue; }
+      if (i === 1) { this.collision[i] = 1; this.solideCam[i] = 1; continue; }
       const e = etats[i];
       if (!e) continue;
       this.feuillesP[i] = e.feuilles ? 1 : 0;
+      this.solideCam[i] = e.opaque && !e.feuilles ? 1 : 0;   // cube plein opaque (troncs compris) : bloque la camera
       this.collision[i] = e.type === 1 && (e.opaque || e.aoSolide || !NON_COLLISION.test(e.nom)) ? 1 : 0;
     }
     void pal; void PX; void PY; void PZ; void kind;
@@ -232,6 +234,24 @@ class Scene {
     if (!this.zone.dansZone(bx, bz)) return by > this.zone.hauteur(bx, bz);
     const p = this._pal(bx, by, bz);
     return !(this.collision[p] || this.feuillesP[p]);
+  }
+
+  // Vrai si le point est dans un bloc VRAIMENT plein et opaque (pierre, terre, tronc...) : seul ce qui bloque la camera.
+  // Feuilles, plantes, herbe, fleurs, lianes, eau, dalles, clotures ne comptent pas (une camera peut traverser un feuillage).
+  // Hors zone : plein sous la surface seulement (comme estLibre).
+  estSolidePourCamera(x, y, z) {
+    const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
+    if (!this.zone.dansZone(bx, bz)) return by <= this.zone.hauteur(bx, bz);
+    return this.solideCam[this._pal(bx, by, bz)] === 1;
+  }
+
+  // Nature du bloc qui occupe la cellule : 'tronc' | 'feuillage' | 'bloc' (autre bloc a collision) | null (rien qui gene).
+  classeBloc(x, y, z) {
+    const p = this._pal(Math.floor(x), Math.floor(y), Math.floor(z));
+    if (this.feuillesP[p]) return 'feuillage';
+    if (!this.collision[p]) return null;
+    const e = this.maillage.interne.etats[p];
+    return e && /(_log|_stem|_wood)$/.test(e.nom) ? 'tronc' : 'bloc';
   }
 
   // Distance libre (en blocs, max `max`) devant un point, dans une direction (pas de 0,5).
@@ -316,59 +336,40 @@ class Scene {
     return res;
   }
 
-  // Resume du terrain pour un LLM (JSON court). pas = pas de la grille (en blocs ; par defaut ~12 cases par cote).
+  // Resume du terrain pour un LLM (JSON court, moins de 1,8 Ko pour une zone de rayon 48).
+  //   zone, sol {min,max,mediane} (Y du dessus du sol), grille grossiere (si elle tient), eau (lacs), nbArbres,
+  //   chemins (3-4 corridors droits praticables pour l'acteur ET la camera de suivi), clairieres (1-2 endroits ouverts).
   resumeTerrain({ pas } = {}) {
     const Z = this.zone;
-    pas = pas || Math.max(4, Math.ceil(Math.max(Z.sx, Z.sz) / 12));
+    pas = pas || Math.max(8, Math.ceil(Math.max(Z.sx, Z.sz) / 6));
     const xs = [], zs = [];
     for (let x = Z.x0 + Math.floor(pas / 2); x < Z.x0 + Z.sx; x += pas) xs.push(x);
     for (let z = Z.z0 + Math.floor(pas / 2); z < Z.z0 + Z.sz; z += pas) zs.push(z);
     const sol = zs.map((z) => xs.map((x) => { const s = this.solEn(x, z); return s === null ? null : s - 1; }));
-    const eau = zs.map((z) => xs.map((x) => this.eauEn(x, z) !== null));
-    // zones d'eau : composantes connexes de la grille
-    const lacs = [], vus = zs.map(() => xs.map(() => false));
-    for (let j = 0; j < zs.length; j++) for (let i = 0; i < xs.length; i++) {
-      if (!eau[j][i] || vus[j][i]) continue;
-      const pile = [[i, j]]; vus[j][i] = true;
-      let a = i, b = i, c = j, d = j, n = 0, niv = this.eauEn(xs[i], zs[j]);
-      while (pile.length) {
-        const [ii, jj] = pile.pop(); n++;
-        a = Math.min(a, ii); b = Math.max(b, ii); c = Math.min(c, jj); d = Math.max(d, jj);
-        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const i2 = ii + di, j2 = jj + dj;
-          if (i2 >= 0 && j2 >= 0 && i2 < xs.length && j2 < zs.length && eau[j2][i2] && !vus[j2][i2]) { vus[j2][i2] = true; pile.push([i2, j2]); }
-        }
-      }
-      lacs.push({ x: [xs[a] - Math.floor(pas / 2), xs[b] + Math.ceil(pas / 2)], z: [zs[c] - Math.floor(pas / 2), zs[d] + Math.ceil(pas / 2)], y: Math.round(niv), n });
-    }
-    lacs.sort((p, q) => q.n - p.n);
+    // statistiques du sol sur toute la zone (colonnes tous les 2 blocs)
+    const hs = [];
+    for (let z = Z.z0; z < Z.z0 + Z.sz; z += 2) for (let x = Z.x0; x < Z.x0 + Z.sx; x += 2) { const s = this.solEn(x, z); if (s !== null) hs.push(s - 1); }
+    hs.sort((p, q) => p - q);
+    const stat = hs.length ? { min: hs[0], max: hs[hs.length - 1], mediane: hs[hs.length >> 1] } : null;
     const troncs = this._troncs().filter((t) => t[3] - t[2] >= 2);
-    const cx = Z.x0 + Z.sx / 2, cz = Z.z0 + Z.sz / 2;
-    troncs.sort((p, q) => Math.hypot(p[0] - cx, p[1] - cz) - Math.hypot(q[0] - cx, q[1] - cz));
-    // endroits plats : zone 5x5 libre, meme hauteur, sans tronc a moins de 3 blocs, pas dans l'eau
-    const plats = [];
-    const candidats = [];
-    for (let z = Z.z0 + 3; z < Z.z0 + Z.sz - 3; z += 2) for (let x = Z.x0 + 3; x < Z.x0 + Z.sx - 3; x += 2) {
-      const s0 = this.solEn(x, z);
-      if (s0 === null) continue;
-      let ok = true;
-      for (let dz = -2; dz <= 2 && ok; dz++) for (let dx = -2; dx <= 2 && ok; dx++) {
-        if (this.solEn(x + dx, z + dz) !== s0 || this.eauEn(x + dx, z + dz) !== null) ok = false;
-        else if (!this.estLibre(x + dx + 0.5, s0 + 0.5, z + dz + 0.5) || !this.estLibre(x + dx + 0.5, s0 + 1.5, z + dz + 0.5)) ok = false;
-      }
-      if (ok && !troncs.some((t) => Math.hypot(t[0] - x, t[1] - z) < 4)) candidats.push([x, s0, z]);
-    }
-    candidats.sort((p, q) => Math.hypot(p[0] - cx, p[2] - cz) - Math.hypot(q[0] - cx, q[2] - cz));
-    for (const c of candidats) { if (plats.length >= 5) break; if (plats.every((p) => Math.hypot(p[0] - c[0], p[2] - c[2]) >= pas * 1.5)) plats.push(c); }
-    return {
+    const r = {
       zone: { x: [Z.x0, Z.x0 + Z.sx - 1], z: [Z.z0, Z.z0 + Z.sz - 1], biomes: Z.biomesNoms.map((b) => b.replace('minecraft:', '')) },
-      grille: { pas, x0: xs[0], z0: zs[0], note: 'sol[j][i] = Y du dessus du sol en (x0+i*pas, z0+j*pas), j vers le sud ; null = vide' , sol: sol.map((r) => r.join(',')) },
-      eau: lacs.slice(0, 6),
-      arbres: troncs.slice(0, 16).map((t) => [t[0], t[1], t[3] - t[2] + 1]),
+      sol: stat,
+      eau: trouverEau(this, { max: 3 }),
       nbArbres: troncs.length,
-      plat: plats,
+      chemins: trouverChemins(this, { max: 4 }),
+      clairieres: trouverClairieres(this, { max: 2 }),
+      grille: { pas, x0: xs[0], z0: zs[0], note: 'sol[j][i] = Y du sol en (x0+i*pas, z0+j*pas), j vers le sud', sol: sol.map((row) => row.join(',')) },
     };
+    // le texte doit rester court : sans la grille grossiere si elle fait depasser 1,8 Ko
+    if (JSON.stringify(r).length > 1800) delete r.grille;
+    return r;
   }
+
+  // Verifie un segment (x1,z1) -> (x2,z2) pour un acteur et sa camera de suivi : { ok, longueur, denivele, degagement, obstacle? }.
+  evaluerSegment(x1, z1, x2, z2) { return evaluerSegment(this, x1, z1, x2, z2); }
+  // Meme chose, en une phrase (pour `mcanim terrain <zone> --chemin x1,z1,x2,z2`).
+  verifierChemin(x1, z1, x2, z2) { return verifierChemin(this, x1, z1, x2, z2); }
 }
 
 const NON_COLLISION = /(grass|fern|dandelion|poppy|orchid|allium|bluet|tulip|daisy|cornflower|lily_of|lily_pad|rose|peony|lilac|sunflower|bush|mushroom|sapling|vine|torch|lichen|carpet|^snow$|leaf_litter|petals|wildflowers|rail|_sign|button|pressure_plate|tripwire|^string$|^fire$|seagrass|kelp|cobweb|dripleaf|roots|sprout|fungus|^wheat$|carrots|potatoes|beetroots|_stem|sugar_cane|dead_bush|berries|berry|firefly|bubble|^ladder$|^lever$|banner|^water$|^lava$|torchflower|eyeblossom|flower$|frogspawn|pitcher_crop|^light$|^barrier$)/;

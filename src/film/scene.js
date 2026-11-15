@@ -139,7 +139,8 @@ export function validerScene(s) {
     if (typeof a.nom !== 'string' || !a.nom) err(`${ch}.nom`, 'nom attendu (texte non vide)');
     if (noms.has(a.nom)) err(`${ch}.nom`, `le nom "${a.nom}" est deja pris`);
     noms.add(a.nom);
-    if (a.skin !== undefined && (typeof a.skin !== 'string' || !a.skin)) err(`${ch}.skin`, 'texte attendu (pseudo, skin par defaut ou fichier PNG)');
+    if (a.skin !== undefined && (typeof a.skin !== 'string' || !a.skin)) err(`${ch}.skin`, 'texte attendu (pseudo, skin par defaut, "@identifiant" ou fichier PNG)');
+    if (typeof a.skin === 'string' && a.skin.startsWith('@') && !/^@[A-Za-z0-9_-]{22}$/.test(a.skin)) err(`${ch}.skin`, '"@" doit etre suivi de l\'identifiant de 22 caracteres (lettres, chiffres, - et _) donne par lister_avatars');
     if (a.modele !== undefined && a.modele !== 'wide' && a.modele !== 'slim') err(`${ch}.modele`, '"wide" ou "slim" attendu');
     if (a.pos === undefined) err(`${ch}.pos`, 'piste de position obligatoire : [[t, x, z], ...] ou [[t, x, y, z], ...]');
     const pos = lirePiste(a.pos, `${ch}.pos`, { minArite: 2, maxArite: 3 });

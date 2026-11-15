@@ -55,8 +55,10 @@ mesh = {
 - Test z : les maillages dynamiques se cachent correctement avec le terrain.
 
 ### Aides pour l'IA et les collisions
-- `scene.resumeTerrain({ pas }) -> objet JSON` (environ 1 Ko) : `zone` (bornes, biomes), `grille` (hauteur du sol en grille grossiere : `sol[j][i]` = Y du dessus du sol en `(x0+i*pas, z0+j*pas)`, j vers le sud), `eau` (lacs : boite x/z, niveau y, taille), `arbres` (`[x, z, hauteur]` des troncs les plus proches du centre ; `nbArbres` = total), `plat` (jusqu'a 5 endroits plats de 5x5 sans eau ni tronc : `[x, yDuSol, z]`).
+- `scene.resumeTerrain({ pas }) -> objet JSON` (moins de 1,8 Ko pour une zone de rayon 48) : `zone` (bornes, biomes), `sol` (`min`, `max`, `mediane` : Y du dessus du sol), `eau` (3 plus grandes etendues : boite x/z, niveau y), `nbArbres`, `chemins` (3-4 couloirs droits praticables pour un acteur ET une camera de suivi : `{de:[x,z], a:[x,z], longueur, denivele, degagement}`, entiers, meilleur d'abord ; `degagement` = % du trajet ou la camera, 4 blocs derriere / 2 au-dessus, a la place et voit la tete), `clairieres` (1-2 endroits ouverts : `{centre:[x,z], rayon}`), `grille` (sol grossier ; retiree si le texte depasse 1,8 Ko).
+- `scene.evaluerSegment(x1,z1,x2,z2) -> { ok, longueur, denivele, degagement (0..1), obstacle?: {distance,x,z,quoi} }` et `scene.verifierChemin(x1,z1,x2,z2) -> phrase` : un segment est libre si, a hauteur du corps (0..2), aucune colonne a +-1 bloc de l'axe n'a de bloc a collision, de feuillage ou d'eau, et sans marche de plus de 1 bloc (`mcanim terrain <zone> --chemin x1,z1,x2,z2`). Algorithme dans `chemins.js` (deterministe, environ 0,2 s pour 96 x 96).
 - `scene.solEn(x, z) -> Y | null` : Y du DESSUS du plus haut bloc a collision de la colonne, sans compter feuilles, eau, plantes, neige fine, tapis (on marche sous les arbres). `null` hors zone. Un personnage debout a `solEn(x,z)` aux pieds ; les yeux sont a +1,62.
+- `scene.estSolidePourCamera(x, y, z) -> bool` : le point est-il dans un bloc VRAIMENT plein et opaque (pierre, terre, tronc) ? Seul cela bloque la camera de film (`film/camera.js`) ; feuilles, plantes, herbe, fleurs, lianes, eau, dalles et clotures ne comptent pas. `scene.classeBloc(x,y,z)` -> `'tronc' | 'feuillage' | 'bloc' | null`.
 - `scene.eauEn(x, z) -> Y | null` : surface de l'eau au-dessus du sol (14/16 du bloc), sinon `null`.
 - `scene.estLibre(x, y, z) -> bool` : le point est-il dans une cellule sans bloc a collision, sans feuilles et non cachee (pour la camera et les personnages). L'eau est "libre". Hors zone : libre seulement au-dessus de la surface.
 - `scene.distanceLibre(x,y,z,dx,dy,dz,max)` : distance avant le premier obstacle (pas de 0,5). `scene.vueParDefaut()` : point de vue au sol qui regarde vers les arbres. `scene.niveauLumiere(x,y,z)` 0..15, `scene.luminositeEn(x,y,z)` 0..1, `scene.estDansEau(x,y,z)`.
@@ -73,6 +75,7 @@ mesh = {
 | `maillage.js` | mailleur : culling, lumiere du ciel, AO, teintes, eau/lave |
 | `raster.js` | rasteriseur (coeur, utilise par les workers et en direct) |
 | `travailleur.js` | worker de rendu |
+| `chemins.js` | couloirs praticables, clairieres, eau, verification d'un segment (pour `resumeTerrain`) |
 | `scene.js` | l'API ci-dessus |
 
 ## Comment ca marche (pour les curieux)

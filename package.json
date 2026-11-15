@@ -13,6 +13,7 @@
   },
   "bin": {
     "mcanim": "bin/mcanim.js",
+    "mcanim-lecteur": "bin/mcanim.js",
     "mcanim-kit": "bin/kit.js",
     "mcanim-fabriquer-kit": "bin/fabriquer-kit.js",
     "mcanim-image": "bin/image.js"

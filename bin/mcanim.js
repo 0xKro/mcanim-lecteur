@@ -32,7 +32,7 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   mcanim texture <jeu/chemin> [--sortie f.png]      exporte une texture du jeu (ex. block/oak_leaves) a retoucher
   mcanim kit                          recupere le kit de base
   (options de rendre : --ssaa 2 pour un rendu plus lisse, 3 fois plus lent)
-  champs de scene facultatifs : image, ciel, gel, textures ; acteur : skins, masque, lueur, horsImage (fiches du site)`;
+  champs de scene facultatifs : image, ciel, gel, textures ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui (fiches du site)`;
 
 class Usage extends Error {}
 

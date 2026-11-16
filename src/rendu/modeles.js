@@ -376,7 +376,9 @@ export class BibliothequeModeles {
     e.feuilles = /_leaves$/.test(nom);
     const verre = /glass|^ice$|slime_block|honey_block|frosted_ice/.test(nom);
     e.aoSolide = cube && !verre && !/^(light|barrier|structure_void)$/.test(nom);
-    e.memeCulling = verre || e.feuilles;
+    // graphismes "fancy" du jeu : les feuilles montrent leurs faces interieures (on voit les feuilles derriere les trous) ;
+    // seules les surfaces translucides identiques (verre, glace, miel, slime) s'effacent entre elles
+    e.memeCulling = verre;
     e.permeable = !e.opaque;
     if (e.opaque) e.opaciteLumiere = 15;
     else if (e.feuilles || /^(ice|frosted_ice|cobweb|honey_block|slime_block)$/.test(nom)) e.opaciteLumiere = Math.max(e.opaciteLumiere, 1);

@@ -7,6 +7,13 @@ const LATERAL = [-1, -0.5, 0, 0.5, 1];  // "pas d'obstacle a 1 bloc de chaque co
 const MARCHE_MAX = 1;            // marche maximale entre deux points a 1 bloc d'ecart
 const CAMERA_ARRIERE = 4, CAMERA_HAUT = 2;
 const LONGUEUR_MINI = 30, LONGUEUR_VISEE = 45, LONGUEUR_MAXI = 70;
+// Chemins et clairieres : on ne cherche qu'au centre de la zone (fenetre de +-FENETRE blocs). Une grande zone (rayon 128) a un
+// bord lointain que la brume cache : un acteur trop pres du bord aurait une vue tres courte. Zone de rayon <= 56 : toute la zone.
+const FENETRE = 56;
+const fenetre = (Z) => {
+  const cx = Z.x0 + Z.sx / 2, cz = Z.z0 + Z.sz / 2;
+  return { x0: Math.max(Z.x0 + 2, Math.ceil(cx - FENETRE)), x1: Math.min(Z.x0 + Z.sx - 2, Math.floor(cx + FENETRE)), z0: Math.max(Z.z0 + 2, Math.ceil(cz - FENETRE)), z1: Math.min(Z.z0 + Z.sz - 2, Math.floor(cz + FENETRE)) };
+};
 
 // Colonnes de la zone : hauteur du sol, eau, et raison de l'obstacle a hauteur du corps (0..2 au-dessus du sol).
 export function preparerMarche(rs) {
@@ -102,7 +109,9 @@ export function trouverChemins(rs, { max = 4 } = {}) {
   const Z = rs.zone;
   const candidats = [];
   const ANGLES = 48;
+  const F = fenetre(Z);
   for (let z = Z.z0 + 2; z < Z.z0 + Z.sz - 2; z += 2) for (let x = Z.x0 + 2; x < Z.x0 + Z.sx - 2; x += 2) {
+    if (x < F.x0 || x > F.x1 || z < F.z0 || z > F.z1) continue;
     if (m.raison[m.colonne(x, z)] !== 0) continue;
     for (let a = 0; a < ANGLES; a++) {
       const ang = (a * 2 * Math.PI) / ANGLES, dx = Math.cos(ang), dz = Math.sin(ang);
@@ -110,6 +119,7 @@ export function trouverChemins(rs, { max = 4 } = {}) {
       let bonne = null;
       for (let L = LONGUEUR_MINI; L <= LONGUEUR_MAXI; L += 5) {
         const ex = Math.round(x + dx * L), ez = Math.round(z + dz * L);
+        if (ex < F.x0 || ex > F.x1 || ez < F.z0 || ez > F.z1) break;
         const e = evaluerSegment(rs, x, z, ex, ez);
         if (!e.ok) break;
         bonne = { de: [x, z], a: [ex, ez], e };
@@ -159,8 +169,10 @@ export function trouverClairieres(rs, { max = 2, rayonMini = 5 } = {}) {
   }
   const R = 14;
   const res = [];
+  const F = fenetre(rs.zone);
   for (let j = 0; j < sz; j++) for (let i = 0; i < sx; i++) {
     if (bloque[j * sx + i]) continue;
+    if (m.x0 + i < F.x0 || m.x0 + i > F.x1 || m.z0 + j < F.z0 || m.z0 + j > F.z1) continue;
     let d2 = R * R;
     for (let dj = -R; dj <= R; dj++) for (let di = -R; di <= R; di++) {
       const q = di * di + dj * dj;

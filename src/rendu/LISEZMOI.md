@@ -24,15 +24,15 @@ await scene.fermer();   // arrete les workers (sinon le programme ne se termine 
 ### `chargerScene({ zonePath | zone, kitDir, travailleurs, options }) -> Promise<Scene>`
 - `kitDir` : dossier retourne par `ensureKit()` (`.kit-cache/26.3`) ou racine du cache. Il faut les groupes `blockstates, models, textures, colormap, biomes` (tous par defaut).
 - `travailleurs` : nombre de workers de rendu (defaut : coeurs, au plus 4 ; 2 sur la machine cible). `0` = tout dans le thread principal (resultat identique).
-- `options` : `rayonMelange` (flou des teintes de biome, defaut 2), `aoActif` (defaut vrai), `gamma` (reglage de luminosite du jeu, 0,5 par defaut ; 0 = courbe pure).
+- `options` : `rayonMelange` (flou des teintes de biome, defaut 2), `aoActif` (defaut vrai), `gamma` (reglage de luminosite du jeu, 0,5 par defaut ; 0 = courbe pure), `distInterne` (voir « Feuilles » plus bas ; defaut 32 blocs).
 - `scene.temps` : `{ lectureMs, maillageMs, totalMs }`. `scene.maillage.stats` : nombre de quads. `scene.modeles.manquants` : etats sans modele/texture (Map etat -> raison) ; `scene.modeles.speciaux` : coffres, lits... dessines par du code dans le jeu (boite de remplacement ou rien) ; `scene.textures.manquantes`.
 
 ### `await scene.rendre({ camera, largeur, hauteur, temps, maillagesDynamiques, ssaa, mip, brume, ciel, soleil, lumiere, image, copie }) -> Uint8Array`
 - `temps` : secondes ; choisit l'image des textures animees (eau, lave...), 20 ticks par seconde, sans interpolation.
 - `ssaa` : 1 (defaut) ou 2 = rendu en 2x2 puis reduction (coute environ 3 fois plus). `mip: false` supprime les petits niveaux de texture (plus lent et plus de scintillement a distance).
-- `brume: { debut, fin, couleur:[r,g,b] }` : brouillard de distance (defaut : de 55 % a 100 % de la distance de vue = 1,15 x demi-zone). `ciel: { zenith, horizon, bas }` couleurs [r,g,b] 0..255. `soleil: [dx,dy,dz]` direction du soleil, ou `false`.
+- `brume: { debut, fin, couleur:[r,g,b] }` : brouillard de distance (voir « Brouillard et bord de zone » plus bas). `ciel: { zenith, horizon, bas }` couleurs [r,g,b] 0..255. `soleil: [dx,dy,dz]` direction du soleil, ou `false`.
 - `lumiere: [r,g,b]` : facteur de lumiere GLOBAL par canal (1,1,1 = inchange, c'est le defaut). Il multiplie la couleur de chaque sommet au dessin (terrain ET maillages dynamiques) : le maillage n'est pas refait. Au-dessus de 1, la couleur est ecretee a 255. Ne touche pas le ciel.
-- `brume: { debut, fin, couleur }` : chaque champ est facultatif ; si `debut` est donne sans `fin`, `fin` vaut au moins `debut + 8`.
+- `brume: { debut, fin, couleur }` : chaque champ est facultatif ; `fin` vaut au moins `debut + 8`.
 - `image: { saturation, contraste, luminosite, teinte:[r,g,b], vignette, flou, fondu:[a,r,g,b] }` : post-traitement applique a l'image finale (voir « Post-traitement » plus bas). Tout est facultatif ; neutre = rien, cout nul.
 - Sous l'eau (camera dans une cellule d'eau) : brouillard bleu court automatique.
 - `copie: false` renvoie la memoire partagee interne (valable jusqu'au prochain `rendre`) : plus rapide si on encode tout de suite.
@@ -73,7 +73,7 @@ mesh = {
 **Post-traitement** (`post.js`), ordre fixe : 1. flou en boite (rayon 0..32 px, deux passes, bords repetes) ; 2. saturation (0..2 ; gris = 0,30 R + 0,59 V + 0,11 B) ; 3. teinte (x r,g,b, 0..2) ; 4. contraste (0..3, autour de 127,5) ; 5. luminosite (x l, 0..3) ; [les pixels exemptes retrouvent leur couleur d'avant l'etalonnage 2 a 5, melangee selon la force] ; 6. vignette (0..1) ; 7. fondu (vers la couleur r,g,b a la part a). Calcul entier + tables, sans allocation par pixel. Le flou travaille sur l'image entiere dans le thread principal ; tout le reste se fait par bandes de 16 rangees, dans les workers (chacun les siennes) quand `ssaa` vaut 1 et qu'il n'y a pas de flou, sinon dans le thread principal. Mesure (1920x1080, 1 thread) : saturation 14 ms, vignette ou fondu 8 ms, flou 35 ms.
 
 ### Aides pour l'IA et les collisions
-- `scene.resumeTerrain({ pas }) -> objet JSON` (moins de 1,8 Ko pour une zone de rayon 48) : `zone` (bornes, biomes), `sol` (`min`, `max`, `mediane` : Y du dessus du sol), `eau` (3 plus grandes etendues : boite x/z, niveau y), `nbArbres`, `chemins` (3-4 couloirs droits praticables pour un acteur ET une camera de suivi : `{de:[x,z], a:[x,z], longueur, denivele, degagement}`, entiers, meilleur d'abord ; `degagement` = % du trajet ou la camera, 4 blocs derriere / 2 au-dessus, a la place et voit la tete), `clairieres` (1-2 endroits ouverts : `{centre:[x,z], rayon}`), `grille` (sol grossier ; retiree si le texte depasse 1,8 Ko).
+- `scene.resumeTerrain({ pas }) -> objet JSON` (moins de 1,8 Ko : 0,9 Ko mesure pour des zones de rayon 48, 96 et 128 ; la grille est retiree si le texte depasse 1,8 Ko) : `zone` (bornes, biomes), `sol` (`min`, `max`, `mediane` : Y du dessus du sol), `eau` (3 plus grandes etendues : boite x/z, niveau y), `nbArbres`, `chemins` (3-4 couloirs droits praticables pour un acteur ET une camera de suivi : `{de:[x,z], a:[x,z], longueur, denivele, degagement}`, entiers, meilleur d'abord ; cherches seulement dans les 56 blocs autour du CENTRE de la zone, la ou la brume ne cache pas encore le paysage : toute la zone si le rayon est <= 56 ; `degagement` = % du trajet ou la camera, 4 blocs derriere / 2 au-dessus, a la place et voit la tete), `clairieres` (1-2 endroits ouverts : `{centre:[x,z], rayon}`), `grille` (sol grossier ; retiree si le texte depasse 1,8 Ko).
 - `scene.evaluerSegment(x1,z1,x2,z2) -> { ok, longueur, denivele, degagement (0..1), obstacle?: {distance,x,z,quoi} }` et `scene.verifierChemin(x1,z1,x2,z2) -> phrase` : un segment est libre si, a hauteur du corps (0..2), aucune colonne a +-1 bloc de l'axe n'a de bloc a collision, de feuillage ou d'eau, et sans marche de plus de 1 bloc (`mcanim terrain <zone> --chemin x1,z1,x2,z2`). Algorithme dans `chemins.js` (deterministe, environ 0,2 s pour 96 x 96).
 - `scene.solEn(x, z) -> Y | null` : Y du DESSUS du plus haut bloc a collision de la colonne, sans compter feuilles, eau, plantes, neige fine, tapis (on marche sous les arbres). `null` hors zone. Un personnage debout a `solEn(x,z)` aux pieds ; les yeux sont a +1,62.
 - `scene.estSolidePourCamera(x, y, z) -> bool` : le point est-il dans un bloc VRAIMENT plein et opaque (pierre, terre, tronc) ? Seul cela bloque la camera de film (`film/camera.js`) ; feuilles, plantes, herbe, fleurs, lianes, eau, dalles et clotures ne comptent pas. `scene.classeBloc(x,y,z)` -> `'tronc' | 'feuillage' | 'bloc' | null`.
@@ -90,22 +90,36 @@ mesh = {
 | `modeles.js` | etat de bloc -> quads : blockstates (variants, aleatoire pondere, multipart `when`/`OR`/`AND`), modeles (parents, `#variables`, UV, rotations, `uvlock`, `cullface`, `tintindex`) |
 | `textures.js` | textures du kit, couches (opaque / decoupe / melange), animations `.mcmeta`, atlas a 4 niveaux de mip |
 | `teinte.js` | couleurs de biome (herbe, feuillage, feuillage sec, eau) |
-| `maillage.js` | mailleur : culling, lumiere du ciel, AO, teintes, eau/lave |
+| `maillage.js` | mailleur : culling (seul un cube opaque cache une face ; feuilles : faces internes en couche a part), lumiere du ciel, AO, teintes, eau/lave |
 | `raster.js` | rasteriseur (coeur, utilise par les workers et en direct ; lumiere globale, force d'exemption) |
 | `post.js` | post-traitement de l'image finale (`image`) |
 | `travailleur.js` | worker de rendu |
 | `chemins.js` | couloirs praticables, clairieres, eau, verification d'un segment (pour `resumeTerrain`) |
 | `scene.js` | l'API ci-dessus |
 
+## Brouillard et bord de zone
+- Par defaut le brouillard est AUTOMATIQUE, recalcule a chaque image : `fin` = distance horizontale de la camera au bord de zone le plus proche moins 4 blocs (jamais moins de 32) ; `debut` = 60 % de `fin`, repousse (jusqu'a 85 % de `fin`) pour ne jamais avaler un maillage dynamique, donc l'acteur suivi (`debut` >= sa plus grande distance horizontale + 3). Un `brume.debut` / `brume.fin` explicite l'emporte. Exemple : camera au centre d'une zone de rayon 128 : brume de 60 a 100 blocs.
+- La distance est HORIZONTALE (cylindre autour de la camera, comme le jeu), pas la profondeur d'ecran : un bord de zone a 100 blocs est totalement dans la brume sur toute la largeur de l'image, aux coins aussi.
+- Couleur : par defaut (ou si `brume.couleur` = `ciel.horizon`) la brume prend, RANGEE PAR RANGEE, la couleur du ciel derriere elle (`ciel` personnalise et `image` compris : l'etalonnage s'applique ensuite aux deux). La brume epaisse est donc invisible sur le ciel, au niveau de l'horizon comme sous l'horizon ; une camera haute voit le terrain se fondre dans le ciel sans bord net. Une `brume.couleur` differente est utilisee telle quelle.
+- Distance : les sections de maillage et les triangles entierement au-dela de `fin` (+ 1 bloc) ne sont pas dessines (le ciel les remplace : c'est la meme couleur). Le niveau de mip (par triangle) reste celui de la texture : mesure, avancer d'un demi-niveau ne change pas le temps de rendu ; a 100 blocs on n'utilise que les niveaux 0 et 1.
+- Ce qui reste : camera a moins de ~36 blocs d'un bord (zone petite, acteur au bord) : `fin` ne descend pas sous 32 et le bord peut se voir ; une camera tres haute dont l'image ne contient que le sol voit un disque de brume plutot que la zone entiere ; une rangee de pixels couvre plusieurs blocs a l'horizon, donc un tres leger palier (quelques % du contraste terrain/ciel) reste visible a hauteur d'yeux.
+
+## Feuilles (graphismes « fancy » du jeu)
+- Seul un cube OPAQUE cache une face. Les feuilles (`*_leaves`, azalee comprise) emettent leurs 6 faces meme contre une autre feuille : par les trous de la texture on voit les feuilles de derriere, pas le ciel. Seules les surfaces translucides identiques (verre, glace, slime, miel) s'effacent entre elles.
+- Les faces entre deux feuilles (« internes ») vont dans un 4e tampon (`couches.interne`), dessine APRES les faces exposees : le test de profondeur en rejette presque tout. Elles ne sont dessinees que jusqu'a `distInterne` blocs (horizontaux, defaut 32) de la camera ; au-dela on ne voit que les faces exposees (difference mesuree : 1 a 2 niveaux de couleur en moyenne sur l'image, aux silhouettes lointaines seulement).
+- Faces arriere : le jeu dessine chaque face d'un seul cote (vers l'exterieur) ; avec les 6 faces de chaque bloc cela suffit, l'elimination des faces arriere est conservee.
+- Lumiere et AO : la face interne prend la lumiere de la cellule voisine (attenuee de 1 par feuille) et l'AO du jeu (une feuille compte comme un cube plein) : l'interieur du feuillage est sombre, comme dans le jeu.
+- Cout (foret, zone de rayon 128, 1920x1080, un thread, camera de la scene d'essai) : avant ce changement 155 ms et 580 000 triangles traites par image (292 000 dessines) ; maintenant 167 ms (+7 %) et 320 000 traites (141 000 dessines) avec `distInterne` = 32 ; 190 ms (+21 %) avec toutes les faces internes (`distInterne: Infinity`). Le brouillard qui coupe le lointain paie une partie de ce cout. Le maillage compte 1,36 fois plus de quads (1 030 000 au lieu de 756 000 pour R = 128) ; rendu de 10 s dans le banc (2 coeurs) : 46,9 s avant, 48,6 s apres.
+
 ## Comment ca marche (pour les curieux)
 - Le maillage est divise en sections de 16x16x16 blocs, par couche (opaque, decoupe, melange), dans des `SharedArrayBuffer` partages avec les workers.
 - Chaque worker dessine des bandes de 16 rangees (rangees paires pour l'un, impaires pour l'autre) dans le meme tampon d'image : pas de copie ni de recollage.
-- Par image : elimination des sections hors champ (cone de vision + distance), tri des sections (opaque et decoupe de l'avant vers l'arriere, melange de l'arriere vers l'avant), elimination des faces arriere dans l'espace monde, transformation paresseuse des sommets, decoupe au plan proche, remplissage par rangees avec profondeur 1/w (Float32) et UV corrects en perspective, texture "plus proche", niveau de mip choisi par triangle.
+- Par image : elimination des sections hors champ (cone de vision + distance horizontale > fin de brume), tri des sections (opaque et decoupe de l'avant vers l'arriere, melange de l'arriere vers l'avant), elimination des faces arriere dans l'espace monde, transformation paresseuse des sommets, decoupe au plan proche, remplissage par rangees avec profondeur 1/w (Float32) et UV corrects en perspective, texture "plus proche", niveau de mip choisi par triangle.
 - Les textures animees sont reecrites dans l'atlas partage avant chaque image (quelques sprites de 16x16).
 
 ## Defauts connus
 - Pas de lumiere de blocs (sauf blocs emissifs traites comme pleine lumiere), pas d'ombre portee, pas de nuages. La nuit n'existe que comme facteur global (`lumiere`, voir `film/look.js`), sans lune, etoiles ni torches allumees.
 - Eau : plan plat a 14/16, pas de lissage des coins, pas de courant, tri des surfaces translucides par section seulement.
 - Les blocs dessines par code dans le jeu (coffres, lits, panneaux, banniere, tetes) sont une boite de remplacement ou absents.
-- Aux bords de la zone, le terrain s'arrete net : on voit le ciel en dessous de l'horizon (le brouillard le cache en partie).
+- Aux bords de la zone le terrain s'arrete, mais le brouillard automatique le cache (voir « Brouillard et bord de zone ») sauf camera tres pres du bord.
 - Les textures en moire sur les surfaces tres rasantes (herbe au loin) : choix d'un niveau de mip par triangle, pas par pixel ; `ssaa: 2` aide.

@@ -37,14 +37,17 @@ export class Rasteriseur {
     const pitch = (cam.tangage * Math.PI) / 180;
     const [zr, zg, zb] = p.cielZenith, [hr, hg, hb] = p.cielHorizon;
     const sol = p.cielBas;
+    if (this.skyH !== H) { this.skyR = new Float32Array(H); this.skyG = new Float32Array(H); this.skyB = new Float32Array(H); this.skyH = H; }
     for (let y = 0; y < H; y++) {
-      if (((y >> 4) % nW) !== rangeeDe) continue;
       // elevation du rayon passant par le centre de la rangee (en tenant compte du tangage)
       const elev = Math.atan((H / 2 - (y + 0.5)) / f) - pitch;
       let t = Math.sin(elev);
       let r, g, b;
       if (t >= 0) { t = Math.pow(t, 0.55); r = hr + (zr - hr) * t; g = hg + (zg - hg) * t; b = hb + (zb - hb) * t; }
       else { t = Math.min(1, -t * 3); r = hr + (sol[0] - hr) * t; g = hg + (sol[1] - hg) * t; b = hb + (sol[2] - hb) * t; }
+      // couleur du ciel de cette rangee (entiere) : le brouillard totalement epais prend exactement cette couleur
+      this.skyR[y] = r | 0; this.skyG[y] = g | 0; this.skyB[y] = b | 0;
+      if (((y >> 4) % nW) !== rangeeDe) continue;
       const c = (255 << 24) | ((b | 0) << 16) | ((g | 0) << 8) | (r | 0);
       pixels.fill(c >>> 0, y * W, y * W + W);
     }
@@ -113,25 +116,31 @@ export class Rasteriseur {
     ];
     for (const p of plans) { const n = Math.hypot(p[0], p[1], p[2]); p[0] /= n; p[1] /= n; p[2] /= n; }
     const loin = params.loin ?? 1e9;
-    const ctx = { ...cadre, cam, B, f, near, hw, hh, plans, loin };
+    const gmaxInv = 1 / Math.sqrt(1 + tx * tx + ty * ty);   // borne : longueur horizontale du rayon <= sqrt(1 + a^2 + b^2)
+    const ctx = { ...cadre, cam, B, f, near, hw, hh, plans, loin, gmaxInv };
 
     // listes de sections visibles par mode, triees
-    const listes = [[], [], []];
+    // listes : 0 opaque, 1 decoupe, 2 melange, 3 decoupe "interne" (faces de feuilles entre feuilles : apres les autres decoupes)
+    const listes = [[], [], [], []];
     for (const d of draws) {
       const secs = d.sections;
+      const liste = d.interne ? listes[3] : listes[d.mode];
+      const dm2 = d.distMax !== undefined && d.distMax < 1e8 ? d.distMax * d.distMax : 0;
       for (let i = 0; i < secs.length; i++) {
         const bb = secs[i].bbox;
+        if (dm2) { const ex = Math.max(bb[0] - cam.x, 0, cam.x - bb[3]), ez = Math.max(bb[2] - cam.z, 0, cam.z - bb[5]); if (ex * ex + ez * ez > dm2) continue; }
         const dist = this.visibilite(bb, ctx);
         if (dist < 0) continue;
-        listes[d.mode].push({ d, s: secs[i], dist });
+        liste.push({ d, s: secs[i], dist, partiel: !d.partage && this.depasseLoin(bb, ctx) });
       }
     }
-    this.stats.sections = listes[0].length + listes[1].length + listes[2].length;
+    this.stats.sections = listes[0].length + listes[1].length + listes[2].length + listes[3].length;
     listes[0].sort((a, b) => a.dist - b.dist);
     listes[1].sort((a, b) => a.dist - b.dist);
+    listes[3].sort((a, b) => a.dist - b.dist);
     listes[2].sort((a, b) => b.dist - a.dist);
     this.stats.tris = 0; this.stats.trisVus = 0;
-    for (const m of [0, 1, 2]) for (const e of listes[m]) this.dessinerSection(e.d, e.s, m, ctx);
+    for (const m of [0, 1, 3, 2]) for (const e of listes[m]) this.dessinerSection(e.d, e.s, e.d.mode, ctx, e.partiel);
     this.stats.ms = performance.now() - t0;
     return this.stats;
   }
@@ -148,12 +157,20 @@ export class Rasteriseur {
       if (k === 4 ? d < c.near : d < 0) return -1;
     }
     // distance (la plus proche de la boite)
-    const dx = Math.max(bb[0] - cx, 0, cx - bb[3]), dy = Math.max(bb[1] - cy, 0, cy - bb[4]), dz = Math.max(bb[2] - cz, 0, cz - bb[5]);
-    if (dx * dx + dy * dy + dz * dz > c.loin * c.loin) return -1;
+    // distance HORIZONTALE (comme le brouillard) : au-dela de `loin` la section est entierement dans la brume, on ne la dessine pas
+    const dx = Math.max(bb[0] - cx, 0, cx - bb[3]), dz = Math.max(bb[2] - cz, 0, cz - bb[5]);
+    if (dx * dx + dz * dz > c.loin * c.loin) return -1;
     return Math.hypot((bb[0] + bb[3]) / 2 - cx, (bb[1] + bb[4]) / 2 - cy, (bb[2] + bb[5]) / 2 - cz);
   }
 
-  dessinerSection(d, sec, mode, c) {
+  // vrai si une partie de la boite est au-dela de `loin` (distance horizontale) : on testera ses triangles un par un
+  depasseLoin(bb, c) {
+    const { cam, loin } = c;
+    const dx = Math.max(Math.abs(bb[0] - cam.x), Math.abs(bb[3] - cam.x)), dz = Math.max(Math.abs(bb[2] - cam.z), Math.abs(bb[5] - cam.z));
+    return dx * dx + dz * dz > loin * loin;
+  }
+
+  dessinerSection(d, sec, mode, c, partiel = false) {
     const { cam, B, f, near, hw, hh, W, H } = c;
     const pos = d.positions, uvs = d.uvs, col = d.couleurs, ind = d.indices;
     const vbase = d.partage ? 0 : (sec.debut / 6) * 4;
@@ -177,6 +194,17 @@ export class Rasteriseur {
       const i0 = ind[t], i1 = ind[t + 1], i2 = ind[t + 2];
       const a3 = i0 * 3, b3 = i1 * 3, c3 = i2 * 3;
       const ax = pos[a3], ay = pos[a3 + 1], az = pos[a3 + 2];
+      if (partiel) {   // triangle entierement au-dela de la brume (distance horizontale) : invisible, on le saute
+        const l2 = c.loin * c.loin;
+        let ddx = ax - cx, ddz = az - cz;
+        if (ddx * ddx + ddz * ddz > l2) {
+          ddx = pos[b3] - cx; ddz = pos[b3 + 2] - cz;
+          if (ddx * ddx + ddz * ddz > l2) {
+            ddx = pos[c3] - cx; ddz = pos[c3 + 2] - cz;
+            if (ddx * ddx + ddz * ddz > l2) continue;
+          }
+        }
+      }
       if (cull) {
         const e1x = pos[b3] - ax, e1y = pos[b3 + 1] - ay, e1z = pos[b3 + 2] - az;
         const e2x = pos[c3] - ax, e2y = pos[c3 + 1] - ay, e2z = pos[c3 + 2] - az;
@@ -315,7 +343,13 @@ export class Rasteriseur {
     const params = cx.params;
     const fb = cx.fb ?? null, msk = this.msk, kM = this.kM, kE = this.kE, exFlag = this.exFlag;
     const fogDeb = params.brumeDebut, ifog = 1 / Math.max(1e-6, params.brumeFin - params.brumeDebut);
-    const fogR = params.brume[0], fogG = params.brume[1], fogB = params.brume[2];
+    let fogR = params.brume[0], fogG = params.brume[1], fogB = params.brume[2];
+    // brouillard : distance HORIZONTALE (cylindre autour de la camera, comme le jeu), pas la profondeur d'ecran. Pour un pixel,
+    // la distance horizontale = profondeur x longueur de la partie horizontale du rayon (calculee par rangee et par colonne).
+    // En dessous de fogMin (profondeur) aucun pixel ne peut etre dans la brume : pas de racine carree.
+    const fogCiel = params.brumeCiel === true;
+    const Bc2 = cx.B, iF = 1 / cx.f, hwF = cx.hw, hhF = cx.hh;
+    const fogMin = fogDeb * cx.gmaxInv;
     let nPix = 0;
 
     let y = ya;
@@ -326,6 +360,8 @@ export class Rasteriseur {
       if (yEnd > yb) yEnd = yb;
       for (; y <= yEnd; y++) {
         const yc = y + 0.5;
+        if (fogCiel) { fogR = this.skyR[y]; fogG = this.skyG[y]; fogB = this.skyB[y]; }
+        const bF = (hhF - yc) * iF, hxr = Bc2.fx + bF * Bc2.ux, hzr = Bc2.fz + bF * Bc2.uz;
         const xl0 = tx + (yc - ty) * sLong;
         const xs0 = yc < my ? tx + (yc - ty) * sTM : mx + (yc - my) * sML;
         let xa, xb2;
@@ -339,7 +375,8 @@ export class Rasteriseur {
         let uw = uw0 + duwx * px + duwy * py;
         let vw = vw0 + dvwx * px + dvwy * py;
         let r = r0 + drx * px + dry * py, g = g0 + dgx * px + dgy * py, bl = b0 + dbx * px + dby * py;
-        let o = y * W + xs;
+        const rowO = y * W;
+        let o = rowO + xs;
         const oe = y * W + xe;
         nPix += xe - xs;
         if (mode === 2) {
@@ -354,7 +391,11 @@ export class Rasteriseur {
             if (al < 4) continue;
             let sr = ((t & 255) * r) >> 8, sg = (((t >> 8) & 255) * g) >> 8, sb = (((t >> 16) & 255) * bl) >> 8;
             if (sat) { if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255; }
-            if (w > fogDeb) { let ff = (w - fogDeb) * ifog; if (ff > 1) ff = 1; sr += (fogR - sr) * ff; sg += (fogG - sg) * ff; sb += (fogB - sb) * ff; }
+            if (w > fogMin) {
+              const aF = (o - rowO + 0.5 - hwF) * iF, hx = hxr + aF * Bc2.rx, hz = hzr + aF * Bc2.rz;
+              const ff = (w * Math.sqrt(hx * hx + hz * hz) - fogDeb) * ifog;
+              if (ff >= 1) { sr = fogR; sg = fogG; sb = fogB; } else if (ff > 0) { sr += (fogR - sr) * ff; sg += (fogG - sg) * ff; sb += (fogB - sb) * ff; }
+            }
             const dst = pixels[o];
             const a = al * (1 / 255);
             const dr = dst & 255, dg = (dst >> 8) & 255, db = (dst >> 16) & 255;
@@ -381,7 +422,11 @@ export class Rasteriseur {
             }
             let sr = ((t & 255) * rr) >> 8, sg = (((t >> 8) & 255) * gg) >> 8, sb = (((t >> 16) & 255) * bb) >> 8;
             if (sat) { if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255; }
-            if (w > fogDeb) { let ff = (w - fogDeb) * ifog; if (ff > 1) ff = 1; sr += (fogR - sr) * ff; sg += (fogG - sg) * ff; sb += (fogB - sb) * ff; }
+            if (w > fogMin) {
+              const aF = (o - rowO + 0.5 - hwF) * iF, hx = hxr + aF * Bc2.rx, hz = hzr + aF * Bc2.rz;
+              const ff = (w * Math.sqrt(hx * hx + hz * hz) - fogDeb) * ifog;
+              if (ff >= 1) { sr = fogR; sg = fogG; sb = fogB; } else if (ff > 0) { sr += (fogR - sr) * ff; sg += (fogG - sg) * ff; sb += (fogB - sb) * ff; }
+            }
             zb[o] = iw;
             pixels[o] = (0xff000000 | ((sb | 0) << 16) | ((sg | 0) << 8) | (sr | 0)) >>> 0;
             if (fb !== null) fb[o] = fo;
@@ -406,7 +451,11 @@ export class Rasteriseur {
             }
             let sr = ((t & 255) * rr) >> 8, sg = (((t >> 8) & 255) * gg) >> 8, sb = (((t >> 16) & 255) * bb) >> 8;
             if (sat) { if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255; }
-            if (w > fogDeb) { let ff = (w - fogDeb) * ifog; if (ff > 1) ff = 1; sr += (fogR - sr) * ff; sg += (fogG - sg) * ff; sb += (fogB - sb) * ff; }
+            if (w > fogMin) {
+              const aF = (o - rowO + 0.5 - hwF) * iF, hx = hxr + aF * Bc2.rx, hz = hzr + aF * Bc2.rz;
+              const ff = (w * Math.sqrt(hx * hx + hz * hz) - fogDeb) * ifog;
+              if (ff >= 1) { sr = fogR; sg = fogG; sb = fogB; } else if (ff > 0) { sr += (fogR - sr) * ff; sg += (fogG - sg) * ff; sb += (fogB - sb) * ff; }
+            }
             zb[o] = iw;
             pixels[o] = (0xff000000 | ((sb | 0) << 16) | ((sg | 0) << 8) | (sr | 0)) >>> 0;
             if (fb !== null) fb[o] = fo;

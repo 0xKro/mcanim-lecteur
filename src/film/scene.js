@@ -6,7 +6,10 @@ export const IMAGES_PAR_SECONDE = 30;
 export const FORMATS = { '1920x1080': [1920, 1080], '1080x1920': [1080, 1920] };
 const LISSAGES = new Set(['d', 's', 'x']);
 const MEMBRES = ['brasD', 'brasG', 'jambeD', 'jambeG'];
-const PISTES_BOUCLE = [...MEMBRES, 'tete', 'corps', 'lacet'];
+// Articulations : une valeur par cle, en degres (0 = membre droit, 0 a 150 ; dans une boucle -150 a 150, la somme est ramenee a 0..150).
+export const ARTICULATIONS = ['coudeD', 'coudeG', 'genouD', 'genouG'];
+export const FLEXION_MAX = 150;
+const PISTES_BOUCLE = [...MEMBRES, ...ARTICULATIONS, 'tete', 'corps', 'lacet'];
 export const MAX_CLES_SKINS = 16, MAX_GELS = 8, MAX_TEXTURES = 32;
 
 export class ErreurScene extends Error {
@@ -163,6 +166,9 @@ export function validerScene(s) {
     if (a.corps !== undefined) o.corps = lirePiste(a.corps, `${ch}.corps`, { minArite: 1, maxArite: 1 });
     if (a.accroupi !== undefined) o.accroupi = lirePiste(a.accroupi, `${ch}.accroupi`, { minArite: 1, maxArite: 1 });
     for (const m of MEMBRES) if (a[m] !== undefined) o[m] = lirePiste(a[m], `${ch}.${m}`, { minArite: 1, maxArite: 2 });
+    for (const m of ARTICULATIONS) if (a[m] !== undefined) o[m] = borner(lirePiste(a[m], `${ch}.${m}`, { minArite: 1, maxArite: 1 }), `${ch}.${m}`, 0, FLEXION_MAX);
+    if (a.appui !== undefined && typeof a.appui !== 'boolean') err(`${ch}.appui`, 'true ou false attendu (false : le corps ne s\'ajuste pas quand les genoux plient)');
+    o.appui = a.appui !== false;
     if (a.boucles !== undefined) {
       if (!Array.isArray(a.boucles)) err(`${ch}.boucles`, 'liste de boucles attendue');
       o.boucles = a.boucles.map((b, j) => lireBoucle(b, `${ch}.boucles[${j}]`, s.duree));
@@ -291,8 +297,9 @@ function lireBoucle(b, ch, duree) {
   const o = { de: b.de, a: b.a, periode: b.periode, fondu: b.fondu ?? 0.2, pistes: {} };
   for (const nom of PISTES_BOUCLE) {
     if (b[nom] === undefined) continue;
-    const a = nom === 'tete' ? { minArite: 2, maxArite: 2 } : nom === 'corps' || nom === 'lacet' ? { minArite: 1, maxArite: 1 } : { minArite: 1, maxArite: 2 };
+    const a = nom === 'tete' ? { minArite: 2, maxArite: 2 } : nom === 'corps' || nom === 'lacet' || ARTICULATIONS.includes(nom) ? { minArite: 1, maxArite: 1 } : { minArite: 1, maxArite: 2 };
     o.pistes[nom] = lirePiste(b[nom], `${ch}.${nom}`, { ...a, temps: [0, 1] });
+    if (ARTICULATIONS.includes(nom)) borner(o.pistes[nom], `${ch}.${nom}`, -FLEXION_MAX, FLEXION_MAX);
   }
   return o;
 }

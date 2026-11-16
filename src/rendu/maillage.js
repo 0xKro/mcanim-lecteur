@@ -1,9 +1,14 @@
 // Mailleur : zone -> triangles, UNE FOIS par zone.
-// Coordonnees monde. Une face est emise si son voisin ne la cache pas.
+// Coordonnees monde. Une face est emise si son voisin ne la cache pas : seul un cube OPAQUE cache une face (ou, pour le verre,
+// la glace..., le meme bloc translucide). Les feuilles montrent donc leurs faces entre deux feuilles ("fancy" du jeu : on voit
+// les feuilles de derriere par les trous de la texture) ; ces faces INTERNES vont dans une couche a part (4e tampon, dessinee
+// apres les faces exposees : le test de profondeur en rejette presque tout, ce qui coute peu).
 // Couleur par sommet = ombrage de direction x occlusion ambiante x lumiere du ciel x teinte du biome.
 import { melangeHash, NORMALES, AXE_DIR } from './modeles.js';
 import { sourcesTeinte } from './teinte.js';
 import { COUCHE_OPAQUE, COUCHE_DECOUPE, COUCHE_MELANGE } from './textures.js';
+
+const COUCHE_INTERNE = 3;   // tampon des faces de feuilles cachees par d'autres feuilles (pas une couche de texture)
 
 const OMBRE_DIR = [0.5, 1.0, 0.8, 0.8, 0.6, 0.6]; // bas, haut, nord, sud, ouest, est
 const AMBIANT = 0.0; // lumiere ambiante de la dimension (overworld : 0)
@@ -134,7 +139,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
   for (let i = 2; i < NP; i++) teintesPal[i] = etats[i].type === 1 ? sourcesTeinte(etats[i].nom, etats[i].props) : null;
 
   // ---------- emission ----------
-  const tampons = [new Tampon(), new Tampon(), new Tampon()];
+  const tampons = [new Tampon(), new Tampon(), new Tampon(), new Tampon()];   // opaque, decoupe, melange, decoupe interne
   const TS = options.tailleSection ?? 16;
   const nsx = Math.ceil(sx / TS), nsy = Math.ceil(sy / TS), nsz = Math.ceil(sz / TS);
   const secDe = (x, y, z) => ((y / TS | 0) * nsz + (z / TS | 0)) * nsx + (x / TS | 0);
@@ -302,10 +307,15 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
             if (opaque[np]) { stat.cullees++; continue; }
             if (e.memeCulling) {
               const ne = etats[np];
-              if (ne && (ne.nom === e.nom || (e.feuilles && ne.feuilles))) { stat.cullees++; continue; }
+              if (ne && ne.nom === e.nom) { stat.cullees++; continue; }
             }
           }
-          emettreQuad(q.couche, null, q, i, x, y, z, dx, 0, dz, col, vertCol);
+          let couche = q.couche;
+          if (e.feuilles && couche === COUCHE_DECOUPE && q.cull >= 0) {
+            const ne = etats[pal[i + OFFDIR[q.cull]]];
+            if (ne && ne.type === 1 && (ne.feuilles || ne.aoSolide)) couche = COUCHE_INTERNE;   // voisin = feuilles ou cube plein (cutout) : face interne
+          }
+          emettreQuad(couche, null, q, i, x, y, z, dx, 0, dz, col, vertCol);
         }
       }
     }
@@ -317,7 +327,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
   const nbSec = nsx * nsy * nsz;
   const couches = tampons.map((T) => assembler(T, textures, atlas, nbSec));
   return {
-    atlas, couches: { opaque: couches[0], decoupe: couches[1], melange: couches[2] },
+    atlas, couches: { opaque: couches[0], decoupe: couches[1], melange: couches[2], interne: couches[3] },
     stats: { ...stat, ms: Date.now() - t0, quadsParCouche: tampons.map((t) => t.n) },
     interne: { pal, lum, PX, PY, PZ, etats, opaque, kind },
   };
@@ -365,4 +375,4 @@ function assembler(T, textures, atlas, nbSec) {
   return { positions, uvs, couleurs, indices, sections, nbQuads: n };
 }
 
-export { COUCHE_OPAQUE, COUCHE_DECOUPE, COUCHE_MELANGE };
+export { COUCHE_OPAQUE, COUCHE_DECOUPE, COUCHE_MELANGE, COUCHE_INTERNE };

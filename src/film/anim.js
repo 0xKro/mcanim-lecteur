@@ -2,6 +2,7 @@
 // (position posee sur le sol, direction du corps, membres, tete) et la camera (avec anti-collision).
 import { evaluer, evaluerPhase, poidsBoucle } from './scene.js';
 import { planifierCameraSuivi, planifierCameraLibre } from './camera.js';
+import { compensationAppui } from '../perso/modele.js';
 
 const RAD = Math.PI / 180;
 const DT = 1 / 30; // 30 images par seconde (IMAGES_PAR_SECONDE de scene.js)
@@ -52,6 +53,12 @@ function membre(a, nom, t, h) {
   return [(base[0] ?? 0) + b[0], (base[1] ?? 0) + b[1]];
 }
 
+// Flexion d'une articulation (coude, genou) en degres : piste + boucles, ramenee a 0..150.
+function flexion(a, nom, t, h) {
+  const v = (a[nom] ? evaluer(a[nom], t)[0] : 0) + sommeBoucles(a, nom, t, 1, h)[0];
+  return Math.min(150, Math.max(0, v));
+}
+
 // Skin actif au temps t : la reference de la derniere cle `skins` atteinte, ou null (= le champ `skin` de l'acteur).
 function skinEn(a, t) {
   if (!a.skins) return null;
@@ -72,6 +79,7 @@ export function animer(scene, terrain = {}) {
   const acteurs = scene.acteurs;
   const parNom = new Map(acteurs.map((a, i) => [a.nom, i]));
   const notes = [];
+  const articule = acteurs.map((a) => ['coudeD', 'coudeG', 'genouD', 'genouG'].some((n) => a[n] || a.boucles.some((b) => b.pistes[n])));
 
   // Pied du joueur : plus haut sol sous les 4 coins et le centre (comme la boite du jeu).
   const solSous = (x, z) => {
@@ -156,6 +164,13 @@ export function animer(scene, terrain = {}) {
         tete: [th[0] + tb[0], th[1] + tb[1]], penche: corps, accroupi,
         brasD: membre(a, 'brasD', t, h), brasG: membre(a, 'brasG', t, h), jambeD: membre(a, 'jambeD', t, h), jambeG: membre(a, 'jambeG', t, h),
       };
+      // articulations : champs ajoutes seulement s'il y en a (sans elles la pose est celle d'avant)
+      if (articule[k]) {
+        pose.coudeD = flexion(a, 'coudeD', t, h); pose.coudeG = flexion(a, 'coudeG', t, h);
+        pose.genouD = flexion(a, 'genouD', t, h); pose.genouG = flexion(a, 'genouG', t, h);
+        // appui : le corps s'ajuste pour que le pied le plus bas reste a sa hauteur genoux tendus (modele.js, compensationAppui)
+        if (a.appui && (pose.genouD > 0 || pose.genouG > 0)) pose.dy = compensationAppui(pose);
+      }
       // apparence (pistes facultatives : rien n'est ajoute si elles manquent)
       const sk = skinEn(a, t);
       if (sk) pose.skin = sk;

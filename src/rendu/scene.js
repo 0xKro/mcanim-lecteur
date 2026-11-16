@@ -14,6 +14,8 @@ import { Rasteriseur, MODE_OPAQUE, MODE_DECOUPE, MODE_MELANGE } from './raster.j
 import { PostTraitement, imageActive, aFlou } from './post.js';
 
 const ICI = path.dirname(fileURLToPath(import.meta.url));
+const DIST_INTERNE = 32;   // distance horizontale (blocs) au-dela de laquelle les faces internes des feuilles ne sont plus dessinees
+const BRUME_MIN = 32, BRUME_MARGE = 4;   // brouillard automatique : fin minimale, marge avant le bord de la zone (blocs)
 const MODES = { opaque: MODE_OPAQUE, decoupe: MODE_DECOUPE, melange: MODE_MELANGE };
 
 // Accepte le dossier du kit (<cache>/26.3) ou la racine du cache (<cache>).
@@ -50,10 +52,11 @@ class Scene {
     this.draws = [];
     const atlas = maillage.atlas;
     const tex = { niveaux: atlas.niveaux.map((n) => ({ w: n.w, h: n.h, data: n.data })) };
-    for (const [nom, mode] of [['opaque', MODE_OPAQUE], ['decoupe', MODE_DECOUPE], ['melange', MODE_MELANGE]]) {
+    for (const [nom, mode] of [['opaque', MODE_OPAQUE], ['decoupe', MODE_DECOUPE], ['interne', MODE_DECOUPE], ['melange', MODE_MELANGE]]) {
       const c = maillage.couches[nom];
       if (c.nbQuads === 0) continue;
-      this.draws.push({ positions: c.positions, uvs: c.uvs, couleurs: c.couleurs, indices: c.indices, sections: c.sections, tex, mode, deuxFaces: false, partage: false });
+      // interne : faces de feuilles cachees par d'autres feuilles, dessinees apres les faces exposees ; invisibles au-dela de distInterne
+      this.draws.push({ positions: c.positions, uvs: c.uvs, couleurs: c.couleurs, indices: c.indices, sections: c.sections, tex, mode, deuxFaces: false, partage: false, ...(nom === 'interne' ? { interne: true, distMax: options.distInterne ?? DIST_INTERNE } : {}) });
     }
     this.travailleursListe = [];
     this.idImage = 0;
@@ -123,6 +126,25 @@ class Scene {
   ajouterMaillage(m) { const id = this.prochainMaillage++; this.persistants.set(id, m); return id; }
   retirerMaillage(id) { this.persistants.delete(id); }
 
+  // ---- brouillard automatique ----
+  // fin : distance horizontale a laquelle la brume est totale = distance de la camera au bord de zone le plus proche moins une marge,
+  // jamais moins de BRUME_MIN (zone trop petite ou camera au bord : le bord peut alors se voir). debut : 60 % de fin, repousse
+  // (jusqu'a 85 % de fin) pour ne pas avaler les maillages dynamiques (l'acteur suivi) : debut >= plus grande distance horizontale + 3.
+  brumeAuto(cam, dyn) {
+    const z = this.zone;
+    const bord = Math.min(cam.x - z.x0, z.x0 + z.sx - cam.x, cam.z - z.z0, z.z0 + z.sz - cam.z);
+    const fin = Math.max(BRUME_MIN, bord - BRUME_MARGE);
+    let debut = fin * 0.6;
+    let proche = 0;
+    for (const d of dyn) {
+      const bb = d.sections[0].bbox;
+      const dx = Math.max(Math.abs(bb[0] - cam.x), Math.abs(bb[3] - cam.x)), dz = Math.max(Math.abs(bb[2] - cam.z), Math.abs(bb[5] - cam.z));
+      proche = Math.max(proche, Math.hypot(dx, dz));
+    }
+    if (proche + 3 > debut) debut = Math.min(proche + 3, fin * 0.85);
+    return { debut, fin, bord };
+  }
+
   // ---- rendu ----
   async rendre({ camera, largeur = 1920, hauteur = 1080, temps = 0, maillagesDynamiques = [], brume, ciel, soleil, loin, mip = true, ssaa = 1, copie = true, lumiere, image } = {}) {
     const sortieW = largeur, sortieH = hauteur;
@@ -142,19 +164,25 @@ class Scene {
     const force = veutForce ? this.force : null;
     // le post-traitement se fait par les workers (chacun ses bandes) quand il n'y a ni flou ni surechantillonnage ; sinon thread principal
     const postParWorkers = postActif && ssaa === 1 && !aFlou(image) && !this.local && this.travailleursListe.length > 0;
-    const R = this.distanceVue;
+    const b = this.brumeAuto(cam, dyn);
     const params = {
-      proche: 0.05, loin: loin ?? (brume?.fin ?? R) + 8, mip,
-      brumeDebut: brume?.debut ?? R * 0.55, brumeFin: brume?.fin ?? R, brume: brume?.couleur ?? [192, 216, 255],
+      proche: 0.05, mip,
+      brumeDebut: brume?.debut ?? b.debut, brumeFin: brume?.fin ?? b.fin,
       cielZenith: ciel?.zenith ?? [120, 167, 255], cielHorizon: ciel?.horizon ?? [192, 216, 255], cielBas: ciel?.bas ?? [170, 195, 235],
       soleil: soleil === false ? null : (soleil ?? normaliser([0.35, 0.8, -0.45])),
     };
-    if (brume?.debut !== undefined && brume.fin === undefined && params.brumeFin <= params.brumeDebut) params.brumeFin = params.brumeDebut + 8;
+    // couleur de la brume : par defaut (ou si elle est egale a l'horizon du ciel) la brume prend, rangee par rangee, la couleur du ciel
+    // derriere elle ; la brume epaisse est donc invisible sur le ciel. Une couleur differente est utilisee telle quelle.
+    const cb = brume?.couleur, h = params.cielHorizon;
+    params.brumeCiel = !cb || (Math.abs(cb[0] - h[0]) < 1 && Math.abs(cb[1] - h[1]) < 1 && Math.abs(cb[2] - h[2]) < 1);
+    params.brume = params.brumeCiel ? h : cb;
+    if (params.brumeFin <= params.brumeDebut) params.brumeFin = params.brumeDebut + 8;
+    params.loin = loin ?? params.brumeFin + 1;
     if (lumiere && (lumiere[0] !== 1 || lumiere[1] !== 1 || lumiere[2] !== 1)) params.lumiere = lumiere.map((v) => Math.max(0, v));
     // camera sous l'eau : brouillard bleu court, comme dans le jeu
     if (this.estDansEau(cam.x, cam.y, cam.z)) {
       const c = [24, 56, 150];
-      params.brumeDebut = 0; params.brumeFin = 28; params.brume = c; params.cielZenith = c; params.cielHorizon = c; params.cielBas = c; params.soleil = null;
+      params.brumeDebut = 0; params.brumeFin = 28; params.loin = loin ?? 29; params.brumeCiel = true; params.brume = c; params.cielZenith = c; params.cielHorizon = c; params.cielBas = c; params.soleil = null;
     }
     const id = ++this.idImage;
     const sw = this.local || !this.travailleursListe.length;

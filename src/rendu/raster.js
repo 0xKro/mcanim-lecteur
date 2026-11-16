@@ -337,6 +337,8 @@ export class Rasteriseur {
     this.msk = d.masque ?? null; this.kM = d.kM ?? 256; this.kE = d.kE ?? 0; this.exFlag = d.exempt ? 255 : 0;
     // options du shader (voir src/shader) : ombres cuites, AO reglable, balancement, surface d'eau. Toutes nulles sans shader.
     const P = c.params, sv = d.partage ? null : P.sv || null, ven = P.ven || null;
+    // lumiere du jeu par sommet (scenes avec monde) : niveaux (ciel, bloc) 0..255 -> couleur de la table de lumiere, interpolee entre les cases
+    const lmT = !d.partage && d.niv && P.lm ? P.lm : null, niv = lmT ? d.niv : null;
     const ombre = sv !== null && d.ombre ? d.ombre : null, aoA = sv !== null && sv.aoLut && d.ao ? d.ao : null;
     const etiq = d.etiq && !d.partage && (ven !== null || P.eau) ? d.etiq : null;
     let vent = false;
@@ -390,6 +392,15 @@ export class Rasteriseur {
           if (ombre !== null) { const s = ombre[g]; rr *= sv.R[s]; gg *= sv.G[s]; bb *= sv.B[s]; }
           if (aoA !== null) { const m = sv.aoLut[aoA[g]]; rr *= m; gg *= m; bb *= m; }
           if (minV > 0) { if (rr < minV) rr = minV; if (gg < minV) gg = minV; if (bb < minV) bb = minV; }
+        }
+        if (lmT !== null) {
+          const s = niv[g * 2] * 0.0588235294117647, bq = niv[g * 2 + 1] * 0.0588235294117647;   // x 15 / 255
+          const s0 = s | 0, b0 = bq | 0, fs = s - s0, fb = bq - b0, s1 = s0 < 15 ? s0 + 1 : 15, b1 = b0 < 15 ? b0 + 1 : 15;
+          const i00 = s0 * 16 + b0, i01 = s0 * 16 + b1, i10 = s1 * 16 + b0, i11 = s1 * 16 + b1;
+          const w00 = (1 - fs) * (1 - fb), w01 = (1 - fs) * fb, w10 = fs * (1 - fb), w11 = fs * fb;
+          rr *= lmT.R[i00] * w00 + lmT.R[i01] * w01 + lmT.R[i10] * w10 + lmT.R[i11] * w11;
+          gg *= lmT.G[i00] * w00 + lmT.G[i01] * w01 + lmT.G[i10] * w10 + lmT.G[i11] * w11;
+          bb *= lmT.B[i00] * w00 + lmT.B[i01] * w01 + lmT.B[i10] * w10 + lmT.B[i11] * w11;
         }
         R[j] = rr; G[j] = gg; Bc[j] = bb;
         if (zv > near) {

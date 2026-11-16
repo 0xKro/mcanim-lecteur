@@ -17,7 +17,8 @@ const COUCHES = [['opaque', 0], ['decoupe', 1], ['interne', 1], ['melange', 3]];
 function normaliser(v) { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; }
 
 // Remplit `out` (Float32Array) pour une couche du mailleur. Retourne le nombre de sommets.
-export function sommetsDeCouche(c, numCouche, emission) {
+// lightmap : scenes avec un monde, la lumiere de bloc des sommets (niveau 0..15 x 16) est la vraie ; sinon (comme avant) celle du bloc emissif.
+export function sommetsDeCouche(c, numCouche, emission, lightmap = false) {
   const n = c.nbQuads, g = c.gpu;
   const out = new Float32Array(n * 4 * FLOATS_PAR_SOMMET);
   const P = c.positions, U = c.uvs;
@@ -42,7 +43,7 @@ export function sommetsDeCouche(c, numCouche, emission) {
       const px = P[q * 12 + k * 3], py = P[q * 12 + k * 3 + 1], pz = P[q * 12 + k * 3 + 2];
       out[o] = px; out[o + 1] = py; out[o + 2] = pz;
       out[o + 3] = U[q * 8 + k * 2]; out[o + 4] = U[q * 8 + k * 2 + 1];
-      out[o + 5] = em * 16; out[o + 6] = Math.min(240, g.lvl[q * 4 + k] * 16);
+      out[o + 5] = lightmap ? Math.min(240, g.blv[q * 4 + k] * 16) : em * 16; out[o + 6] = Math.min(240, g.lvl[q * 4 + k] * 16);
       out[o + 7] = g.tint[q * 3] / 255; out[o + 8] = g.tint[q * 3 + 1] / 255; out[o + 9] = g.tint[q * 3 + 2] / 255;
       out[o + 10] = c.ao[q * 4 + k] / 255;
       out[o + 11] = nor[0]; out[o + 12] = nor[1]; out[o + 13] = nor[2];
@@ -64,15 +65,17 @@ export function exporterZone(scene, dossier) {
     const e = m.interne.etats[idx];
     return e && (e.emission || e.type === 3) ? 15 : 0;
   };
-  const entete = { v: 1, floatsParSommet: FLOATS_PAR_SOMMET, zone: { origine: [scene.zone.x0, scene.zone.y0, scene.zone.z0], taille: [scene.zone.sx, scene.zone.sy, scene.zone.sz] }, palette: scene.zone.palette, couches: {} };
+  const B = scene.boite ? scene.boite() : scene.zone;
+  const entete = { v: 1, floatsParSommet: FLOATS_PAR_SOMMET, zone: { origine: [B.x0, B.y0, B.z0], taille: [B.sx, B.sy, B.sz] }, palette: scene.monde ? scene.monde.palette : scene.zone.palette, couches: {} };
+  const lightmap = !!m.lightmap;
   let octets = 0;
   for (const [nom, num] of COUCHES) {
     const c = m.couches[nom];
     if (!c || c.nbQuads === 0 || !c.gpu) continue;
-    const sommets = sommetsDeCouche(c, num, emission);
+    const sommets = sommetsDeCouche(c, num, emission, lightmap);
     fs.writeFileSync(path.join(dossier, nom + '.vtx'), Buffer.from(sommets.buffer, 0, sommets.byteLength));
     fs.writeFileSync(path.join(dossier, nom + '.idx'), Buffer.from(c.indices.buffer.slice(0, c.nbQuads * 6 * 4)));
-    entete.couches[nom] = { quads: c.nbQuads, couche: num };
+    entete.couches[nom] = { quads: c.nbQuads, couche: num, ...(scene.monde ? { sections: c.sections.map((s) => [s.debut, s.nb, s.cle]) } : {}) };
     octets += sommets.byteLength + c.nbQuads * 24;
   }
   const a = m.atlas, niv = a.niveaux[0];
@@ -80,4 +83,27 @@ export function exporterZone(scene, dossier) {
   entete.atlas = { largeur: a.largeur, hauteur: a.hauteur };
   fs.writeFileSync(path.join(dossier, 'maillage.json'), JSON.stringify(entete));
   return { ms: performance.now() - t0, octets: octets + a.largeur * a.hauteur * 4, quads: Object.fromEntries(Object.entries(entete.couches).map(([k, v]) => [k, v.quads])) };
+}
+
+// Mises a jour entre deux images (scenes avec un monde) : les sections refaites depuis le dernier export. `maj` vient de scene.prendreMajGPU() :
+// { mortes: [cle...], retraits: [id...], ajouts: [{ id, nom, c }] } (c : tableaux du mailleur pour UNE section). Ecrit maj.json et, par piece,
+// p<id>.vtx / p<id>.idx dans `dossier` (vide a chaque fois) ; l'hote lit ces fichiers (commande maillage-maj). Rend { ms, octets, pieces, quads }.
+export function exporterMaj(scene, dossier, maj) {
+  const t0 = performance.now();
+  fs.rmSync(dossier, { recursive: true, force: true });
+  fs.mkdirSync(dossier, { recursive: true });
+  const emission = (idx) => { const e = scene.maillage.interne.etats[idx]; return e && (e.emission || e.type === 3) ? 15 : 0; };
+  const lightmap = !!scene.maillage.lightmap;
+  let octets = 0, quads = 0;
+  const ajouts = [];
+  for (const a of maj.ajouts) {
+    const num = COUCHES.find(([n]) => n === a.nom)[1];
+    const sommets = sommetsDeCouche(a.c, num, emission, lightmap);
+    fs.writeFileSync(path.join(dossier, `p${a.id}.vtx`), Buffer.from(sommets.buffer, 0, sommets.byteLength));
+    fs.writeFileSync(path.join(dossier, `p${a.id}.idx`), Buffer.from(a.c.indices.buffer.slice(0, a.c.nbQuads * 6 * 4)));
+    octets += sommets.byteLength + a.c.nbQuads * 24; quads += a.c.nbQuads;
+    ajouts.push({ id: a.id, couche: a.nom, num, quads: a.c.nbQuads });
+  }
+  fs.writeFileSync(path.join(dossier, 'maj.json'), JSON.stringify({ mortes: maj.mortes, retraits: maj.retraits, ajouts }));
+  return { ms: performance.now() - t0, octets, pieces: ajouts.length, quads };
 }

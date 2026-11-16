@@ -80,6 +80,8 @@ export class Hote {
 
   init({ pack, largeur, hauteur, maillage, dimension = 'world0', options, reglages }) { return this.commande({ cmd: 'init', pack, largeur, hauteur, maillage, dimension, options, reglages }); }
   // etat : voir src/pack/etat.js ; images : nombre d'images calculees (les precedentes servent d'historique au pack) ; retourne { donnees: Buffer RGBA, temps, ... }
+  // sections du terrain refaites entre deux images (scenes avec un monde) : le dossier contient maj.json et les pieces (export-gpu.js, exporterMaj)
+  majMaillage(dossier) { return this.commande({ cmd: 'maillage-maj', dossier }); }
   texture(id, w, h, rgbaBase64) { return this.commande({ cmd: 'texture', id, w, h, rgba: rgbaBase64 }); }
   masque(id, w, h, octetsBase64) { return this.commande({ cmd: 'masque', id, w, h, octets: octetsBase64 }); }
   rendre(etat, images = 1) { return this.commande({ cmd: 'rendre', etat, images }); }

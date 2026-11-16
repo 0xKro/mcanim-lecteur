@@ -13,6 +13,8 @@ import crypto from 'node:crypto';
 import { canonique, empreinte } from './empreinte.js';
 import { verifierFichiers } from './fichiers.js';
 
+const normaliserMod = (t) => t.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');   // identique a moteur/mods.js (sans l'importer : le moteur ne se charge qu'a la demande)
+
 // Un skin est un FICHIER s'il se termine par .png ou contient un separateur (comme fichiers.js) ; "@id", pseudo et nom par defaut non.
 const estFichier = (s) => typeof s === 'string' && (/\.png$/i.test(s) || /[\\/]/.test(s));
 
@@ -25,7 +27,18 @@ export const REGISTRE = [
   { role: 'texture', lister: (brut) => (brut.textures && typeof brut.textures === 'object' ? Object.values(brut.textures).filter((m) => typeof m === 'string') : []) },
   { role: 'shader', lister: (brut) => (typeof brut.shader === 'string' ? [brut.shader] : []) },
   { role: 'packShader', lister: (brut) => (typeof brut.packShader === 'string' ? [brut.packShader] : []) },
+  // mods de comportement (monde.mods) : le fichier change le jeu, donc l'image. Octets normalises (\n, sans BOM) : voir moteur/mods.js
+  { role: 'mod', normaliser: true, lister: (brut) => (Array.isArray(brut.monde?.mods) ? brut.monde.mods.filter((m) => typeof m === 'string') : []) },
 ];
+
+// Lignes VIRTUELLES (rien a lire sur le disque) : ce qui change l'image sans etre dans le fichier de scene. Une scene avec `monde` depend des
+// tables de donnees du jeu (moteur/donnees-empreinte.json : SHA-256 du fichier) et de la version du moteur ; un changement de donnees
+// invalide donc les jetons deja emis (comme un mod modifie).
+export function lignesVirtuelles(brut) {
+  if (brut?.monde === undefined) return [];
+  const d = JSON.parse(fs.readFileSync(new URL('../moteur/donnees-empreinte.json', import.meta.url), 'utf8'));
+  return [{ role: 'moteur', chemin: `donnees-jeu v${d.v}`, sha: d.sha256 }];
+}
 
 // { role, chemin } des fichiers cites par une scene lue (chemins comme ecrits dans la scene, relatifs au fichier de scene).
 export function fichiersReferences(brut, surcharges = {}) {
@@ -35,7 +48,8 @@ export function fichiersReferences(brut, surcharges = {}) {
 }
 
 // SHA-256 (base64url) d'un fichier ou d'un dossier (dossier : chemins relatifs et empreintes des fichiers, classes).
-export function sha256Chemin(chemin) {
+export function sha256Chemin(chemin, { normaliser = false } = {}) {
+  if (normaliser) return crypto.createHash('sha256').update(normaliserMod(fs.readFileSync(chemin, 'utf8')), 'utf8').digest('base64url');
   const h = crypto.createHash('sha256');
   if (fs.statSync(chemin).isDirectory()) {
     const fichiers = [];
@@ -82,11 +96,13 @@ export function empreinteComplete(brut, { scene = null, baseDir = process.cwd(),
   const surcharges = {};
   for (const s of opt.skin ?? []) { const i = String(s).indexOf('='); if (i > 0) surcharges[s.slice(0, i)] = path.resolve(cwd, s.slice(i + 1)); }
   if (scene) verifierFichiers(scene, baseDir, surcharges);
+  const normalise = new Set(REGISTRE.filter((r) => r.normaliser).map((r) => r.role));
   const lignes = fichiersReferences(brut, surcharges).map(({ role, chemin }) => {
     const f = path.resolve(baseDir, chemin);
     if (!fs.existsSync(f)) throw new Error(`${role} : fichier introuvable : ${chemin} (chemin relatif au fichier de scene)`);
-    return { role, chemin, sha: sha256Chemin(f) };
+    return { role, chemin, sha: sha256Chemin(f, { normaliser: normalise.has(role) }) };
   });
+  lignes.push(...lignesVirtuelles(brut));
   lignes.push(...lignesOptions(opt, cwd));
   const cle = (l) => l.role + '\u0000' + l.chemin;
   lignes.sort((a, b) => (cle(a) < cle(b) ? -1 : cle(a) > cle(b) ? 1 : 0));

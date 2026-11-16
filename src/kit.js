@@ -136,3 +136,8 @@ export function writeInfo(kitDir, info) {
   fs.mkdirSync(kitDir, { recursive: true });
   fs.writeFileSync(path.join(kitDir, 'kit.json'), JSON.stringify(info, null, 1));
 }
+
+// Groupes servis par le depot de RELAIS (et non par le jar ni le miroir) : nos tables a nous, telechargees a la demande, verifiees par
+// SHA-256 (src/moteur/donnees-empreinte.json). `donnees-jeu` : proprietes des blocs (lumiere, opacite, collisions, classes...) ; ne
+// servent qu'aux scenes qui ont un champ `monde` (src/moteur/chargeur.js). Depot : <relais>/d/donnees-jeu-1.json.gz.
+export const GROUPES_RELAIS = { 'donnees-jeu': 'd/donnees-jeu-1.json.gz' };

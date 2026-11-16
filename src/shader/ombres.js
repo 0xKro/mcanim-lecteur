@@ -11,6 +11,7 @@ const VERRE = /(glass|^ice$|^packed_ice$|^blue_ice$)/;
 export function construireGrille(rs, { feuillage = 1, verre = 0.25, eau = 0.2 } = {}) {
   const { pal, PX, PY, PZ, etats } = rs.maillage.interne;
   const NP = etats.length;
+  const B = rs.boite ? rs.boite() : rs.zone;   // la boite du monde (qui peut avoir grandi) ou celle de la zone
   const lg = new Float32Array(NP);
   for (let i = 0; i < NP; i++) {
     let a = 0;
@@ -25,15 +26,18 @@ export function construireGrille(rs, { feuillage = 1, verre = 0.25, eau = 0.2 } 
     }
     lg[i] = a >= 0.999 ? -Infinity : a <= 0 ? 0 : Math.log(1 - a);
   }
-  // hauteur (couche paddee) au-dessus de laquelle plus rien n'arrete la lumiere
+  // hauteur (couche paddee) au-dessus de laquelle plus rien n'arrete la lumiere (avec un monde : toute la boite, des blocs peuvent etre poses plus haut)
   let haut = 0;
   const couche = PX * PZ;
-  for (let y = 0; y < PY; y++) {
-    let trouve = false;
-    for (let i = y * couche, fin = i + couche; i < fin; i++) if (lg[pal[i]] !== 0) { trouve = true; break; }
-    if (trouve) haut = y;
+  if (rs.monde) haut = PY - 1;
+  else {
+    for (let y = 0; y < PY; y++) {
+      let trouve = false;
+      for (let i = y * couche, fin = i + couche; i < fin; i++) if (lg[pal[i]] !== 0) { trouve = true; break; }
+      if (trouve) haut = y;
+    }
   }
-  return { pal, lg, PX, PY, PZ, x0: rs.zone.x0, y0: rs.zone.y0, z0: rs.zone.z0, haut: haut + 1 };
+  return { pal, lg, PX, PY, PZ, x0: B.x0, y0: B.y0, z0: B.z0, haut: haut + 1 };
 }
 
 // Transmission de la lumiere (0..1) du point (x,y,z) monde vers la direction (dx,dy,dz) UNITAIRE (dy > 0).
@@ -72,15 +76,23 @@ const lisse = (a, b, x) => { const t = borne((x - a) / (b - a), 0, 1); return t 
 // Retourne { ms, echantillons }.
 export function cuire(rs, g, dir, { distance = 128, cuisson = 1 } = {}) {
   const t0 = performance.now();
+  let nEch = 0;
+  for (const d of rs.tousDraws ? rs.tousDraws() : rs.draws) nEch += cuireDraw(rs, g, dir, d, { distance, cuisson });
+  return { ms: performance.now() - t0, echantillons: nEch };
+}
+
+// Cuit les quads [qa, qb[ d'UN dessin (par defaut tous) ; cree son tableau d'ombres s'il n'en a pas. Rend le nombre d'echantillons.
+// Sert a la cuisson complete, aux pieces rapportees (sections refaites) et aux sections dont l'ombre change (blocs poses ou retires).
+export function cuireDraw(rs, g, dir, d, { distance = 128, cuisson = 1 } = {}, qa = 0, qb = Infinity) {
   const Z = rs.zone, cx = Z.x0 + Z.sx / 2, cz = Z.z0 + Z.sz / 2, D2 = distance * distance;
   const [lx, ly, lz] = dir;
   let nEch = 0;
-  rs.draws.forEach((d, k) => {
+  {
     const n = d.positions.length / 12;
     if (!d.ombre) d.ombre = new Uint8Array(new SharedArrayBuffer(Math.max(1, n * 4)));
     const out = d.ombre, pos = d.positions, eti = d.etiq;
     const q = new Float32Array(4);
-    for (let i = 0; i < n; i++) {
+    for (let i = Math.max(0, qa), fin = Math.min(n, qb); i < fin; i++) {
       const o = i * 12, b = i * 4;
       const mx = (pos[o] + pos[o + 3] + pos[o + 6] + pos[o + 9]) * 0.25, my = (pos[o + 1] + pos[o + 4] + pos[o + 7] + pos[o + 10]) * 0.25, mz = (pos[o + 2] + pos[o + 5] + pos[o + 8] + pos[o + 11]) * 0.25;
       const ddx = mx - cx, ddz = mz - cz;
@@ -110,9 +122,8 @@ export function cuire(rs, g, dir, { distance = 128, cuisson = 1 } = {}) {
       if (cuisson >= 2) { const m = echant(mx, my, mz); for (let c = 0; c < 4; c++) q[c] = (q[c] * 2 + m) / 3; }
       for (let c = 0; c < 4; c++) out[b + c] = q[c] * facteur * 255 + 0.5;
     }
-    void k;
-  });
-  return { ms: performance.now() - t0, echantillons: nEch };
+  }
+  return nEch;
 }
 
 // Lumiere par sommet pour un maillage dynamique : tableau de transmissions 0..1 (une par sommet).

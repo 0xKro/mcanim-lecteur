@@ -3,7 +3,7 @@
 // Tout ce qui est desactive dans le fichier est ABSENT des parametres (null) : cout nul et rendu identique a celui sans shader.
 import { evaluerShader } from './format.js';
 import { etatCiel, modsCiel } from './ciel.js';
-import { construireGrille, cuire, ombreSommets, ombreProjetee } from './ombres.js';
+import { construireGrille, cuire, cuireDraw, ombreSommets, ombreProjetee } from './ombres.js';
 import { preparerPasses } from './post.js';
 import { cielDepuisHeure } from '../film/look.js';
 import { Rasteriseur } from '../rendu/raster.js';
@@ -139,10 +139,40 @@ export class MoteurShader {
     }
     if (!this.grille) this._grille(r);
     const dir = pas > 0 ? (this._dirHeure(Math.round(et.heure / pas) * pas, r['ciel.inclinaisonTrajet']) ?? et.lumDir) : et.lumDir;
-    const res = cuire(this.rs, this.grille, dir, { distance: r['ombres.distance'], cuisson: r.qualite === 'basse' ? 0 : r.qualite === 'haute' ? Math.max(2, r['performance.cuisson']) : r['performance.cuisson'] });
+    this.optsCuisson = { distance: r['ombres.distance'], cuisson: r.qualite === 'basse' ? 0 : r.qualite === 'haute' ? Math.max(2, r['performance.cuisson']) : r['performance.cuisson'] };
+    const res = cuire(this.rs, this.grille, dir, this.optsCuisson);
     this.cuissonMs += res.ms; this.cuissons++; this.stats = { cuissonMs: this.cuissonMs, cuissons: this.cuissons, echantillons: res.echantillons, derniereMs: res.ms };
     this.cleBake = cle; this.dirBake = dir;
     this._envoyer();
+  }
+
+  // Scenes avec un monde (blocs poses ou retires) : l'ombre d'une piece neuve est cuite tout de suite (comme celles des autres) ...
+  cuirePiece(draw) {
+    if (!this.grille || !this.dirBake || !this.optsCuisson) return;
+    cuireDraw(this.rs, this.grille, this.dirBake, draw, this.optsCuisson);
+  }
+
+  // ... et les sections dont le soleil passe par une cellule changee sont recuites (les colonnes en dessous du changement dans le sens du soleil,
+  // pas toute la zone). `cles` : ensemble de numeros de section deja refaites (leur piece est deja cuite). Rend le nombre de sections recuites.
+  cuireChangements(cellules, dejaFaites = new Set()) {
+    if (!this.grille || !this.dirBake || !this.optsCuisson || !cellules.length) return 0;
+    const [lx, ly, lz] = this.dirBake, A = this.rs.monde.ancre, g = this.grille;
+    const cles = new Set();
+    const cle = (a, b, c) => this.rs.maillage.cleAbs(a, b, c);
+    for (const [x, y, z] of cellules) {
+      // le point de depart est la cellule ; on descend dans le sens oppose au soleil (l'ombre tombe de ce cote), 6 blocs par pas
+      for (let s = 0; s <= 96; s += 6) {
+        const px = x - lx * s, py = y - ly * s, pz = z - lz * s;
+        if (py < g.y0 - 2) break;
+        for (let a = Math.floor((px - 2 - A[0]) / 16); a <= Math.floor((px + 2 - A[0]) / 16); a++) for (let b = Math.floor((py - 2 - A[1]) / 16); b <= Math.floor((py + 2 - A[1]) / 16); b++) for (let c = Math.floor((pz - 2 - A[2]) / 16); c <= Math.floor((pz + 2 - A[2]) / 16); c++) cles.add(cle(a, b, c));
+      }
+    }
+    let n = 0;
+    for (const k of cles) {
+      if (dejaFaites.has(k)) continue;
+      for (const d of this.rs.tousDraws()) for (const s of d.sections) if (s.cle === k) { cuireDraw(this.rs, g, this.dirBake, d, this.optsCuisson, s.debut / 6, (s.debut + s.nb) / 6); n++; }
+    }
+    return n;
   }
 
   _grille(r) { this.grille = construireGrille(this.rs, { feuillage: r['ombres.feuillage'], verre: r['ombres.verre'], eau: r['ombres.eau'] }); }

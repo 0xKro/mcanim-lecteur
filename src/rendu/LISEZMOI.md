@@ -119,6 +119,17 @@ mesh = {
 - Lumiere et AO : la face interne prend la lumiere de la cellule voisine (attenuee de 1 par feuille) et l'AO du jeu (une feuille compte comme un cube plein) : l'interieur du feuillage est sombre, comme dans le jeu.
 - Cout (foret, zone de rayon 128, 1920x1080, un thread, camera de la scene d'essai) : avant ce changement 155 ms et 580 000 triangles traites par image (292 000 dessines) ; maintenant 167 ms (+7 %) et 320 000 traites (141 000 dessines) avec `distInterne` = 32 ; 190 ms (+21 %) avec toutes les faces internes (`distInterne: Infinity`). Le brouillard qui coupe le lointain paie une partie de ce cout. Le maillage compte 1,36 fois plus de quads (1 030 000 au lieu de 756 000 pour R = 128) ; rendu de 10 s dans le banc (2 coeurs) : 46,9 s avant, 48,6 s apres.
 
+## Maillage par sections et lumiere de blocs (scenes avec un champ `monde`)
+
+Sans `monde`, rien ne change : un seul maillage de toute la zone, une seule fois (images identiques au bit pres : `scripts/hachage-images.js`).
+Avec `monde` (`chargerScene({ options: { monde: { donnees, replay, lumiere } } })`) :
+- Le mailleur lit les tableaux d'un **Monde** modifiable (`src/moteur/monde.js` : blocs, lumiere du ciel, lumiere de blocs, memes indices "rembourres" que `mailler`). Le maillage de depart est le meme ; en plus, `maillage.mailleSection(a, b, c)` refait UNE section de 16x16x16 (numeros absolus depuis l'origine de la zone ; `maillage.cleAbs` donne la cle d'une section).
+- Le rendu rejoue le replay de la simulation : `await scene.appliquerReplay(tick)` ecrit les changements dans le monde (la lumiere suit : `src/moteur/lumiere.js`), puis refait **seulement** les sections dont une cellule a change a moins d'une cellule (blocs : faces, AO ; lumiere : sommets). Une scene sans changement ne paie rien. Les images vont dans l'ordre du temps (le monde ne revient pas en arriere).
+- Les sections refaites sont des **pieces rapportees** : la section du maillage de depart est marquee morte (sa plage n'est plus dessinee : `cle` dans `sections`), la piece neuve est un dessin statique de plus, envoye UNE fois aux workers (message `maj`, memoire partagee : pas de copie par image). `scene.statsMaj` = `{ sections, ms, quads, lots, maxMs }` (cout mesure : 2 a 5 ms par section). Si la boite grandit (bloc pose hors de la zone), tout est refait (`rebatir`, rare).
+- **Lumiere** (`options.monde.lumiere !== false`) : le sommet ne porte plus la lumiere cuite mais ses niveaux (ciel, bloc : `niv`, deux octets par sommet) ; le rasteriseur multiplie la couleur par la table de lumiere du jeu (`tableLumiere(ticks, gamma)` de `ciel-vanille.js` : `lightmap.fsh`, lumiere chaude `#ffd88c`), interpolee entre les cases, avec l'heure du jeu de l'image. Le facteur global jour/nuit n'est plus applique (il est dans la table). `scene.luminositeEn` (acteurs) rend la luminance de la table au niveau (ciel, bloc) du point ; `scene.niveauBloc(x,y,z)` le niveau de lumiere de bloc.
+- **Ombres du soleil (shader.json)** : une piece neuve est cuite tout de suite ; les sections que le soleil relie a une cellule changee sont recuites (`moteur.cuireChangements`), pas toute la zone.
+- **Export GPU (vrai pack de shaders)** : `exporterZone` ecrit la vraie lumiere de bloc par sommet (coordonnee lumiere du jeu, 0 a 240) ; `scene.prendreMajGPU()` + `exporterMaj(scene, dossier, maj)` (`pack/export-gpu.js`) ecrivent les sections refaites entre deux images, `Hote.majMaillage(dossier)` les envoie a l'hote OpenGL (commande `maillage-maj`) qui ne dessine plus les sections mortes et ajoute les pieces. Cout mesure cote Node : voir `docs/SIMULATION.md` (partie 8).
+
 ## Comment ca marche (pour les curieux)
 - Le maillage est divise en sections de 16x16x16 blocs, par couche (opaque, decoupe, melange), dans des `SharedArrayBuffer` partages avec les workers.
 - Chaque worker dessine des bandes de 16 rangees (rangees paires pour l'un, impaires pour l'autre) dans le meme tampon d'image : pas de copie ni de recollage.
@@ -126,7 +137,7 @@ mesh = {
 - Les textures animees sont reecrites dans l'atlas partage avant chaque image (quelques sprites de 16x16).
 
 ## Defauts connus
-- Pas de lumiere de blocs (sauf blocs emissifs traites comme pleine lumiere) ; ombres portees seulement avec un shader. La nuit n'existe que comme facteur global (`lumiere`, voir `film/look.js`), sans lune, etoiles ni torches allumees.
+- Sans champ `monde` : pas de lumiere de blocs (blocs emissifs traites comme pleine lumiere) ; ombres portees seulement avec un shader ; la nuit est un facteur global (`lumiere`, voir `film/look.js`). Avec `monde` : lumiere de blocs et table de lumiere du jeu (voir plus haut).
 - Eau : plan plat a 14/16, pas de lissage des coins, pas de courant, tri des surfaces translucides par section seulement.
 - Les blocs dessines par code dans le jeu (coffres, lits, panneaux, banniere, tetes) sont une boite de remplacement ou absents.
 - Aux bords de la zone le terrain s'arrete, mais le brouillard automatique le cache (voir « Brouillard et bord de zone ») sauf camera tres pres du bord.

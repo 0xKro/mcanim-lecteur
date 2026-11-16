@@ -43,6 +43,19 @@ def _arr(ctype, valeurs):
     return (ctype * len(valeurs))(*valeurs)
 
 
+def plages_vivantes(sections, mortes):
+    """[(debut, nb), ...] des sections dont la cle n'est pas dans `mortes`, plages contigues fusionnees. `sections` : [[debut, nb, cle], ...]."""
+    out = []
+    for deb, nb, cle in sections:
+        if cle in mortes:
+            continue
+        if out and out[-1][0] + out[-1][1] == deb:
+            out[-1] = (out[-1][0], out[-1][1] + nb)
+        else:
+            out.append((deb, nb))
+    return out
+
+
 class Prog:
     def __init__(self, nom, prog, unifs, attrs, tps):
         self.nom, self.prog, self.unifs, self.attrs, self.tps = nom, prog, unifs, attrs, tps
@@ -231,34 +244,19 @@ class Rendu(PassesMixin):
         self.geo = {}
         o = ent["zone"]["origine"]
         self.origine = tuple(o)
+        self.ids_palette = ids
         gl.BindVertexArray(self.vao.value)
         for nom, info in ent["couches"].items():
             with open(os.path.join(dossier, nom + ".vtx"), "rb") as f:
                 data = bytearray(f.read())
-            nq = info["quads"]
-            mv = memoryview(data).cast("f")
-            # mc_Entity.x = id du pack (par quad) ; positions relatives a l'origine de la zone (precision flottante)
-            for q in range(nq):
-                b = q * 4 * FLOATS
-                pi = int(mv[b + 20])
-                idv = float(ids[pi]) if pi < len(ids) else 0.0
-                for k in range(4):
-                    j = b + k * FLOATS
-                    mv[j + 18] = idv
-                    if os.environ.get("MCPACK_DEBUG_SKY"):
-                        mv[j + 6] = float(os.environ["MCPACK_DEBUG_SKY"])
-                    mv[j] -= o[0]
-                    mv[j + 1] -= o[1]
-                    mv[j + 2] -= o[2]
-            fl = (ctypes.c_float * (nq * 4 * FLOATS)).from_buffer(data)
-            vbo = self._buffer(ARRAY_BUFFER, ctypes.cast(fl, ctypes.c_void_p), len(data))
-            del mv
             with open(os.path.join(dossier, nom + ".idx"), "rb") as f:
                 idx = bytearray(f.read())
-            ia = (ctypes.c_uint * (len(idx) // 4)).from_buffer(idx)
-            ibo = self._buffer(ELEMENT_BUFFER, ctypes.cast(ia, ctypes.c_void_p), len(idx))
-            self.geo[nom] = {"vbo": vbo, "ibo": ibo, "n": len(idx) // 4, "couche": info["couche"]}
-            del fl, ia
+            g = self._preparer_couche(data, idx, info["quads"])
+            g["couche"] = info["couche"]
+            if info.get("sections") is not None:      # scene avec un monde : les sections peuvent etre retirees puis refaites (maillage-maj)
+                g["sections"] = info["sections"]
+                g["mortes"] = set()
+            self.geo[nom] = g
         a = ent["atlas"]
         with open(os.path.join(dossier, "atlas.rgba"), "rb") as f:
             rgba = f.read()
@@ -278,6 +276,69 @@ class Rendu(PassesMixin):
         self.atlas_taille = (a["largeur"], a["hauteur"])
         self.stats["maillage_ms"] = (time.perf_counter() - t0) * 1000
         self.stats["quads"] = {k: v["n"] // 6 for k, v in self.geo.items()}
+
+    def _preparer_couche(self, data, idx, nq):
+        """Sommets (bytearray) et indices -> tampons GL. mc_Entity.x = id du pack (par quad) ; positions relatives a l'origine de la zone."""
+        o, ids = self.origine, self.ids_palette
+        mv = memoryview(data).cast("f")
+        for q in range(nq):
+            b = q * 4 * FLOATS
+            pi = int(mv[b + 20])
+            idv = float(ids[pi]) if pi < len(ids) else 0.0
+            for k in range(4):
+                j = b + k * FLOATS
+                mv[j + 18] = idv
+                if os.environ.get("MCPACK_DEBUG_SKY"):
+                    mv[j + 6] = float(os.environ["MCPACK_DEBUG_SKY"])
+                mv[j] -= o[0]
+                mv[j + 1] -= o[1]
+                mv[j + 2] -= o[2]
+        fl = (ctypes.c_float * (nq * 4 * FLOATS)).from_buffer(data)
+        vbo = self._buffer(ARRAY_BUFFER, ctypes.cast(fl, ctypes.c_void_p), len(data))
+        del mv
+        ia = (ctypes.c_uint * (len(idx) // 4)).from_buffer(idx)
+        ibo = self._buffer(ELEMENT_BUFFER, ctypes.cast(ia, ctypes.c_void_p), len(idx))
+        del fl, ia
+        return {"vbo": vbo, "ibo": ibo, "n": len(idx) // 4}
+
+    def mettre_a_jour_maillage(self, dossier):
+        """Sections refaites entre deux images (scene avec un monde) : `maj.json` + p<id>.vtx / p<id>.idx ecrits par export-gpu.js (exporterMaj).
+        mortes : les sections du maillage de depart qui ne sont plus dessinees ; retraits : pieces a oublier ; ajouts : pieces neuves."""
+        gl = self.gl
+        t0 = time.perf_counter()
+        with open(os.path.join(dossier, "maj.json"), encoding="utf8") as f:
+            maj = json.load(f)
+        gl.BindVertexArray(self.vao.value)
+        mortes = set(maj.get("mortes", []))
+        for g in self.geo.values():
+            if "sections" in g and mortes:
+                g["mortes"] |= mortes
+                g["plages"] = plages_vivantes(g["sections"], g["mortes"])
+        retraits = set(maj.get("retraits", []))
+        for g in self.geo.values():
+            gardees = []
+            for e in g.get("extras", []):
+                if e["id"] in retraits:
+                    for t in (e["vbo"], e["ibo"]):
+                        x = ctypes.c_uint(t)
+                        gl.DeleteBuffers(1, ctypes.byref(x))
+                else:
+                    gardees.append(e)
+            g["extras"] = gardees
+        for a in maj.get("ajouts", []):
+            with open(os.path.join(dossier, "p%d.vtx" % a["id"]), "rb") as f:
+                data = bytearray(f.read())
+            with open(os.path.join(dossier, "p%d.idx" % a["id"]), "rb") as f:
+                idx = bytearray(f.read())
+            e = self._preparer_couche(data, idx, a["quads"])
+            e["id"] = a["id"]
+            base = self.geo.get(a["couche"])
+            if base is None:       # couche absente du maillage de depart (premiere eau, premier verre...)
+                base = self.geo[a["couche"]] = {"vbo": 0, "ibo": 0, "n": 0, "couche": a["num"], "plages": []}
+            base.setdefault("extras", []).append(e)
+        self.stats["maj_ms"] = (time.perf_counter() - t0) * 1000
+        self.stats["quads"] = {k: (v["n"] + sum(e["n"] for e in v.get("extras", []))) // 6 for k, v in self.geo.items()}
+        return {"ms": round(self.stats["maj_ms"], 2)}
 
     # ------------------------------------------------------------------ programmes
     def prog(self, nom):
@@ -476,9 +537,17 @@ class Rendu(PassesMixin):
             if couche not in self.geo:
                 continue
             self._test_alpha(nom_prog, couche != "opaque")
-            actifs = self._attribs(p, self.geo[couche])
-            gl.DrawElements(4, self.geo[couche]["n"], 0x1405, None)
-            self._fin_attribs(actifs)
+            for g in [self.geo[couche]] + self.geo[couche].get("extras", []):
+                if g["n"] == 0:
+                    continue
+                actifs = self._attribs(p, g)
+                plages = g.get("plages")
+                if plages is None:
+                    gl.DrawElements(4, g["n"], 0x1405, None)
+                else:      # sections vivantes seulement (les mortes ont ete refaites : leur nouvelle version est dans les pieces)
+                    for deb, nb in plages:
+                        gl.DrawElements(4, nb, 0x1405, ctypes.c_void_p(deb * 4))
+                self._fin_attribs(actifs)
         gl.BindBuffer(ARRAY_BUFFER, 0)
         gl.BindBuffer(ELEMENT_BUFFER, 0)
         gl.UseProgram(0)

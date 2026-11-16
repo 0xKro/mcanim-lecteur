@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // mcanim : lecteur d'animations Minecraft. Commandes (voir docs/CONCEPTION.md, partie 7) :
-//   mcanim terrain <zone> [--pas N] [--chemin x1,z1,x2,z2]
+//   mcanim terrain <zone> [--pas N] [--chemin x1,z1,x2,z2] [--carte [f.png] [--echelle N]]
+//   mcanim etat <scene.json> [--t secondes|fin]
 //   mcanim trajet <scene.json>
 //   mcanim empreinte <scene.json>
 //   mcanim rendre <scene.json> --jeton <jeton> [--sortie f.mp4] [--pack pack.zip] [--skin nom=fichier.png]
@@ -9,6 +10,9 @@
 //   mcanim texture <jeu/chemin> [--sortie f.png] [--pack pack.zip]
 //   mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360] [--pack pack.zip]
 //   mcanim shader --guide | --cles <famille> | --verifier f.json | --extraire pack.zip [--sortie dossier] | --exemples
+//   mcanim simuler <scene.json>   (simulation du jeu : gratuit, resume court)
+//   mcanim regles --liste [famille] | --familles   (parametres du jeu modifiables par la scene)
+//   mcanim mods verifier <fichier.js>
 //   mcanim kit
 // Les sorties sont COURTES (elles coutent des tokens au client) ; en cas d'echec : message sur stderr, code non nul.
 import fs from 'node:fs';
@@ -37,6 +41,9 @@ import { animer } from '../src/film/scene.js';
 const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai terrain)
   mcanim terrain <zone> [--pas 8]     telecharge la zone et le kit, resume du terrain (chemins, clairieres, eau)
   mcanim terrain <zone> --chemin x1,z1,x2,z2   verifie un trajet droit : libre, ou premier obstacle
+  mcanim terrain <zone> --carte [f.png] [--echelle N]   carte vue de dessus GRATUITE (grille et etiquettes tous les 16 blocs, rues, portes, cloche d'un village) ; a lire pour se reperer
+  (village : le resume donne village{type, rues[l,p], maisons[b,porte[x,z,cote]], cloche, puits, fermes, lampes} ; rue:true dans chemins = rue du village)
+  mcanim etat <scene.json> [--t secondes|fin]   position, cap, vitesse, phases des boucles, pose de chaque acteur : pour enchainer la scene suivante (pos, lacet, boucle "phase0") ; assemblage ffmpeg : fiche enchainer
   mcanim trajet <scene.json>          ce qui arrive aux acteurs sur leur chemin : saut, chute, eau, echelle, marches, mur, vitesses ; gratuit, court
   mcanim empreinte <scene.json> [memes options que rendre]   controle la scene, affiche empreinte et duree ; l'empreinte couvre le CONTENU des PNG / shader / pack cites et les options
                                       de rendu (--skin --pack --shader --pack-shader --echelle --profil --option) : un octet change apres autoriser_scene = jeton refuse (modifier_scene)
@@ -54,11 +61,15 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   mcanim shader --diagnostic          peut-on rendre avec un VRAI pack de shaders ici ? (moteur OpenGL logiciel, version, limites ; 4 lignes)
   mcanim shader --exemples            ou sont shader-leger.json et shader-tout.json
   mcanim objets --cherche <mot>       identifiants d'objets du jeu (20 au plus) pour les champs objet / objetG ; --armures : materiaux du champ armure
+  mcanim simuler <scene.json>         simule le jeu (champ monde : blocs poses, regles, mods) AVANT de payer le rendu ; gratuit, resume court (blocs changes, avertissements)
+  mcanim regles --liste [famille]     parametres du jeu que monde.regles peut changer (nom = defaut [plage] explication) ; --familles : les familles
+  mcanim mods verifier <fichier.js>   charge un mod de monde.mods dans le bac a sable et signale l'erreur en une ligne
   mcanim kit                          recupere le kit de base
   (options de rendre : --ssaa 2 pour un rendu plus lisse, 3 fois plus lent)
   --shader shader.json : ombres du soleil, ciel, brume, rayons de lumiere, bloom, eau, feuilles qui bougent... (format : docs/FORMAT-SHADER.md ;
                          exemples : exemples/shader-leger.json, shader-tout.json ; ou le champ de scene "shader": "shader.json", chemin relatif a la scene ; l'option l'emporte)
-  champs de scene facultatifs : image, ciel, gel, textures, shader, packShader (pack .zip, chemin relatif a la scene) ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui, objet objetG [t,"id"|null] (objet tenu en main droite / gauche ; mcanim objets --cherche mot), armure {tete,torse,jambes,pieds} (fiches du site)
+  acteur : fige [[debut,fin]] (cet acteur seul s'arrete, pose tenue ; les autres continuent) figeSauf ["tete",...] (pistes qui continuent) ; boucle : phase0 (0..1, demarre a cette phase) ; sons : {pas, volume 0..4, liste [[t,"son",volume,cible]]} cible {"acteur":"nom"} ou [x,y,z]
+  champs de scene facultatifs : monde {graine, regles, mods, blocs [[t,x,y,z,"bloc"]], lumiere} (simulation du jeu ; lumiere des blocs), image, ciel, gel, textures, shader, packShader (pack .zip, chemin relatif a la scene) ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui, objet objetG [t,"id"|null] (objet tenu en main droite / gauche ; mcanim objets --cherche mot), armure {tete,torse,jambes,pieds} (fiches du site)
   hauteur automatique (physique du jeu : saut 0.42, gravite 0.08, pas de 0.6, chute, eau, echelle) a partir de pos [t,x,z] ; acteur : bascule [t,deg] roulis [t,deg]
   (corps entier autour des hanches, 90 = a plat) hauteur [t,blocs] (decalage vertical) reactions:false (coupe les reactions automatiques du corps)
   membres libres : brasD brasG jambeD jambeG [t,avant,cote,torsion] (cote < 0 : croise le corps ; torsion > 0 : rotation interne), tete [t,lacet,tangage,roulis],
@@ -131,7 +142,11 @@ async function commandeKit() {
 }
 
 async function commandeTerrain(argv) {
-  const { pos, opt } = lireArgs(argv, { valeurs: ['pas', 'chemin'] });
+  // --carte [fichier.png] : l'image est facultative (valeur seulement si elle se termine par .png)
+  let carte = null;
+  const ic = argv.indexOf('--carte');
+  if (ic >= 0) { carte = /.png$/i.test(argv[ic + 1] ?? '') ? argv[ic + 1] : true; argv = argv.filter((_, i) => i !== ic && !(carte !== true && i === ic + 1)); }
+  const { pos, opt } = lireArgs(argv, { valeurs: ['pas', 'chemin', 'echelle'] });
   if (pos.length !== 1) throw new Usage('usage : mcanim terrain <zone> [--pas N] [--chemin x1,z1,x2,z2]');
   let seg = null;
   if (opt.chemin !== undefined) {
@@ -149,12 +164,23 @@ async function commandeTerrain(argv) {
   const rs = await chargerScene({ zonePath: chemin, kitDir: kit, travailleurs: 0 });
   try {
     if (seg) { dire(rs.verifierChemin(...seg)); const profil = profilSegment(terrainDepuis(rs), ...seg); if (profil) dire(profil); }
-    else {
-      dire(JSON.stringify(rs.resumeTerrain(pas ? { pas } : undefined)));
-      dire("Fais marcher l'acteur le long d'un des chemins ; hors chemin, il traversera des arbres.");
-    }
+    else if (carte) dire(await ecrireCarte(rs, kit, carte === true ? `carte-${path.basename(chemin, '.mcz')}.png` : carte, opt.echelle));
+    else dire((await import('../src/rendu/terrain-texte.js')).texteTerrain(rs, pas));
     dire(`(${sec(Date.now() - t0)} s)`);
   } finally { await rs.fermer(); }
+}
+
+// Carte vue de dessus (gratuite) : fichier PNG, grille et etiquettes tous les 16 blocs, village en surbrillance. Une ligne de reponse.
+async function ecrireCarte(rs, kit, fichier, echelle) {
+  let E;
+  if (echelle !== undefined) { E = Number(echelle); if (!(Number.isInteger(E) && E >= 1 && E <= 8)) throw new Usage('--echelle : entier de 1 a 8 (pixels par bloc)'); }
+  const { dessinerCarte } = await import('../src/rendu/carte.js');
+  const { analyserVillage } = await import('../src/rendu/village.js');
+  let v = null;
+  try { v = analyserVillage(rs.zone); } catch { v = null; }
+  const r = dessinerCarte({ zone: rs.zone, village: v, kitDir: kit, echelle: E });
+  fs.writeFileSync(fichier, r.png);
+  return `carte : ${path.resolve(fichier)} (${r.largeur}x${r.hauteur} px, ${Math.round(r.png.length / 1024)} Ko, ${r.echelle} px par bloc). Lignes tous les 16 blocs, etiquettes = coordonnees du monde (x en haut et en bas, z a gauche et a droite ; jaune = multiples de 64). ${v ? 'Village : rues = trait magenta, portes = carre rouge (trait = cote de la sortie), cloche = jaune, puits = cyan, maisons = cadre blanc.' : 'Pas de village dans cette zone.'}`;
 }
 
 // Le terrain de la zone de la scene, pour la simulation du trajet. `telecharger` faux : seulement le cache local (sinon null).
@@ -175,6 +201,21 @@ async function commandeTrajet(argv) {
   const { scene } = lireScene(lireTexte(pos[0]));
   const t = await terrainDeScene(scene, { telecharger: true });
   try { dire(texteTrajets(scene, t.terrain)); } finally { await t.rs.fermer(); }
+}
+
+// Etat de la scene a un instant (gratuit) : position, direction, phases des boucles, pose tenue ; pour enchainer la scene suivante sans a-coup.
+async function commandeEtat(argv) {
+  const { pos, opt } = lireArgs(argv, { valeurs: ['t'] });
+  if (pos.length !== 1) throw new Usage('usage : mcanim etat <scene.json> [--t secondes|fin]   (defaut : fin)');
+  const tt = opt.t === undefined || opt.t === 'fin' ? 'fin' : Number(opt.t);
+  if (tt !== 'fin' && !Number.isFinite(tt)) throw new Usage('--t : un nombre de secondes ou "fin"');
+  const { scene } = lireScene(lireTexte(pos[0]));
+  const t = await terrainDeScene(scene, { telecharger: true });
+  try {
+    const { animer: animerFilm } = await import('../src/film/anim.js');
+    const { etatDeScene, texteEtat } = await import('../src/film/etat.js');
+    dire(texteEtat(etatDeScene(scene, animerFilm(scene, t.terrain).images, tt)));
+  } finally { await t.rs.fermer(); }
 }
 
 async function commandeEmpreinte(argv) {
@@ -330,6 +371,55 @@ async function commandeApercu(argv) {
 }
 
 // Aide gratuite : cherche des identifiants d'objets (et de materiaux d'armure) pour ne pas deviner les noms.
+// Simulation du jeu pour une scene qui a un champ `monde` : gratuite, imprime un resume court (docs/SIMULATION.md 1.8).
+async function commandeSimuler(argv) {
+  const { pos } = lireArgs(argv);
+  if (pos.length !== 1) throw new Usage('usage : mcanim simuler <scene.json>');
+  const { scene } = lireScene(lireTexte(pos[0]));
+  if (!scene.monde) return dire("la scene n'a pas de champ monde : rien a simuler (le rendu est le meme qu'avant)");
+  const baseDir = path.dirname(path.resolve(pos[0]));
+  verifierFichiers(scene, baseDir);
+  const zone = await obtenirZone(scene.zone);
+  const { lireZone } = await import('../src/rendu/zone.js');
+  const { simuler, ErreurMonde } = await import('../src/moteur/index.js');
+  const { donneesDuJeu } = await import('../src/moteur/chargeur.js');
+  const donnees = await donneesDuJeu({ log: dire });
+  try {
+    const r = simuler({ zone: lireZone(zone.chemin), donnees, monde: scene.monde, baseDir, duree: scene.duree });
+    dire(r.rapport);
+  } catch (e) { if (e instanceof ErreurMonde) throw new Usage(e.message); throw e; }
+}
+
+// Parametres modifiables du jeu (declares par chaque famille : jamais de derive).
+async function commandeRegles(argv) {
+  const { pos, opt } = lireArgs(argv, { drapeaux: ['liste', 'familles'] });
+  const { reglesPubliques } = await import('../src/moteur/index.js');
+  const regles = reglesPubliques();
+  if (opt.familles) return dire(regles.familles().map(([f, n]) => `${f} (${n})`).join('\n'));
+  if (!opt.liste) throw new Usage('usage : mcanim regles --liste [famille]   |   mcanim regles --familles');
+  const famille = pos[0];
+  const l = regles.liste(famille);
+  if (!l.length) throw new Usage(`aucune regle pour "${famille}" ; familles : ${regles.familles().map(([f]) => f).join(', ')}`);
+  dire(l.join('\n'));
+}
+
+// Charge un mod dans le bac a sable (sans scene) et dit en une ligne s'il est correct.
+async function commandeMods(argv) {
+  const [sous, fichier] = argv;
+  if (sous !== 'verifier' || !fichier) throw new Usage('usage : mcanim mods verifier <fichier.js>');
+  const texte = lireTexte(path.resolve(fichier));
+  const { preparer, ErreurMonde } = await import('../src/moteur/index.js');
+  const { donneesDuJeu } = await import('../src/moteur/chargeur.js');
+  const { Zone } = await import('../src/rendu/zone.js');
+  const donnees = await donneesDuJeu({ log: dire });
+  const zone = new Zone({ palette: ['minecraft:air', '#hidden'], biomes: ['minecraft:plains'], origine: [0, 0, 0], taille: [1, 1, 1] }, new Uint32Array(1), new Uint8Array(1), new Int16Array(1));
+  try {
+    const sim = preparer({ zone, donnees, monde: {}, mods: [{ nom: path.basename(fichier), source: texte }] });
+    const n = sim.reg.entrees.filter((e) => e.source !== 'moteur').length;
+    dire(`${path.basename(fichier)} : ok, ${n} gestionnaire(s) enregistre(s)${sim.regles.val.size ? '' : ''}`);
+  } catch (e) { if (e instanceof ErreurMonde) throw new Usage(e.message); throw e; }
+}
+
 async function commandeObjets(argv) {
   const { opt } = lireArgs(argv, { valeurs: ['cherche'], drapeaux: ['armures'] });
   if (opt.armures) {
@@ -389,6 +479,7 @@ async function main() {
   switch (cmd) {
     case 'terrain': return commandeTerrain(reste);
     case 'trajet': return commandeTrajet(reste);
+    case 'etat': return commandeEtat(reste);
     case 'empreinte': return commandeEmpreinte(reste);
     case 'rendre': return commandeRendre(reste);
     case 'skin': return commandeSkin(reste);
@@ -397,6 +488,9 @@ async function main() {
     case 'shader': return commandeShader(reste);
     case 'kit': return commandeKit();
     case 'objets': return commandeObjets(reste);
+    case 'simuler': return commandeSimuler(reste);
+    case 'regles': return commandeRegles(reste);
+    case 'mods': return commandeMods(reste);
     case '--version': case '-v': return dire(JSON.parse(fs.readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')).version);
     case undefined: case 'aide': case '--help': case '-h': return dire(AIDE);
     default: throw new Usage(`commande inconnue : ${cmd}\n${AIDE}`);

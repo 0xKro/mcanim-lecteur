@@ -15,6 +15,44 @@ const fenetre = (Z) => {
   return { x0: Math.max(Z.x0 + 2, Math.ceil(cx - FENETRE)), x1: Math.min(Z.x0 + Z.sx - 2, Math.floor(cx + FENETRE)), z0: Math.max(Z.z0 + 2, Math.ceil(cz - FENETRE)), z1: Math.min(Z.z0 + Z.sz - 2, Math.floor(cz + FENETRE)) };
 };
 
+import { analyserVillage } from './village.js';
+
+// Rues d'un village : un segment droit par morceau de rue (lignes centrales de village.js), garde s'il est praticable ; un morceau trop long est
+// reduit a LONGUEUR_MAXI autour du centre du village ; un obstacle raccourcit le morceau (au moins LONGUEUR_MINI_RUE blocs restent). Les rues passent
+// avant les autres chemins : c'est la ou les villageois marchent et ou le decor est fait pour la camera.
+const LONGUEUR_MINI_RUE = 18;
+export function cheminsDeRues(rs, { max = 4 } = {}) {
+  let v = null;
+  try { v = rs.zone?.palette ? analyserVillage(rs.zone) : null; } catch { v = null; }
+  if (!v || !v.rues.length) return [];
+  const sortie = [];
+  const arr = (n) => Math.round(n * 2) / 2;
+  for (const rue of v.rues) {
+    for (let i = 1; i < rue.p.length; i++) {
+      const [ax, az] = rue.p[i - 1], [bx, bz] = rue.p[i];
+      const L = Math.hypot(bx - ax, bz - az), dx = (bx - ax) / (L || 1), dz = (bz - az) / (L || 1);
+      // morceaux praticables : un obstacle (puits de la place, marche de 2 blocs, mur) coupe le segment, on repart apres lui
+      let d0 = 0;
+      while (L - d0 >= LONGUEUR_MINI_RUE) {
+        let d1 = L;
+        let e = evaluerSegment(rs, ax + dx * d0, az + dz * d0, ax + dx * d1, az + dz * d1);
+        if (!e.ok) { d1 = d0 + Math.floor(e.obstacle?.distance ?? 0) - 1; if (d1 - d0 >= LONGUEUR_MINI_RUE) e = evaluerSegment(rs, ax + dx * d0, az + dz * d0, ax + dx * d1, az + dz * d1); }
+        if (e.ok && d1 - d0 >= LONGUEUR_MINI_RUE) {
+          let u0 = d0, u1 = d1;
+          if (u1 - u0 > LONGUEUR_MAXI) {                          // trop long : le morceau le plus proche du centre du village
+            const t = Math.max(u0, Math.min(u1 - LONGUEUR_MAXI, (v.centre[0] - ax) * dx + (v.centre[1] - az) * dz - LONGUEUR_MAXI / 2));
+            u0 = t; u1 = t + LONGUEUR_MAXI; e = evaluerSegment(rs, ax + dx * u0, az + dz * u0, ax + dx * u1, az + dz * u1);
+          }
+          if (e.ok) sortie.push({ de: [arr(ax + dx * u0), arr(az + dz * u0)], a: [arr(ax + dx * u1), arr(az + dz * u1)], longueur: Math.round(e.longueur), denivele: e.denivele, degagement: Math.round(e.degagement * 100), rue: true });
+          d0 = d1 + 3;
+        } else d0 += Math.max(3, Math.floor(e.obstacle?.distance ?? 0) + 3);
+      }
+    }
+  }
+  sortie.sort((p, q) => q.degagement - p.degagement + (q.longueur - p.longueur) / 40 || p.de[0] - q.de[0]);
+  return sortie.slice(0, Math.min(max, 3));
+}
+
 // Colonnes de la zone : hauteur du sol, eau, et raison de l'obstacle a hauteur du corps (0..2 au-dessus du sol).
 export function preparerMarche(rs) {
   if (rs._marche) return rs._marche;
@@ -105,6 +143,7 @@ function cameraDegagee(m, px, pz, dx, dz, solY) {
 
 // Les meilleurs corridors, du meilleur au moins bon : [{ de:[x,z], a:[x,z], longueur, denivele, degagement }] (entiers, degagement en %).
 export function trouverChemins(rs, { max = 4 } = {}) {
+  const rues = cheminsDeRues(rs, { max });   // village : les rues d'abord
   const m = preparerMarche(rs);
   const Z = rs.zone;
   const candidats = [];
@@ -146,11 +185,12 @@ export function trouverChemins(rs, { max = 4 } = {}) {
     if (choisis.length >= max) break;
   }
   // sens de marche : celui qui laisse le plus d'espace a la camera (elle est derriere l'acteur)
-  return choisis.map((c) => {
+  const ordinaires = choisis.map((c) => {
     const inv = evaluerSegment(rs, c.a[0], c.a[1], c.de[0], c.de[1]);
     const dir = inv.ok && inv.degagement > c.e.degagement + 0.02 ? { de: c.a, a: c.de, e: inv } : c;
     return { de: dir.de, a: dir.a, longueur: Math.round(dir.e.longueur), denivele: dir.e.denivele, degagement: Math.round(dir.e.degagement * 100) };
   });
+  return [...rues, ...ordinaires].slice(0, max);
 }
 
 // Clairieres : endroits ouverts (aucun obstacle a hauteur du corps, sol presque plat) ; { centre:[x,z], rayon }.

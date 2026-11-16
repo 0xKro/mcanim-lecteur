@@ -15,4 +15,5 @@ export function verifierFichiers(scene, baseDir = process.cwd(), surcharges = {}
   if (scene.shader && !existe(scene.shader)) manque('shader', scene.shader);
   if (scene.packShader && !existe(scene.packShader)) manque('packShader', scene.packShader);
   for (const [nom, f] of Object.entries(scene.textures ?? {})) if (!existe(f)) manque(`textures["${nom}"]`, f);
+  (scene.monde?.mods ?? []).forEach((f, i) => { if (!existe(f)) manque(`monde.mods[${i}]`, f); });
 }

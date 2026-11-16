@@ -64,7 +64,8 @@ export function cielDepuisHeure(heure, { lueur = 1, inclinaison = 0, gamma = 0.5
 }
 
 // Reglages de rendu au temps t, ou null si la scene n'a pas de `ciel` : { lumiere, ciel, brume, soleil } (chaque champ peut manquer).
-export function cielEn(scene, t) {
+// opt.lightmap : le facteur jour/nuit est dans la table de lumiere du jeu (rendu/ciel-vanille.js) ; `lumiere` ne garde que le levier `ciel.lumiere`.
+export function cielEn(scene, t, opt = {}) {
   const c = scene.ciel;
   if (!c) return null;
   const v = (nom) => (c[nom] ? evaluer(c[nom], t) : undefined);
@@ -76,7 +77,7 @@ export function cielEn(scene, t) {
   let lumiere = [1, 1, 1];
   if (heure !== undefined) {
     const d = cielDepuisHeure(heure, { gamma: v('gamma')?.[0] });
-    sortie.ciel = d.ciel; sortie.brume = { couleur: d.brume }; sortie.soleil = d.soleil; lumiere = d.lumiere;
+    sortie.ciel = d.ciel; sortie.brume = { couleur: d.brume }; sortie.soleil = d.soleil; lumiere = opt.lightmap ? [1, 1, 1] : d.lumiere;
   }
   const col = v('couleurCiel');
   if (col) {
@@ -85,6 +86,8 @@ export function cielEn(scene, t) {
     sortie.brume = { ...(sortie.brume || {}), couleur: rgb };
     sortie.soleil = false; sortie.fixe = true;
   }
+  const gam = v('gamma')?.[0];
+  if (gam !== undefined) sortie.gamma = gam;
   const dist = v('brume')?.[0];
   if (dist !== undefined) sortie.brume = { ...(sortie.brume || {}), debut: dist };
   const fac = v('lumiere')?.[0];

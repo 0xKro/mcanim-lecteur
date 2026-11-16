@@ -6,13 +6,13 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { chargerScene } from '../rendu/scene.js';
-import { exporterZone } from './export-gpu.js';
+import { exporterZone, exporterMaj } from './export-gpu.js';
 import { etatImage } from './etat.js';
 import { Hote } from './hote.js';
 import { animer } from '../film/anim.js';
 import { terrainDepuis } from '../film/physique.js';
 import { imageEn, cielEn } from '../film/look.js';
-import { preparerPersonnages } from '../film/video.js';
+import { preparerPersonnages, simulerScene } from '../film/video.js';
 import { appliquerTextures, dossierCache } from '../film/cache.js';
 import { PostTraitement } from '../rendu/post.js';
 import { construireCiel, ticksDepuisHeure } from '../rendu/ciel-vanille.js';
@@ -68,7 +68,9 @@ export function estCoupure(a, b) {
 // Prepare tout : terrain exporte, hote GL, personnages, animation. Retourne { rs, anim, infos, notes, hote, dessiner(i, opts), fermer() }.
 export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {}, baseDir = process.cwd(), env = process.env, packShader, echelle = 1, options = {}, travailleurs = 0, log = () => {}, chauffe }) {
   const kit = Object.keys(scene.textures ?? {}).length ? appliquerTextures(kitDir, scene.textures, baseDir, { env }) : kitDir;
-  const rs = await chargerScene({ zonePath, kitDir: kit, travailleurs, options: { exportGPU: true } });
+  // scene avec un champ `monde` : simulation avant le premier rendu ; les sections de terrain refaites sont envoyees a l'hote entre les images
+  const sim = scene.monde ? await simulerScene({ scene, zonePath, baseDir, env }) : null;
+  const rs = await chargerScene({ zonePath, zone: sim?.zone, kitDir: kit, travailleurs, options: { exportGPU: true, ...(sim ? { monde: { donnees: sim.donnees, replay: sim.replay, lumiere: scene.monde.lumiere } } : {}) } });
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mcanim-pack-'));
   let hote = null;
   try {
@@ -106,14 +108,29 @@ export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {
     };
 
     let chauffeN = chauffe ?? 12;
-    const stats = { images: 0, transfertMs: 0, hoteMs: 0, nodeMs: 0 };   // ou passe le temps : calcul dans l'hote, transfert hote -> Node, reste cote Node
+    const stats = { images: 0, transfertMs: 0, hoteMs: 0, nodeMs: 0, majExportMs: 0, majHoteMs: 0, majLots: 0, majSections: 0, majQuads: 0 };   // ou passe le temps : calcul dans l'hote, transfert hote -> Node, reste cote Node
     const lumiere = personnages.map(() => null);
     const post = new PostTraitement();
     let derniereCamera = null, dernierFrame = 0;
 
     // etat complet d'une image (acteurs et ciel compris)
+    // Blocs changes jusqu'a l'instant du monde `tm` : sections refaites, puis envoyees a l'hote (cout mesure dans stats.majMs)
+    const dirMaj = path.join(tmp, 'maj');
+    const appliquerMaj = async (tm) => {
+      if (!sim) return;
+      const n = await rs.appliquerReplay(sim.replay.tickDe(tm));
+      if (n === -1) throw new Error('monde : la boite de blocs a grandi pendant la scene ; ce cas n\'est pas encore gere avec un vrai pack de shaders (rendu de base : ok)');
+      const maj = rs.prendreMajGPU();
+      if (!maj.ajouts.length && !maj.mortes.length && !maj.retraits.length) return;
+      const t0 = performance.now();
+      const r = exporterMaj(rs, dirMaj, maj);
+      const t1 = performance.now();
+      await hote.majMaillage(dirMaj);
+      stats.majExportMs += t1 - t0; stats.majHoteMs += performance.now() - t1; stats.majLots++; stats.majSections += maj.mortes.length; stats.majQuads += r.quads;
+    };
     const etatDe = async (i, { sansActeurs = false, temps } = {}) => {
       const im = anim.images[i];
+      await appliquerMaj(im.tm);
       const ciel = cielEn(scene, im.t);
       const heure = ciel?.heure ?? 12, jour = ciel?.jour ?? 0;
       const e = etatImage({ scene: rs, camera: im.camera, heure, jour, largeur: rw, hauteur: rh, frame: 0, temps: temps ?? im.tm });
@@ -191,7 +208,7 @@ export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {
       return copie && sortie === rgba ? Uint8Array.from(rgba) : sortie;
     };
     return {
-      rs, anim, infos, kit, notes: [...(info.notes || [])], hote, dessiner, etatDe, chaufferSur, info, tailleRendu: [rw, rh],
+      rs, anim, infos, kit, notes: [...(info.notes || []), ...(sim ? sim.notes : [])], hote, sim, dessiner, etatDe, chaufferSur, info, tailleRendu: [rw, rh],
       reglerChauffe: (n) => { chauffeN = n; }, chauffe: () => chauffeN, stats,
       memoireHoteMo: () => { try { return Math.round(+/VmHWM:\s+(\d+)/.exec(fs.readFileSync(`/proc/${hote.proc.pid}/status`, 'utf8'))[1] / 1024); } catch { return null; } },
       fermer: async () => { try { await hote.fermer(); } catch { /* deja arrete */ } try { hote.proc.kill('SIGKILL'); } catch { /* rien */ } await rs.fermer(); fs.rmSync(tmp, { recursive: true, force: true }); },

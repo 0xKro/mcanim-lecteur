@@ -300,3 +300,33 @@ export function lumiereMonde(ticks, gamma = 0.5) {
   const k = (1 - Math.pow(1 - max, 4)) / max;
   return brut.map((v) => v + (v * k - v) * gamma);
 }
+
+// Table de lumiere du jeu (la "lightmap" de 16 x 16 cases : niveau de ciel en ligne, niveau de bloc en colonne), au tick `ticks`.
+// C'est lightmap.fsh du jeu, telle que Horizon la calcule (client-render/src/gfx.rs `update_lightmap` : MIT, voir ATTRIBUTIONS.md) :
+//   luminosite(v) = v / (4 - 3v)
+//   couleur = max(ambient_light_color, 0,6 x vision de nuit) + sky_light_color x luminosite(ciel) x sky_light_factor
+//           + lerp(block_light_tint, blanc, 0,9 x (2 x bloc/15 - 1)^2) x luminosite(bloc) x (1,4 + scintillement)
+//   puis bornee a 0..1 et reglage de luminosite `gamma` (0 = Moody, 0,5 = defaut du jeu, 1 = Bright) :
+//   couleur = lerp(couleur, couleur x (1 - (1 - max)^4) / max, gamma).
+// Les pistes sky_light_factor / sky_light_color viennent de day.json (le jour : 1 et blanc ; la nuit : 0,24 et #7a7aff), ambient_light_color
+// de l'overworld (#0a0a0a), block_light_tint par defaut du jeu (#ffd88c : chaud). Le scintillement n'est pas simule (0).
+// Rend { R, G, B } : trois Float32Array(256), indice ciel * 16 + bloc, valeurs 0..1.
+export const TEINTE_BLOC = [0xff / 255, 0xd8 / 255, 0x8c / 255];
+export function tableLumiere(ticks, gamma = 0.5, { flicker = 0, nightVision = 0 } = {}) {
+  const f = piste(PISTE_LUM_FACTEUR, ticks)[0], sc = piste(PISTE_LUM_COULEUR, ticks);
+  const R = new Float32Array(256), G = new Float32Array(256), B = new Float32Array(256);
+  const lum = (v) => v / (4 - 3 * v);
+  const amb = Math.max(AMBIANT_OVERWORLD, 0.6 * nightVision);
+  for (let s = 0; s < 16; s++) {
+    for (let b = 0; b < 16; b++) {
+      const lb = b / 15, ls = s / 15;
+      const sk = lum(ls) * f, bk = lum(lb) * (1.4 + flicker);
+      const par = (2 * lb - 1) ** 2;
+      const bc = TEINTE_BLOC.map((t) => t + (1 - t) * 0.9 * par);
+      const c = [0, 1, 2].map((k) => Math.min(1, Math.max(0, amb + sc[k] * sk + bc[k] * bk)));
+      const max = Math.max(...c, 1e-6), k = (1 - Math.pow(1 - max, 4)) / max;
+      R[s * 16 + b] = c[0] + (c[0] * k - c[0]) * gamma; G[s * 16 + b] = c[1] + (c[1] * k - c[1]) * gamma; B[s * 16 + b] = c[2] + (c[2] * k - c[2]) * gamma;
+    }
+  }
+  return { R, G, B };
+}

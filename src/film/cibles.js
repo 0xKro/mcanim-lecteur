@@ -79,12 +79,14 @@ const norme = (v) => { const n = Math.hypot(...v) || 1; return v.map((c) => c / 
 
 // Applique les cibles d'une famille de membres ('bras' ou 'jambes') a la pose (modifie pose). Retourne le nombre de membres tenus.
 //   a : acteur valide ; t : temps ; evalPiste(piste, t) : valeurs d'une piste numerique (coudeVers...).
-export function appliquerCibles(a, pose, t, evalPiste, famille, fk = {}, etat = {}) {
+// tDe (facultatif) : nomCible -> temps de lecture de cette cible (acteur fige seul, fige.js) ; t reste le temps de l'image.
+export function appliquerCibles(a, pose, t, evalPiste, famille, fk = {}, etat = {}, tDe = null) {
   const slim = a.modele === 'slim';
   let n = 0;
   for (const [nomCible, nom] of Object.entries(MEMBRE_DE)) {
     if (!a[nomCible] || (famille === 'bras') !== nom.startsWith('bras')) continue;
-    const { a: ka, b: kb, u } = segment(a[nomCible], t);
+    const tt = tDe ? tDe(nomCible) : t;
+    const { a: ka, b: kb, u } = segment(a[nomCible], tt);
     if (!ka.cible && !kb.cible) continue;
     const wa = ka.poids, wb = kb.poids;
     const poids = wa + (wb - wa) * u;
@@ -98,7 +100,7 @@ export function appliquerCibles(a, pose, t, evalPiste, famille, fk = {}, etat = 
     // direction du coude / du genou : repere de l'acteur [dehors, haut, avant] -> repere du modele
     const piste = a[genre === 'bras' ? 'coudeVers' : 'genouVers'];
     const enModele = (h) => norme(versModele({ ...pose, lacet: 0 }, [-g.lat * h[0], h[1], h[2]], true));
-    const indice = enModele(piste ? evalPiste(piste, t) : genre === 'jambe' ? INDICE_JAMBE : INDICE_BRAS);
+    const indice = enModele(piste ? evalPiste(piste, tt) : genre === 'jambe' ? INDICE_JAMBE : INDICE_BRAS);
     const pAmp = penaliteMembre(genre, g.lat), Rt = mats[1].R, Tt = mats[1].t;
     // le coude (le centre de l'articulation) ne doit pas entrer dans le tronc : boite du tronc elargie du rayon du bras (2 px)
     const penTronc = (E) => {

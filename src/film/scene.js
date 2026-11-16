@@ -187,6 +187,12 @@ export function validerScene(s) {
     o.souple = a.souple === true;
     if (a.appui !== undefined && typeof a.appui !== 'boolean' && !(typeof a.appui === 'number' && a.appui >= 0 && a.appui <= 1)) err(`${ch}.appui`, 'true, false ou un nombre de 0 a 1 attendu (false : le corps ne s\'ajuste pas quand les genoux plient ; 0.5 : le corps ne descend que de moitie quand les jambes s\'ecartent, le pied flotte un peu : phase aerienne de la course)');
     o.appui = typeof a.appui === 'number' ? a.appui : a.appui !== false;
+    // fige : intervalles [debut, fin] ou CET acteur est arrete (film/fige.js) ; figeSauf : pistes qui continuent a jouer pendant le fige
+    if (a.fige !== undefined) o.fige = lireIntervalles(a.fige, s.duree, `${ch}.fige`);
+    if (a.figeSauf !== undefined) {
+      if (!Array.isArray(a.figeSauf) || a.figeSauf.some((n) => typeof n !== 'string' || !PISTES_FIGE_SAUF.includes(n))) err(`${ch}.figeSauf`, `liste de noms de pistes attendue parmi : ${PISTES_FIGE_SAUF.join(', ')}`);
+      o.figeSauf = [...new Set(a.figeSauf)];
+    }
     if (a.boucles !== undefined) {
       if (!Array.isArray(a.boucles)) err(`${ch}.boucles`, 'liste de boucles attendue');
       o.boucles = a.boucles.map((b, j) => lireBoucle(b, `${ch}.boucles[${j}]`, s.duree));
@@ -195,15 +201,30 @@ export function validerScene(s) {
   });
 
   const camera = lireCamera(s.camera, noms);
-  const sons = { pas: false, liste: [] };
+  const sons = { pas: false, volume: 1, liste: [] };
   if (s.sons !== undefined) {
     if (!estObjet(s.sons)) err('sons', 'un objet est attendu, par exemple {"pas": true}');
     if (s.sons.pas !== undefined) { if (typeof s.sons.pas !== 'boolean') err('sons.pas', 'true ou false attendu'); sons.pas = s.sons.pas; }
+    if (s.sons.volume !== undefined) {
+      if (!estNombre(s.sons.volume) || s.sons.volume < 0 || s.sons.volume > 4) err('sons.volume', 'nombre de 0 a 4 attendu (1 = normal)');
+      sons.volume = s.sons.volume;
+    }
     if (s.sons.liste !== undefined) {
-      if (!Array.isArray(s.sons.liste)) err('sons.liste', 'liste [[t, "nom.du.son"], ...] attendue');
+      if (!Array.isArray(s.sons.liste)) err('sons.liste', 'liste [[t, "nom.du.son", volume, cible], ...] attendue');
       sons.liste = s.sons.liste.map((e, i) => {
-        if (!Array.isArray(e) || !estNombre(e[0]) || typeof e[1] !== 'string') err(`sons.liste[${i}]`, 'forme attendue : [temps, "nom.du.son"]');
-        return { t: e[0], nom: e[1] };
+        const ch = `sons.liste[${i}]`;
+        if (!Array.isArray(e) || !estNombre(e[0]) || typeof e[1] !== 'string') err(ch, 'forme attendue : [temps, "nom.du.son", volume?, cible?]');
+        // apres le nom : un volume (nombre 0..4, 1 = normal) et/ou une cible ({"acteur":"nom"} ou [x,y,z]) ; sans cible, le son est au premier plan
+        const o = { t: e[0], nom: e[1], volume: 1, cible: null };
+        for (const v of e.slice(2)) {
+          if (estNombre(v)) { if (v < 0 || v > 4) err(ch, 'volume : nombre de 0 a 4 (1 = normal)'); o.volume = v; }
+          else if (Array.isArray(v) && v.length === 3 && v.every(estNombre)) o.cible = { pos: v };
+          else if (estObjet(v) && typeof v.acteur === 'string') {
+            if (!noms.has(v.acteur)) err(ch, `cible : acteur "${v.acteur}" inconnu`);
+            o.cible = { acteur: v.acteur };
+          } else err(ch, 'apres le nom : volume (nombre) ou cible ({"acteur":"nom"} ou [x,y,z])');
+        }
+        return o;
       });
     }
   }
@@ -216,8 +237,45 @@ export function validerScene(s) {
     gel: s.gel !== undefined ? lireGel(s.gel, s.duree) : [],
     textures: s.textures !== undefined ? lireTextures(s.textures) : {},
     shader: s.shader !== undefined ? lireRefShader(s.shader) : null,   // chemin du fichier shader.json (docs/FORMAT-SHADER.md)
+    monde: s.monde !== undefined ? lireMonde(s.monde, s.duree) : null,   // simulation du jeu (docs/SIMULATION.md) ; absent = rendu d'avant, exactement
     packShader: s.packShader !== undefined ? lireRefPackShader(s.packShader) : null,   // vrai pack de shaders (.zip) : rendu OpenGL logiciel, docs/SHADERS-REELS.md
   };
+}
+
+// ---------------------------------------------------------------- monde (simulation)
+export const MONDE_CLES = ['graine', 'regles', 'mods', 'blocs', 'lumiere', 'moteur'];
+export const MAX_BLOCS_MONDE = 2000, MAX_MODS = 8;
+const MOTEUR_ECRITURE = 1;   // version du moteur de simulation (moteur/simulation.js : MOTEUR)
+
+// Champ `monde` : graine (entier), regles (surcharges de parametres), mods (fichiers .js), blocs (poses datees), lumiere (lumiere de blocs).
+// Le contenu des regles et des blocs est controle plus loin (moteur/index.js), quand les donnees du jeu sont chargees.
+function lireMonde(m, duree) {
+  if (!estObjet(m)) err('monde', 'un objet est attendu, par exemple {"blocs": [[1, 10, 70, 5, "minecraft:torch"]]}');
+  for (const k of Object.keys(m)) if (!MONDE_CLES.includes(k)) err(`monde.${k}`, `champ inconnu (permis : ${MONDE_CLES.join(', ')})`);
+  const o = { graine: 1, regles: undefined, mods: [], blocs: [], lumiere: true };
+  if (m.moteur !== undefined && m.moteur !== MOTEUR_ECRITURE) err('monde.moteur', `scene ecrite pour le moteur ${JSON.stringify(m.moteur)}, ce lecteur est le moteur ${MOTEUR_ECRITURE} : regenere la scene`);
+  if (m.graine !== undefined) { if (!Number.isInteger(m.graine) || m.graine < 0 || m.graine > 2147483647) err('monde.graine', 'entier entre 0 et 2147483647 attendu'); o.graine = m.graine; }
+  if (m.lumiere !== undefined) { if (typeof m.lumiere !== 'boolean') err('monde.lumiere', "true ou false attendu (false : lumiere du rendu d'avant, sans lumiere de blocs)"); o.lumiere = m.lumiere; }
+  if (m.regles !== undefined) { if (!estObjet(m.regles)) err('monde.regles', 'un objet est attendu, par exemple {"monde": {"ticksAleatoires": 0}} (mcanim regles --liste)'); o.regles = m.regles; }
+  if (m.mods !== undefined) {
+    if (!Array.isArray(m.mods)) err('monde.mods', 'liste de fichiers .js attendue, par exemple ["tnt-ville.js"]');
+    if (m.mods.length > MAX_MODS) err('monde.mods', `${MAX_MODS} fichiers au maximum`);
+    o.mods = m.mods.map((f, i) => { if (typeof f !== 'string' || !/\.js$/i.test(f) || f.length > 200) err(`monde.mods[${i}]`, "chemin d'un fichier .js attendu (relatif au fichier de scene)"); return f; });
+  }
+  if (m.blocs !== undefined) {
+    if (!Array.isArray(m.blocs)) err('monde.blocs', 'liste [[t, x, y, z, "bloc"], ...] attendue, par exemple [[1, 10, 70, 5, "minecraft:torch"]]');
+    if (m.blocs.length > MAX_BLOCS_MONDE) err('monde.blocs', `${MAX_BLOCS_MONDE} poses au maximum`);
+    o.blocs = m.blocs.map((b, i) => {
+      const c = `monde.blocs[${i}]`;
+      if (!Array.isArray(b) || b.length !== 5) err(c, 'forme attendue : [t, x, y, z, "bloc"] (t en secondes, x y z entiers, bloc : nom du jeu, par exemple "minecraft:torch" ou "oak_door[open=true]")');
+      if (!estNombre(b[0]) || b[0] < 0 || b[0] > duree) err(`${c}[0]`, `temps entre 0 et ${duree} secondes attendu`);
+      for (let j = 1; j <= 3; j++) if (!Number.isInteger(b[j]) || Math.abs(b[j]) > 30000000) err(`${c}[${j}]`, 'entier attendu (coordonnee de bloc)');
+      if (b[2] < -64 || b[2] >= 320) err(`${c}[2]`, 'hauteur entre -64 et 319 attendue');
+      if (typeof b[4] !== 'string' || !/^[a-z0-9_:.,=[\]-]{1,200}$/i.test(b[4])) err(`${c}[4]`, 'nom de bloc attendu, par exemple "minecraft:torch"');
+      return [b[0], b[1], b[2], b[3], b[4]];
+    });
+  }
+  return o;
 }
 
 // ---------------------------------------------------------------- apparence, image, ciel, gel, textures
@@ -304,6 +362,24 @@ function lireGel(brut, duree) {
   });
 }
 
+// Intervalles [debut, fin] tries, sans chevauchement, dans la scene (fige d'un acteur ; meme forme que gel).
+const PISTES_FIGE_SAUF = ['pos', 'lacet', 'tete', 'corps', 'bascule', 'roulis', 'hauteur', 'accroupi', 'brasD', 'brasG', 'jambeD', 'jambeG', 'coudeD', 'coudeG', 'genouD', 'genouG',
+  'mainD', 'mainG', 'piedD', 'piedG', 'skins', 'horsImage', 'lueur', 'objetD', 'objetG', 'armure'];
+function lireIntervalles(brut, duree, chemin) {
+  if (!Array.isArray(brut)) err(chemin, 'liste d intervalles attendue, par exemple [[2.5, 6]]');
+  if (brut.length > MAX_GELS) err(chemin, `${MAX_GELS} intervalles au maximum`);
+  let fin = 0;
+  return brut.map((g, i) => {
+    const c = `${chemin}[${i}]`;
+    if (!Array.isArray(g) || g.length !== 2 || !estNombre(g[0]) || !estNombre(g[1])) err(c, 'forme attendue : [debut, fin] (secondes)');
+    if (g[0] < 0 || g[1] <= g[0]) err(c, 'il faut 0 <= debut < fin');
+    if (g[1] > duree) err(`${c}[1]`, `la fin (${g[1]}) depasse la duree de la scene (${duree})`);
+    if (g[0] < fin) err(`${c}[0]`, 'les intervalles doivent etre classes et ne pas se chevaucher');
+    fin = g[1];
+    return [g[0], g[1]];
+  });
+}
+
 // Textures du kit remplacees pour cette scene : { "block/oak_leaves": "feuilles.png", ... }
 function lireTextures(brut) {
   if (!estObjet(brut)) err('textures', 'un objet est attendu, par exemple {"block/oak_leaves": "feuilles.png"}');
@@ -326,7 +402,9 @@ function lireBoucle(b, ch, duree) {
   if (!estNombre(b.periode) || b.periode <= 0) err(`${ch}.periode`, 'duree d\'un cycle attendue (> 0, en secondes)');
   if (b.fondu !== undefined && (!estNombre(b.fondu) || b.fondu < 0)) err(`${ch}.fondu`, 'nombre >= 0 attendu');
   void duree;
+  if (b.phase0 !== undefined && !estNombre(b.phase0)) err(`${ch}.phase0`, 'phase de depart attendue (nombre ; 0 a 1 = un cycle, donnee par mcanim etat)');
   const o = { de: b.de, a: b.a, periode: b.periode, fondu: b.fondu ?? 0.2, pistes: {} };
+  if (b.phase0 !== undefined) o.phase0 = b.phase0 - Math.floor(b.phase0);   // la boucle demarre a cette phase (defaut 0)
   for (const nom of PISTES_BOUCLE) {
     if (b[nom] === undefined) continue;
     const a = nom === 'tete' ? { minArite: 2, maxArite: 3 } : nom === 'corps' ? { minArite: 1, maxArite: 3 } : ['lacet', 'bascule', 'roulis', 'hauteur'].includes(nom) || ARTICULATIONS.includes(nom) ? { minArite: 1, maxArite: 1 } : { minArite: 1, maxArite: 3 };

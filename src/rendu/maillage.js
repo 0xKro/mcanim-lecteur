@@ -1,9 +1,18 @@
-// Mailleur : zone -> triangles, UNE FOIS par zone.
+// Mailleur : zone -> triangles.
 // Coordonnees monde. Une face est emise si son voisin ne la cache pas : seul un cube OPAQUE cache une face (ou, pour le verre,
 // la glace..., le meme bloc translucide). Les feuilles montrent donc leurs faces entre deux feuilles ("fancy" du jeu : on voit
 // les feuilles de derriere par les trous de la texture) ; ces faces INTERNES vont dans une couche a part (4e tampon, dessinee
 // apres les faces exposees : le test de profondeur en rejette presque tout, ce qui coute peu).
 // Couleur par sommet = ombrage de direction x occlusion ambiante x lumiere du ciel x teinte du biome.
+//
+// Deux usages :
+//  - sans `options.monde` (scenes sans simulation) : UN maillage de toute la zone, une fois, comme toujours (resultat inchange) ;
+//  - avec `options.monde` (moteur/monde.js, scenes avec un champ `monde`) : meme maillage de depart, mais les tableaux de blocs et de
+//    lumiere (ciel, blocs) sont CEUX DU MONDE, modifies en cours de film ; le resultat porte `mailleSection(sx, sy, sz)` qui refait UNE
+//    section de 16x16x16 (les sections voisines dont les faces, l'AO ou la lumiere en dependent sont a refaire par l'appelant :
+//    toute cellule changee salit les sections a moins d'une cellule). `options.lightmap` : la lumiere n'est PAS cuite dans la couleur
+//    des sommets ; chaque sommet porte ses niveaux (ciel, bloc) et le rasteriseur applique la table de lumiere du jeu a chaque image
+//    (rendu/ciel-vanille.js `tableLumiere` : la lumiere chaude des torches, le jour et la nuit, le reglage gamma).
 import { melangeHash, NORMALES, AXE_DIR } from './modeles.js';
 import { sourcesTeinte } from './teinte.js';
 import { COUCHE_OPAQUE, COUCHE_DECOUPE, COUCHE_MELANGE } from './textures.js';
@@ -19,23 +28,28 @@ export const courbeLumiere = (niveau, gamma = 0.5) => {
   return b * (1 - gamma) + gamma * (1 - Math.pow(1 - b, 4));
 };
 
-// Tampon de quads qui grandit tout seul
+// Tampon de quads qui grandit tout seul. gpu : niveaux (ciel, bloc), teinte, bloc, centre pour l'export OpenGL ; niv : niveaux par sommet (lightmap)
 class Tampon {
-  constructor(gpu = false) {
-    this.gpu = gpu;
-    if (gpu) { this.lvl = new Float32Array(4096 * 4); this.tint = new Uint8Array(4096 * 3); this.blk = new Uint16Array(4096); this.ctr = new Float32Array(4096 * 3); } this.n = 0; this.cap = 4096; this.pos = new Float32Array(this.cap * 12); this.uv = new Float32Array(this.cap * 8); this.col = new Uint32Array(this.cap * 4); this.spr = new Int32Array(this.cap); this.sec = new Int32Array(this.cap); this.flip = new Uint8Array(this.cap); this.aob = new Uint8Array(this.cap * 4); this.eti = new Uint8Array(this.cap * 4); }
+  constructor(gpu = false, niv = false) {
+    this.gpu = gpu; this.niv = niv;
+    if (gpu) { this.lvl = new Float32Array(4096 * 4); this.blv = new Float32Array(4096 * 4); this.tint = new Uint8Array(4096 * 3); this.blk = new Uint16Array(4096); this.ctr = new Float32Array(4096 * 3); }
+    if (niv) this.nv = new Uint8Array(4096 * 8);
+    this.n = 0; this.cap = 4096; this.pos = new Float32Array(this.cap * 12); this.uv = new Float32Array(this.cap * 8); this.col = new Uint32Array(this.cap * 4); this.spr = new Int32Array(this.cap); this.sec = new Int32Array(this.cap); this.flip = new Uint8Array(this.cap); this.aob = new Uint8Array(this.cap * 4); this.eti = new Uint8Array(this.cap * 4);
+  }
   garantir() {
     if (this.n < this.cap) return;
     const c = this.cap * 2;
     const g = (a, k) => { const b = new a.constructor(c * k); b.set(a); return b; };
     this.pos = g(this.pos, 12); this.uv = g(this.uv, 8); this.col = g(this.col, 4); this.spr = g(this.spr, 1); this.sec = g(this.sec, 1); this.flip = g(this.flip, 1); this.aob = g(this.aob, 4); this.eti = g(this.eti, 4);
-    if (this.gpu) { this.lvl = g(this.lvl, 4); this.tint = g(this.tint, 3); this.blk = g(this.blk, 1); this.ctr = g(this.ctr, 3); }
+    if (this.gpu) { this.lvl = g(this.lvl, 4); this.blv = g(this.blv, 4); this.tint = g(this.tint, 3); this.blk = g(this.blk, 1); this.ctr = g(this.ctr, 3); }
+    if (this.niv) this.nv = g(this.nv, 8);
     this.cap = c;
   }
 }
 
 const OFFSET_XZ = /^(short_grass|fern|tall_grass|large_fern|dandelion|poppy|blue_orchid|allium|azure_bluet|red_tulip|orange_tulip|white_tulip|pink_tulip|oxeye_daisy|cornflower|lily_of_the_valley|wither_rose|sunflower|lilac|rose_bush|peony|dead_bush|seagrass|tall_seagrass|hanging_roots|bamboo|torchflower|pointed_dripstone)$/;
 const NON_COLLISION = /(grass|fern|dandelion|poppy|orchid|allium|bluet|tulip|daisy|cornflower|lily_of|lily_pad|rose|peony|lilac|sunflower|bush|mushroom|sapling|vine|torch|lichen|carpet|^snow$|leaf_litter|petals|wildflowers|rail|_sign|button|pressure_plate|tripwire|^string$|^fire$|seagrass|kelp|cobweb|dripleaf|roots|sprout|fungus|^wheat$|carrots|potatoes|beetroots|_stem|sugar_cane|dead_bush|berries|berry|firefly|bubble|^ladder$|^lever$|banner|^water$|^lava$|torchflower|eyeblossom|flower$|^moss_carpet$|frogspawn|pitcher_crop|^light$|^barrier$)/;
+void NON_COLLISION;
 
 // Etiquette par sommet (pour les options du shader, voir src/shader) : bits 0-2 = genre (0 rien, 1 surface d'eau, 2 feuilles, 3 plante),
 // bits 3-7 = poids du balancement pour une plante (0 au pied, 31 en haut). Sans shader elles ne servent a rien.
@@ -53,122 +67,149 @@ function decalageXZ(x, z) {
   return [f(s), f((s >> 8n))];
 }
 
-// Construit le maillage. options : { rayonMelange, aoActif, tailleSection }
+// Construit le maillage. options : { rayonMelange, aoActif, tailleSection, gamma, exportGPU, monde, lightmap }
 export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
   const gamma = options.gamma ?? 0.5;
   const courbe = new Float32Array(16).map((_, l) => courbeLumiere(l, gamma));
   const lumiere = (l) => { const i = l | 0, f = l - i; return i >= 15 ? courbe[15] : courbe[i] + (courbe[i + 1] - courbe[i]) * f; };
   const t0 = Date.now();
-  const { sx, sy, sz } = zone;
+  const monde = options.monde || null;
+  const lightmap = !!(monde && options.lightmap);
+  const G = monde || zone;               // geometrie : la boite du monde (qui peut avoir grandi) ou celle de la zone
+  const X0 = G.x0, Y0 = G.y0, Z0 = G.z0;
+  const { sx, sy, sz } = G;
   const PX = sx + 2, PY = sy + 2, PZ = sz + 2;
   const OY = PX * PZ, OZ = PX, OX = 1;
-  const pal = new Uint16Array(PX * PY * PZ);
   const caseIdx = (x, y, z) => ((y + 1) * PZ + (z + 1)) * PX + (x + 1);
-  // contenu : copie des lignes
-  for (let y = 0; y < sy; y++) {
-    for (let z = 0; z < sz; z++) {
-      const src = (y * sz + z) * sx, dst = caseIdx(0, y, z);
-      for (let x = 0; x < sx; x++) pal[dst + x] = zone.cellules[src + x];
+  let pal;
+  if (monde) pal = monde.pal;           // les tableaux du monde, lus sur place
+  else {
+    pal = new Uint16Array(PX * PY * PZ);
+    // contenu : copie des lignes
+    for (let y = 0; y < sy; y++) {
+      for (let z = 0; z < sz; z++) {
+        const src = (y * sz + z) * sx, dst = caseIdx(0, y, z);
+        for (let x = 0; x < sx; x++) pal[dst + x] = zone.cellules[src + x];
+      }
     }
-  }
-  // bordure : cache sous la surface (hauteur de la colonne la plus proche), air au-dessus
-  for (let y = -1; y <= sy; y++) {
-    const yw = zone.y0 + y;
-    for (let z = -1; z <= sz; z++) {
-      for (let x = -1; x <= sx; x++) {
-        if (x >= 0 && x < sx && z >= 0 && z < sz && y >= 0 && y < sy) continue;
-        const h = zone.hauteur(zone.x0 + x, zone.z0 + z);
-        pal[caseIdx(x, y, z)] = y < 0 ? 1 : (y >= sy ? 0 : (yw <= h ? 1 : 0));
+    // bordure : cache sous la surface (hauteur de la colonne la plus proche), air au-dessus
+    for (let y = -1; y <= sy; y++) {
+      const yw = zone.y0 + y;
+      for (let z = -1; z <= sz; z++) {
+        for (let x = -1; x <= sx; x++) {
+          if (x >= 0 && x < sx && z >= 0 && z < sz && y >= 0 && y < sy) continue;
+          const h = zone.hauteur(zone.x0 + x, zone.z0 + z);
+          pal[caseIdx(x, y, z)] = y < 0 ? 1 : (y >= sy ? 0 : (yw <= h ? 1 : 0));
+        }
       }
     }
   }
-  // etats par entree de palette
-  const NP = zone.palette.length;
-  const etats = new Array(NP);
-  const opaque = new Uint8Array(NP), perm = new Uint8Array(NP), opac = new Uint8Array(NP), kind = new Uint8Array(NP);
-  const aoSh = new Float32Array(NP).fill(1);
-  for (let i = 0; i < NP; i++) {
-    if (i === 1) { opaque[1] = 1; perm[1] = 0; opac[1] = 15; aoSh[1] = 0.2; continue; }
-    const e = modeles.etat(zone.palette[i]);
+  // etats par entree de palette (la palette du monde s'allonge : `majPalette` complete les tables)
+  const palette = monde ? monde.palette : zone.palette;
+  const CAP = monde ? 65536 : palette.length;
+  const etats = new Array(CAP);
+  const opaque = new Uint8Array(CAP), perm = new Uint8Array(CAP), opac = new Uint8Array(CAP), kind = new Uint8Array(CAP);
+  const aoSh = new Float32Array(CAP).fill(1);
+  const genre = new Uint8Array(CAP);
+  const teintesPal = new Array(CAP);
+  let NP = 0;
+  function preparerEntree(i) {
+    if (i === 1) { opaque[1] = 1; perm[1] = 0; opac[1] = 15; aoSh[1] = 0.2; return; }
+    const e = modeles.etat(palette[i]);
     etats[i] = e;
     kind[i] = e.type;
     opaque[i] = e.opaque ? 1 : 0; perm[i] = e.opaque ? 0 : 1; opac[i] = e.opaciteLumiere;
     aoSh[i] = e.aoSolide ? 0.2 : 1;
     if (e.type === 1 && e.geo.length === 0 && !e.aleatoire) kind[i] = 0;
-  }
-
-  const genre = new Uint8Array(NP);
-  for (let i = 2; i < NP; i++) { const e = etats[i]; if (e && e.type === 1) genre[i] = e.feuilles ? ETI_FEUILLES : PLANTES.test(e.nom) ? ETI_PLANTE : 0; }
-  let etiCourant = 0, etiHalf = 0;   // genre du bloc en cours et moitie (0 normal, 1 bas d'une grande plante, 2 haut)
-
-  // ---------- lumiere du ciel ----------
-  const lum = new Uint8Array(PX * PY * PZ);
-  for (let z = 0; z < PZ; z++) {
-    for (let x = 0; x < PX; x++) {
-      let L = 15;
-      for (let y = PY - 1; y >= 0; y--) {
-        const i = (y * PZ + z) * PX + x;
-        const o = opac[pal[i]];
-        if (o >= 15) L = 0; else if (o > 0) L = Math.max(0, L - o);
-        lum[i] = L;
-      }
+    if (i >= 2) {
+      if (e.type === 1) genre[i] = e.feuilles ? ETI_FEUILLES : PLANTES.test(e.nom) ? ETI_PLANTE : 0;
+      teintesPal[i] = e.type === 1 ? sourcesTeinte(e.nom, e.props) : null;
     }
   }
-  let file = new Int32Array(1 << 16), tete = 0, queue = 0;
-  const pousser = (i) => { if (queue >= file.length) { const n = new Int32Array(file.length * 2); n.set(file); file = n; } file[queue++] = i; };
-  const voisins = [OX, -OX, OZ, -OZ, OY, -OY];
-  for (let y = 1; y < PY - 1; y++) {
-    for (let z = 1; z < PZ - 1; z++) {
-      for (let x = 1; x < PX - 1; x++) {
-        const i = (y * PZ + z) * PX + x;
-        const L = lum[i];
-        if (L < 2) continue;
-        for (let k = 0; k < 6; k++) {
-          const n = i + voisins[k];
-          if (opac[pal[n]] < 15 && lum[n] + 1 < L) { pousser(i); break; }
+  const majPalette = () => { for (; NP < palette.length; NP++) preparerEntree(NP); };
+  majPalette();
+  let etiCourant = 0, etiHalf = 0;   // genre du bloc en cours et moitie (0 normal, 1 bas d'une grande plante, 2 haut)
+
+  // ---------- lumiere du ciel (et des blocs) ----------
+  let lum, blk = null;
+  if (monde) { lum = monde.ciel; blk = monde.bloc; }   // tenues a jour par moteur/lumiere.js
+  else {
+    lum = new Uint8Array(PX * PY * PZ);
+    for (let z = 0; z < PZ; z++) {
+      for (let x = 0; x < PX; x++) {
+        let L = 15;
+        for (let y = PY - 1; y >= 0; y--) {
+          const i = (y * PZ + z) * PX + x;
+          const o = opac[pal[i]];
+          if (o >= 15) L = 0; else if (o > 0) L = Math.max(0, L - o);
+          lum[i] = L;
         }
       }
     }
-  }
-  while (tete < queue) {
-    const i = file[tete++];
-    const L = lum[i];
-    if (L < 2) continue;
-    for (let k = 0; k < 6; k++) {
-      const n = i + voisins[k];
-      // ne sort pas du tableau : la bordure sert de garde
-      if (n < 0 || n >= lum.length) continue;
-      const o = opac[pal[n]];
-      if (o >= 15) continue;
-      const nl = L - (o > 1 ? o : 1);
-      if (nl > lum[n]) { lum[n] = nl; pousser(n); }
+    let file = new Int32Array(1 << 16), tete = 0, queue = 0;
+    const pousser = (i) => { if (queue >= file.length) { const n = new Int32Array(file.length * 2); n.set(file); file = n; } file[queue++] = i; };
+    const voisins = [OX, -OX, OZ, -OZ, OY, -OY];
+    for (let y = 1; y < PY - 1; y++) {
+      for (let z = 1; z < PZ - 1; z++) {
+        for (let x = 1; x < PX - 1; x++) {
+          const i = (y * PZ + z) * PX + x;
+          const L = lum[i];
+          if (L < 2) continue;
+          for (let k = 0; k < 6; k++) {
+            const n = i + voisins[k];
+            if (opac[pal[n]] < 15 && lum[n] + 1 < L) { pousser(i); break; }
+          }
+        }
+      }
+    }
+    while (tete < queue) {
+      const i = file[tete++];
+      const L = lum[i];
+      if (L < 2) continue;
+      for (let k = 0; k < 6; k++) {
+        const n = i + voisins[k];
+        // ne sort pas du tableau : la bordure sert de garde
+        if (n < 0 || n >= lum.length) continue;
+        const o = opac[pal[n]];
+        if (o >= 15) continue;
+        const nl = L - (o > 1 ? o : 1);
+        if (nl > lum[n]) { lum[n] = nl; pousser(n); }
+      }
     }
   }
 
-  // ---------- teintes par colonne ----------
+  // ---------- teintes par colonne (colonnes de la zone d'origine ; hors de la zone : la colonne la plus proche) ----------
   const tab = couleurs.tableaux(zone, options.rayonMelange ?? 2);
-  const teintesPal = new Array(NP);
-  for (let i = 2; i < NP; i++) teintesPal[i] = etats[i].type === 1 ? sourcesTeinte(etats[i].nom, etats[i].props) : null;
+  const colDe = monde
+    ? (x, z) => Math.min(zone.sz - 1, Math.max(0, z + Z0 - zone.z0)) * zone.sx + Math.min(zone.sx - 1, Math.max(0, x + X0 - zone.x0))
+    : (x, z) => z * sx + x;
 
   // ---------- emission ----------
   const gpu = !!options.exportGPU;
-  const tampons = [new Tampon(gpu), new Tampon(gpu), new Tampon(gpu), new Tampon(gpu)];   // opaque, decoupe, melange, decoupe interne
+  let tampons;
+  const nouveauxTampons = () => [new Tampon(gpu, lightmap), new Tampon(gpu, lightmap), new Tampon(gpu, lightmap), new Tampon(gpu, lightmap)];   // opaque, decoupe, melange, decoupe interne
+  tampons = nouveauxTampons();
   const TS = options.tailleSection ?? 16;
   const nsx = Math.ceil(sx / TS), nsy = Math.ceil(sy / TS), nsz = Math.ceil(sz / TS);
-  const secDe = (x, y, z) => ((y / TS | 0) * nsz + (z / TS | 0)) * nsx + (x / TS | 0);
+  let secDe = (x, y, z) => ((y / TS | 0) * nsz + (z / TS | 0)) * nsx + (x / TS | 0);
   const stat = { quads: 0, cellules: 0, cullees: 0 };
   const rgb = (c) => [(c >> 16) & 255, (c >> 8) & 255, c & 255];
-  const cible = [0, 0, 0, 0];
+  // numero de section ABSOLU (ancre = origine de la zone) pour reperer une section meme apres un agrandissement de la boite
+  const A = monde ? monde.ancre : null;
+  const cleAbs = (a, b, c) => ((b + 64) * 4096 + (c + 2048)) * 4096 + (a + 2048);
+  const cleDe = monde ? (s) => {
+    const a = s % nsx, c = Math.floor(s / nsx) % nsz, b = Math.floor(s / (nsx * nsz));
+    return cleAbs(a + (X0 - A[0]) / TS, b + (Y0 - A[1]) / TS, c + (Z0 - A[2]) / TS);
+  } : null;
 
   // axes tangents par direction : [decalage t1, decalage t2, axe t1, axe t2]
   const TAN = [[OX, OZ, 0, 2], [OX, OZ, 0, 2], [OX, OY, 0, 1], [OX, OY, 0, 1], [OZ, OY, 2, 1], [OZ, OY, 2, 1]];
   const OFFDIR = [-OY, OY, -OZ, OZ, -OX, OX];
 
-  const luminositeBord = new Float32Array(4);
-  const aoBord = new Float32Array(4);
-  const luBord = new Float32Array(4);
   const br = new Float32Array(4);
-  const lv = new Float32Array(4);   // niveau de lumiere du ciel 0..15 aux 4 coins (export GPU)
+  const lv = new Float32Array(4);   // niveau de lumiere du ciel 0..15 aux 4 coins
+  const bv = new Float32Array(4);   // niveau de lumiere de bloc 0..15 aux 4 coins
+  const fl = new Float32Array(4);   // luminosite combinee (choix de la diagonale)
   const aoc = new Float32Array(4);
 
   function emettreQuad(couche, tex, q, i, lx, ly, lz, dx, dy, dz, colonne, vertCol) {
@@ -185,11 +226,22 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
     const pc = pal[base];
     let Lc = lum[base];
     if (opac[pc] >= 15) Lc = lum[i];
+    let Bc = 0;
+    if (lightmap) { Bc = blk[base]; if (opac[pc] >= 15) Bc = blk[i]; }
     const flat = !q.ao || options.aoActif === false;
+    const emis = q.emission || kind[pal[i]] === 3;
     if (flat) {
-      const brt = lumiere(q.emission || kind[pal[i]] === 3 ? 15 : Lc);
-      br[0] = br[1] = br[2] = br[3] = brt;
-      lv[0] = lv[1] = lv[2] = lv[3] = q.emission || kind[pal[i]] === 3 ? 15 : Lc;
+      if (lightmap) {
+        const lc = emis ? 15 : Lc, bc = emis ? 15 : Bc;
+        br[0] = br[1] = br[2] = br[3] = 1;
+        lv[0] = lv[1] = lv[2] = lv[3] = lc; bv[0] = bv[1] = bv[2] = bv[3] = bc;
+        fl[0] = fl[1] = fl[2] = fl[3] = lumiere(Math.max(lc, bc));
+      } else {
+        const brt = lumiere(emis ? 15 : Lc);
+        br[0] = br[1] = br[2] = br[3] = brt;
+        lv[0] = lv[1] = lv[2] = lv[3] = emis ? 15 : Lc;
+        bv[0] = bv[1] = bv[2] = bv[3] = emis ? 15 : 0;
+      }
       aoc[0] = aoc[1] = aoc[2] = aoc[3] = 1;
     } else {
       const sCentre = aoSh[pc];
@@ -202,8 +254,14 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
         const la = opac[pa] >= 15 ? Lc : lum[base + oa];
         const lb = opac[pb] >= 15 ? Lc : lum[base + ob];
         const lk = opac[pk] >= 15 ? Lc : lum[nk];
-        const l = q.emission || kind[pal[i]] === 3 ? 15 : (la + lb + lk + Lc) * 0.25;
-        br[c] = ao * lumiere(l); aoc[c] = ao; lv[c] = l;
+        const l = emis ? 15 : (la + lb + lk + Lc) * 0.25;
+        if (lightmap) {
+          const ba = opac[pa] >= 15 ? Bc : blk[base + oa];
+          const bb = opac[pb] >= 15 ? Bc : blk[base + ob];
+          const bk = opac[pk] >= 15 ? Bc : blk[nk];
+          const lbk = emis ? 15 : (ba + bb + bk + Bc) * 0.25;
+          br[c] = ao; aoc[c] = ao; lv[c] = l; bv[c] = lbk; fl[c] = ao * lumiere(Math.max(l, lbk));
+        } else { br[c] = ao * lumiere(l); aoc[c] = ao; lv[c] = l; bv[c] = emis ? 15 : 0; }
       }
     }
     const ombre = OMBRE_DIR[q.dirOmbre];
@@ -218,27 +276,27 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
     T.garantir();
     const n = T.n++;
     const po = n * 12, uo = n * 8, co = n * 4;
-    if (gpu) { T.tint[n * 3] = r; T.tint[n * 3 + 1] = g; T.tint[n * 3 + 2] = bl; T.blk[n] = pal[i]; T.ctr[n * 3] = zone.x0 + lx + 0.5; T.ctr[n * 3 + 1] = zone.y0 + ly + 0.5; T.ctr[n * 3 + 2] = zone.z0 + lz + 0.5; }
-    let jaune = 0;
+    if (gpu) { T.tint[n * 3] = r; T.tint[n * 3 + 1] = g; T.tint[n * 3 + 2] = bl; T.blk[n] = pal[i]; T.ctr[n * 3] = X0 + lx + 0.5; T.ctr[n * 3 + 1] = Y0 + ly + 0.5; T.ctr[n * 3 + 2] = Z0 + lz + 0.5; }
     const vb = [0, 0, 0, 0];
     for (let k = 0; k < 4; k++) {
       const p = q.p[k];
-      T.pos[po + k * 3] = zone.x0 + lx + p[0] + dx;
-      T.pos[po + k * 3 + 1] = zone.y0 + ly + p[1] + dy;
-      T.pos[po + k * 3 + 2] = zone.z0 + lz + p[2] + dz;
+      T.pos[po + k * 3] = X0 + lx + p[0] + dx;
+      T.pos[po + k * 3 + 1] = Y0 + ly + p[1] + dy;
+      T.pos[po + k * 3 + 2] = Z0 + lz + p[2] + dz;
       T.uv[uo + k * 2] = q.uv[k][0]; T.uv[uo + k * 2 + 1] = q.uv[k][1];
       // poids bilineaire du sommet dans le carre (coordonnees dans la cellule)
       const w1 = Math.min(1, Math.max(0, p[ax1])), w2 = Math.min(1, Math.max(0, p[ax2]));
-      const v = (1 - w1) * (1 - w2) * br[0] + w1 * (1 - w2) * br[1] + (1 - w1) * w2 * br[2] + w1 * w2 * br[3];
+      const bil = (t) => (1 - w1) * (1 - w2) * t[0] + w1 * (1 - w2) * t[1] + (1 - w1) * w2 * t[2] + w1 * w2 * t[3];
+      const v = bil(lightmap ? fl : br);
       vb[k] = v;
-      if (gpu) T.lvl[n * 4 + k] = (1 - w1) * (1 - w2) * lv[0] + w1 * (1 - w2) * lv[1] + (1 - w1) * w2 * lv[2] + w1 * w2 * lv[3];
-      T.aob[n * 4 + k] = Math.min(255, Math.round(((1 - w1) * (1 - w2) * aoc[0] + w1 * (1 - w2) * aoc[1] + (1 - w1) * w2 * aoc[2] + w1 * w2 * aoc[3]) * 255));
+      if (gpu) { T.lvl[n * 4 + k] = bil(lv); T.blv[n * 4 + k] = bil(bv); }
+      if (lightmap) { T.nv[n * 8 + k * 2] = Math.round(bil(lv) * 17); T.nv[n * 8 + k * 2 + 1] = Math.round(bil(bv) * 17); }
+      T.aob[n * 4 + k] = Math.min(255, Math.round(bil(aoc) * 255));
       T.eti[n * 4 + k] = etiCourant === ETI_PLANTE ? ETI_PLANTE | (Math.min(31, Math.round(31 * Math.min(1, Math.max(0, (p[1] + (etiHalf === 2 ? 1 : 0)) / (etiHalf ? 2 : 1))))) << 3) : etiCourant;
-      const f = v * ombre;
-      const R = Math.min(255, (r * f + 0.5) | 0), G = Math.min(255, (g * f + 0.5) | 0), B = Math.min(255, (bl * f + 0.5) | 0);
-      T.col[co + k] = (255 << 24) | (B << 16) | (G << 8) | R;
+      const f = (lightmap ? bil(br) : v) * ombre;
+      const R = Math.min(255, (r * f + 0.5) | 0), G2 = Math.min(255, (g * f + 0.5) | 0), B = Math.min(255, (bl * f + 0.5) | 0);
+      T.col[co + k] = (255 << 24) | (B << 16) | (G2 << 8) | R;
     }
-    void jaune;
     T.flip[n] = vb[1] + vb[3] > vb[0] + vb[2] ? 1 : 0;
     T.spr[n] = q.sprite.id;
     T.sec[n] = secDe(lx, ly, lz);
@@ -247,18 +305,19 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
   }
 
   // Un quad de fluide (positions locales a la cellule en blocs) avec couleur uniforme
-  function quadFluide(couche, sprite, pts, uvs, rgbF, f, secteur, tag = 0, niveau = 15, bloc = 0) {
+  function quadFluide(couche, sprite, pts, uvs, rgbF, f, secteur, tag = 0, niveau = 15, bloc = 0, niveauBloc = 0) {
     const T = tampons[couche];
     T.garantir();
     const n = T.n++;
-    const R = Math.min(255, (rgbF[0] * f + 0.5) | 0), G = Math.min(255, (rgbF[1] * f + 0.5) | 0), B = Math.min(255, (rgbF[2] * f + 0.5) | 0);
+    const R = Math.min(255, (rgbF[0] * f + 0.5) | 0), G2 = Math.min(255, (rgbF[1] * f + 0.5) | 0), B = Math.min(255, (rgbF[2] * f + 0.5) | 0);
     for (let k = 0; k < 4; k++) {
       T.pos[n * 12 + k * 3] = pts[k][0]; T.pos[n * 12 + k * 3 + 1] = pts[k][1]; T.pos[n * 12 + k * 3 + 2] = pts[k][2];
       T.uv[n * 8 + k * 2] = uvs[k][0]; T.uv[n * 8 + k * 2 + 1] = uvs[k][1];
-      T.col[n * 4 + k] = (255 << 24) | (B << 16) | (G << 8) | R;
+      T.col[n * 4 + k] = (255 << 24) | (B << 16) | (G2 << 8) | R;
     }
     T.flip[n] = 0; T.spr[n] = sprite.id; T.sec[n] = secteur;
-    if (gpu) { for (let k = 0; k < 4; k++) T.lvl[n * 4 + k] = niveau; T.tint[n * 3] = rgbF[0]; T.tint[n * 3 + 1] = rgbF[1]; T.tint[n * 3 + 2] = rgbF[2]; T.blk[n] = bloc; T.ctr[n * 3] = pts[0][0]; T.ctr[n * 3 + 1] = pts[0][1]; T.ctr[n * 3 + 2] = pts[0][2]; }
+    if (gpu) { for (let k = 0; k < 4; k++) { T.lvl[n * 4 + k] = niveau; T.blv[n * 4 + k] = niveauBloc; } T.tint[n * 3] = rgbF[0]; T.tint[n * 3 + 1] = rgbF[1]; T.tint[n * 3 + 2] = rgbF[2]; T.blk[n] = bloc; T.ctr[n * 3] = pts[0][0]; T.ctr[n * 3 + 1] = pts[0][1]; T.ctr[n * 3 + 2] = pts[0][2]; }
+    if (lightmap) for (let k = 0; k < 4; k++) { T.nv[n * 8 + k * 2] = Math.round(niveau * 17); T.nv[n * 8 + k * 2 + 1] = Math.round(niveauBloc * 17); }
     for (let k = 0; k < 4; k++) { T.aob[n * 4 + k] = 255; T.eti[n * 4 + k] = tag; }
     stat.quads++;
   }
@@ -272,93 +331,120 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
     const dessus = pal[i + OY];
     const dessusEau = lave ? kind[dessus] === 3 : (etats[dessus] && etats[dessus].eau);
     const h = dessusEau || lv >= 8 ? 1 : (lv === 0 ? 14 / 16 : (8 - lv) / 9);
-    const X = zone.x0 + lx, Y = zone.y0 + ly, Z = zone.z0 + lz;
+    const X = X0 + lx, Y = Y0 + ly, Z = Z0 + lz;
     const couche = lave ? 0 : 2;
     const sTop = lave ? spriteLaveStill : spriteEauStill, sSide = lave ? spriteLaveFlow : spriteEauFlow;
     const coul = lave ? [255, 255, 255] : rgb(tab.eau[colonne]);
     const niveauLum = (idx) => (lave ? 15 : lum[idx]);
+    const niveauBlk = (idx) => (lave ? 15 : (lightmap ? blk[idx] : 0));
+    const lumF = (idx) => (lightmap ? 1 : lumiere(niveauLum(idx)));
     const memeFluide = (p) => (lave ? kind[p] === 3 : !!(etats[p] && etats[p].eau));
     const secteur = secDe(lx, ly, lz);
     // haut
     if (!(opaque[dessus]) && !(dessusEau)) {
-      const f = FLU_OMBRE[1] * lumiere(niveauLum(i));
-      quadFluide(couche, sTop, [[X, Y + h, Z], [X, Y + h, Z + 1], [X + 1, Y + h, Z + 1], [X + 1, Y + h, Z]], [[0, 0], [0, 1], [1, 1], [1, 0]], coul, f, secteur, lave ? 0 : ETI_EAU, niveauLum(i), pal[i]);
+      const f = FLU_OMBRE[1] * lumF(i);
+      quadFluide(couche, sTop, [[X, Y + h, Z], [X, Y + h, Z + 1], [X + 1, Y + h, Z + 1], [X + 1, Y + h, Z]], [[0, 0], [0, 1], [1, 1], [1, 0]], coul, f, secteur, lave ? 0 : ETI_EAU, niveauLum(i), pal[i], niveauBlk(i));
     }
     // cotes
     const faces = [[2, OFFDIR[2]], [3, OFFDIR[3]], [4, OFFDIR[4]], [5, OFFDIR[5]]];
     for (const [d, off] of faces) {
       const np = pal[i + off];
       if (opaque[np] || memeFluide(np)) continue;
-      const f = FLU_OMBRE[d] * lumiere(niveauLum(i + off));
+      const f = FLU_OMBRE[d] * lumF(i + off);
       let pts;
       if (d === 2) pts = [[X + 1, Y + h, Z], [X + 1, Y, Z], [X, Y, Z], [X, Y + h, Z]];
       else if (d === 3) pts = [[X, Y + h, Z + 1], [X, Y, Z + 1], [X + 1, Y, Z + 1], [X + 1, Y + h, Z + 1]];
       else if (d === 4) pts = [[X, Y + h, Z], [X, Y, Z], [X, Y, Z + 1], [X, Y + h, Z + 1]];
       else pts = [[X + 1, Y + h, Z + 1], [X + 1, Y, Z + 1], [X + 1, Y, Z], [X + 1, Y + h, Z]];
-      quadFluide(couche, sSide, pts, [[0, 0], [0, h * 0.5], [0.5, h * 0.5], [0.5, 0]].map((u, k) => [[0, 0], [0, h / 2], [0.5, h / 2], [0.5, 0]][k]), coul, f, secteur, 0, niveauLum(i + off), pal[i]);
+      quadFluide(couche, sSide, pts, [[0, 0], [0, h * 0.5], [0.5, h * 0.5], [0.5, 0]].map((u, k) => [[0, 0], [0, h / 2], [0.5, h / 2], [0.5, 0]][k]), coul, f, secteur, 0, niveauLum(i + off), pal[i], niveauBlk(i + off));
     }
     // bas
     const dessous = pal[i - OY];
     if (!opaque[dessous] && !memeFluide(dessous)) {
-      const f = FLU_OMBRE[0] * lumiere(niveauLum(i - OY));
-      quadFluide(couche, sTop, [[X, Y, Z + 1], [X, Y, Z], [X + 1, Y, Z], [X + 1, Y, Z + 1]], [[0, 1], [0, 0], [1, 0], [1, 1]], coul, f, secteur, 0, niveauLum(i - OY), pal[i]);
+      const f = FLU_OMBRE[0] * lumF(i - OY);
+      quadFluide(couche, sTop, [[X, Y, Z + 1], [X, Y, Z], [X + 1, Y, Z], [X + 1, Y, Z + 1]], [[0, 1], [0, 0], [1, 0], [1, 1]], coul, f, secteur, 0, niveauLum(i - OY), pal[i], niveauBlk(i - OY));
     }
   }
 
-  for (let y = 0; y < sy; y++) {
-    for (let z = 0; z < sz; z++) {
-      const colonne = z * sx + 0;
-      let i = caseIdx(0, y, z);
-      for (let x = 0; x < sx; x++, i++) {
-        const p = pal[i];
-        if (p < 2) continue;
-        const k = kind[p];
-        const e = etats[p];
-        if (k === 0 && !e.eau) continue;
-        stat.cellules++;
-        const col = colonne + x;
-        if (k === 2 || k === 3) { emettreFluide(i, x, y, z, k === 3, e.props, col); continue; }
-        if (e.eau) emettreFluide(i, x, y, z, false, e.props, col);
-        if (k !== 1) continue;
-        const geo = e.aleatoire ? modeles.geometrie(e, melangeHash(((x + zone.x0) * 3129871) ^ ((z + zone.z0) * 116129781) ^ (y + zone.y0))) : e.geo;
-        let dx = 0, dz = 0;
-        if (OFFSET_XZ.test(e.nom)) [dx, dz] = decalageXZ(zone.x0 + x, zone.z0 + z);
-        const vertCol = teintesPal[p];
-        etiCourant = genre[p]; etiHalf = etiCourant === ETI_PLANTE ? (e.props && e.props.half === 'lower' ? 1 : e.props && e.props.half === 'upper' ? 2 : 0) : 0;
-        for (const q of geo) {
-          if (q.cull >= 0) {
-            const np = pal[i + OFFDIR[q.cull]];
-            if (opaque[np]) { stat.cullees++; continue; }
-            if (e.memeCulling) {
-              const ne = etats[np];
-              if (ne && ne.nom === e.nom) { stat.cullees++; continue; }
+  // Emet les quads des cellules locales [xa, xb[ x [ya, yb[ x [za, zb[
+  function emettreCellules(xa, xb, ya, yb, za, zb) {
+    for (let y = ya; y < yb; y++) {
+      for (let z = za; z < zb; z++) {
+        let i = caseIdx(xa, y, z);
+        for (let x = xa; x < xb; x++, i++) {
+          const p = pal[i];
+          if (p < 2) continue;
+          const k = kind[p];
+          const e = etats[p];
+          if (k === 0 && !e.eau) continue;
+          stat.cellules++;
+          const col = colDe(x, z);
+          if (k === 2 || k === 3) { emettreFluide(i, x, y, z, k === 3, e.props, col); continue; }
+          if (e.eau) emettreFluide(i, x, y, z, false, e.props, col);
+          if (k !== 1) continue;
+          const geo = e.aleatoire ? modeles.geometrie(e, melangeHash(((x + X0) * 3129871) ^ ((z + Z0) * 116129781) ^ (y + Y0))) : e.geo;
+          let dx = 0, dz = 0;
+          if (OFFSET_XZ.test(e.nom)) [dx, dz] = decalageXZ(X0 + x, Z0 + z);
+          const vertCol = teintesPal[p];
+          etiCourant = genre[p]; etiHalf = etiCourant === ETI_PLANTE ? (e.props && e.props.half === 'lower' ? 1 : e.props && e.props.half === 'upper' ? 2 : 0) : 0;
+          for (const q of geo) {
+            if (q.cull >= 0) {
+              const np = pal[i + OFFDIR[q.cull]];
+              if (opaque[np]) { stat.cullees++; continue; }
+              if (e.memeCulling) {
+                const ne = etats[np];
+                if (ne && ne.nom === e.nom) { stat.cullees++; continue; }
+              }
             }
+            let couche = q.couche;
+            if (e.feuilles && couche === COUCHE_DECOUPE && q.cull >= 0) {
+              const ne = etats[pal[i + OFFDIR[q.cull]]];
+              if (ne && ne.type === 1 && (ne.feuilles || ne.aoSolide)) couche = COUCHE_INTERNE;   // voisin = feuilles ou cube plein (cutout) : face interne
+            }
+            emettreQuad(couche, null, q, i, x, y, z, dx, 0, dz, col, vertCol);
           }
-          let couche = q.couche;
-          if (e.feuilles && couche === COUCHE_DECOUPE && q.cull >= 0) {
-            const ne = etats[pal[i + OFFDIR[q.cull]]];
-            if (ne && ne.type === 1 && (ne.feuilles || ne.aoSolide)) couche = COUCHE_INTERNE;   // voisin = feuilles ou cube plein (cutout) : face interne
-          }
-          emettreQuad(couche, null, q, i, x, y, z, dx, 0, dz, col, vertCol);
         }
       }
     }
   }
-  void cible; void luminositeBord; void aoBord; void luBord;
+  emettreCellules(0, sx, 0, sy, 0, sz);
 
   // ---------- assemblage final ----------
   const atlas = textures.construireAtlas();
   const nbSec = nsx * nsy * nsz;
-  const couches = tampons.map((T) => assembler(T, textures, atlas, nbSec));
-  return {
+  const couches = tampons.map((T) => assembler(T, textures, atlas, nbSec, cleDe));
+  const resultat = {
     atlas, couches: { opaque: couches[0], decoupe: couches[1], melange: couches[2], interne: couches[3] },
     stats: { ...stat, ms: Date.now() - t0, quadsParCouche: tampons.map((t) => t.n) },
-    interne: { pal, lum, PX, PY, PZ, etats, opaque, kind },
+    interne: { pal, lum, blk, PX, PY, PZ, etats, opaque, kind, x0: X0, y0: Y0, z0: Z0 },
+    lightmap,
   };
+
+  // Section ABSOLUE (a, b, c : numeros de section de 16 cellules depuis l'ancre du monde) -> { opaque, decoupe, melange, interne }
+  // (chacun : tableaux du mailleur avec UNE section, ou null s'il est vide) ; rend null si la section est hors de la boite.
+  if (monde) {
+    resultat.mailleSection = (a, b, c) => {
+      majPalette();
+      const lx0 = a * TS + A[0] - X0, ly0 = b * TS + A[1] - Y0, lz0 = c * TS + A[2] - Z0;
+      const xa = Math.max(0, lx0), xb = Math.min(sx, lx0 + TS), ya = Math.max(0, ly0), yb = Math.min(sy, ly0 + TS), za = Math.max(0, lz0), zb = Math.min(sz, lz0 + TS);
+      if (xa >= xb || ya >= yb || za >= zb) return null;
+      const sauveT = tampons, sauveS = secDe;
+      tampons = nouveauxTampons(); secDe = () => 0;
+      try {
+        emettreCellules(xa, xb, ya, yb, za, zb);
+        const cs = tampons.map((T) => (T.n ? assembler(T, textures, atlas, 1, () => cleAbs(a, b, c)) : null));
+        return { opaque: cs[0], decoupe: cs[1], melange: cs[2], interne: cs[3] };
+      } finally { tampons = sauveT; secDe = sauveS; }
+    };
+    resultat.majPalette = majPalette;
+    resultat.cleAbs = cleAbs;
+    resultat.sectionDe = (x, y, z) => [Math.floor((x - A[0]) / TS), Math.floor((y - A[1]) / TS), Math.floor((z - A[2]) / TS)];
+  }
+  return resultat;
 }
 
 // Trie les quads par section et fabrique les tableaux finaux.
-function assembler(T, textures, atlas, nbSec) {
+function assembler(T, textures, atlas, nbSec, cleDe = null) {
   const n = T.n;
   const compte = new Int32Array(nbSec + 1);
   for (let i = 0; i < n; i++) compte[T.sec[i] + 1]++;
@@ -369,6 +455,7 @@ function assembler(T, textures, atlas, nbSec) {
   const couleurs = new Uint32Array(new SharedArrayBuffer(n * 4 * 4));
   const indices = new Uint32Array(new SharedArrayBuffer(n * 6 * 4));
   const ao = new Uint8Array(new SharedArrayBuffer(Math.max(1, n * 4))), etiq = new Uint8Array(new SharedArrayBuffer(Math.max(1, n * 4)));
+  const niv = T.niv ? new Uint8Array(new SharedArrayBuffer(Math.max(1, n * 8))) : null;
   const bbox = new Float32Array(nbSec * 6);
   for (let s = 0; s < nbSec; s++) { bbox[s * 6] = bbox[s * 6 + 1] = bbox[s * 6 + 2] = Infinity; bbox[s * 6 + 3] = bbox[s * 6 + 4] = bbox[s * 6 + 5] = -Infinity; }
   const AW = atlas.largeur, AH = atlas.hauteur;
@@ -380,6 +467,7 @@ function assembler(T, textures, atlas, nbSec) {
     positions.set(T.pos.subarray(i * 12, i * 12 + 12), o * 12);
     couleurs.set(T.col.subarray(i * 4, i * 4 + 4), o * 4);
     ao.set(T.aob.subarray(i * 4, i * 4 + 4), o * 4); etiq.set(T.eti.subarray(i * 4, i * 4 + 4), o * 4);
+    if (niv) niv.set(T.nv.subarray(i * 8, i * 8 + 8), o * 8);
     const sp = textures.sprites[T.spr[i]];
     if (mid) { mid[o * 2] = (sp.ax + sp.w / 2) / AW; mid[o * 2 + 1] = (sp.ay + sp.h / 2) / AH; }
     for (let k = 0; k < 4; k++) {
@@ -398,19 +486,19 @@ function assembler(T, textures, atlas, nbSec) {
   }
   const sections = [];
   for (let s = 0; s < nbSec; s++) {
-    if (compte[s + 1] > compte[s]) sections.push({ debut: compte[s] * 6, nb: (compte[s + 1] - compte[s]) * 6, bbox: Array.from(bbox.subarray(s * 6, s * 6 + 6)) });
+    if (compte[s + 1] > compte[s]) sections.push({ debut: compte[s] * 6, nb: (compte[s + 1] - compte[s]) * 6, bbox: Array.from(bbox.subarray(s * 6, s * 6 + 6)), ...(cleDe ? { cle: cleDe(s) } : {}) });
   }
   let gpu = null;
   if (T.gpu) {
-    const lvl = new Float32Array(n * 4), tint = new Uint8Array(n * 3), blk = new Uint16Array(n), ctr = new Float32Array(n * 3);
+    const lvl = new Float32Array(n * 4), blv = new Float32Array(n * 4), tint = new Uint8Array(n * 3), blk = new Uint16Array(n), ctr = new Float32Array(n * 3);
     const suivant2 = compte.slice(0, nbSec);
     for (let i = 0; i < n; i++) {
       const o = suivant2[T.sec[i]]++;
-      lvl.set(T.lvl.subarray(i * 4, i * 4 + 4), o * 4); tint.set(T.tint.subarray(i * 3, i * 3 + 3), o * 3); blk[o] = T.blk[i]; ctr.set(T.ctr.subarray(i * 3, i * 3 + 3), o * 3);
+      lvl.set(T.lvl.subarray(i * 4, i * 4 + 4), o * 4); blv.set(T.blv.subarray(i * 4, i * 4 + 4), o * 4); tint.set(T.tint.subarray(i * 3, i * 3 + 3), o * 3); blk[o] = T.blk[i]; ctr.set(T.ctr.subarray(i * 3, i * 3 + 3), o * 3);
     }
-    gpu = { lvl, tint, blk, ctr, mid };
+    gpu = { lvl, blv, tint, blk, ctr, mid };
   }
-  return { positions, uvs, couleurs, indices, sections, nbQuads: n, ao, etiq, gpu };
+  return { positions, uvs, couleurs, indices, sections, nbQuads: n, ao, etiq, niv, gpu };
 }
 
 export { COUCHE_OPAQUE, COUCHE_DECOUPE, COUCHE_MELANGE, COUCHE_INTERNE };

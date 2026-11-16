@@ -107,7 +107,8 @@ const lisser01 = (u) => { u = Math.min(1, Math.max(0, u)); return u * u * (3 - 2
 // intervalles du monde gele [[a, b]] (le monde ne vit pas pendant un gel : ni chute, ni saut, ni pas).
 // Retourne { ticks, x, z, y, vy, sol (booleens), air, eau, echelle, imp (hauteur imposee par pos), horizModifie, evenementsBruts,
 //   decollages: [{ k, t }], atterrissages: [{ k, t, impact (blocs/tick), chute (blocs) }], etatA(tm), temps(k) }.
-export function simulerActeur({ piste, terrain = {}, duree, gel = [] }) {
+// tempsPos (facultatif) : fonction qui decale le temps de lecture de la piste (acteur fige seul, fige.js) ; sans elle, le temps du film.
+export function simulerActeur({ piste, terrain = {}, duree, gel = [], tempsPos = null }) {
   const sol = creerSol(terrain);
   const eauEn = terrain.eauEn ?? (() => null);
   const bloc = terrain.bloc ?? (() => null);
@@ -117,7 +118,7 @@ export function simulerActeur({ piste, terrain = {}, duree, gel = [] }) {
   const X = new Float64Array(K + 12), Z = new Float64Array(K + 12), YI = new Float64Array(K + 12);
   const tmp = [0, 0, 0];
   for (let k = 0; k < K + 12; k++) {
-    evaluer(piste, reel(k * TICK), tmp);
+    evaluer(piste, tempsPos ? tempsPos(reel(k * TICK)) : reel(k * TICK), tmp);
     X[k] = tmp[0]; Z[k] = tmp[2]; YI[k] = tmp[1];
   }
   const gAt = (x, z) => { const s = sol.sous(x, z); return s ? s.y : null; };

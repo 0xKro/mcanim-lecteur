@@ -7,6 +7,8 @@ import { planifierCameraSuivi, planifierCameraLibre } from './camera.js';
 import { compensationAppui, descenteBascule, decalageYeux } from '../perso/modele.js';
 import { simulerActeur, creerSol, lisser01 } from './physique.js';
 import { reactionsA } from './reactions.js';
+import { creerFige } from './fige.js';   // acteur fige seul : horloges propres
+import { notesObstruction } from './obstruction.js';   // camera : herbe, feuilles ou acteur colles a l'objectif (note, sans correction)
 import { valeurObjet } from './objets-scene.js';   // objets tenus et armure : pistes de changements d'un coup
 import { appliquerCibles, aCibles } from './cibles.js';   // articulations libres : cibles des mains et des pieds (cinematique inverse)
 
@@ -32,17 +34,23 @@ export function horlogeMonde(gel = []) {
   return { monde, etat };
 }
 
+// Phase (0..1 et plus) d'une boucle au temps t : (t - de) / periode + phase0 ; avec un gel (h = { tw, monde }) seul le temps du monde compte.
+// phase0 (facultatif, champ de la boucle) : la boucle demarre a cette phase (enchainer deux scenes sans a-coup : mcanim etat).
+export function phaseBoucle(b, t, h = null) {
+  return (h ? (h.monde(h.tw) - h.monde(b.de)) / b.periode : (t - b.de) / b.periode) + (b.phase0 ?? 0);
+}
+
 // Somme des boucles actives pour une piste donnee. Retourne un tableau de `n` valeurs.
 // `h` (facultatif) : { tw, monde } voir horlogeMonde ; sans lui, le temps normal.
 function sommeBoucles(a, nom, t, n, h = null) {
   const s = new Array(n).fill(0);
   const tw = h ? h.tw : t;
-  for (const b of a.boucles) {
+  for (const b of (h?.boucles ?? a.boucles)) {   // h.boucles : boucles decalees d'un acteur fige (fige.js)
     const piste = b.pistes[nom];
     if (!piste) continue;
     const w = poidsBoucle(b, tw);
     if (w <= 0) continue;
-    const phase = h ? (h.monde(tw) - h.monde(b.de)) / b.periode : (t - b.de) / b.periode;
+    const phase = phaseBoucle(b, t, h);
     const v = evaluerPhase(piste, phase);
     for (let i = 0; i < n; i++) s[i] += w * (v[i] ?? 0);
   }
@@ -134,7 +142,8 @@ export function animer(scene, terrain = {}) {
   const gel = scene.gel ?? [];
   const horloge = horlogeMonde(gel);
   // physique verticale de chaque acteur (physique.js) : saut, marche d'escalier, chute, eau, echelle ; la piste pos donne l'horizontale
-  const sims = acteurs.map((a) => simulerActeur({ piste: pistePos(a), terrain, duree: scene.duree, gel }));
+  const figes = acteurs.map((a) => creerFige(a, gel));   // acteurs figes seuls (champ fige) : null pour les autres, calcul inchange
+  const sims = acteurs.map((a, k) => simulerActeur({ piste: pistePos(a), terrain, duree: scene.duree, gel: figes[k] ? figes[k].simGel : gel, tempsPos: figes[k]?.simTemps ?? null }));
   for (let i = 0; i < n; i++) {
     const t = i * DT;
     const { tw, fige } = horloge.etat(t);
@@ -143,9 +152,15 @@ export function animer(scene, terrain = {}) {
     infosImage.push({ fige, tm: gel.length ? horloge.monde(t) : t });
     parImage.push(acteurs.map((a, k) => {
       const e = etat[k];
-      const p = evaluer(e.pistePos, t);
+      // acteur fige seul : temps propre pour les pistes ecrites (T), horloge des boucles (H), arret de l'acteur ; sans fige : ceux de l'image
+      const FG = figes[k], etU = FG ? FG.U.etat(t) : null;
+      const T = (nom) => (FG && !FG.sauf.has(nom) ? FG.propre(t) : t);
+      const hU = FG ? { tw: etU.tw, monde: FG.U.monde, boucles: FG.boucles } : h;
+      const H = (nom) => (FG && !FG.sauf.has(nom) ? hU : h);
+      const figeA = FG ? etU.fige : fige;
+      const p = evaluer(e.pistePos, T('pos'));
       const sim = sims[k];
-      const tmA = infosImage[i].tm;                 // temps du monde (il ne passe pas pendant un gel)
+      const tmA = FG && !FG.sauf.has('pos') ? FG.U.monde(t) : infosImage[i].tm;   // temps du monde (il ne passe pas pendant un gel ni un fige)
       const st = sim.etatA(tmA);
       // le chemin horizontal est celui de pos, sauf quand un mur l'arrete (physique.js : obstacle)
       const x = sim.horizModifie ? st.x : p[0], z = sim.horizModifie ? st.z : p[2];
@@ -161,45 +176,45 @@ export function animer(scene, terrain = {}) {
       // --- direction du corps
       let lacet;
       const dx = x - e.xPrec, dz = z - e.zPrec;
-      if (!fige && i > 0 && Math.hypot(dx, dz) / DT > VITESSE_MARCHE_MINI && !a.lacet) {   // gel : le corps ne se retourne plus tout seul
+      if (!figeA && i > 0 && Math.hypot(dx, dz) / DT > VITESSE_MARCHE_MINI && !a.lacet) {   // gel : le corps ne se retourne plus tout seul
         const cible = Math.atan2(-dx, dz) / RAD;
         e.lacet += normaliser180(cible - e.lacet) * (1 - Math.pow(0.7, 20 * DT)); // 0,3 par tick de 1/20 s, comme le jeu
       }
       e.xPrec = x; e.zPrec = z;
-      if (a.lacet) lacet = evaluer(a.lacet, t)[0] + sommeBoucles(a, 'lacet', t, 1, h)[0];
-      else lacet = e.lacet + sommeBoucles(a, 'lacet', t, 1, h)[0];
+      if (a.lacet) lacet = evaluer(a.lacet, T('lacet'))[0] + sommeBoucles(a, 'lacet', t, 1, H('lacet'))[0];
+      else lacet = e.lacet + sommeBoucles(a, 'lacet', t, 1, H('lacet'))[0];
 
       // --- reactions automatiques (additives), membres, tete, buste
       const R = a.reactions && !imposee ? reactionsA(sim, tmA) : null;
       const fJ = R ? R.amortiJambes : 1, fB = R ? R.amortiBras : 1;
-      const th = valeurPiste(a.tete, t, ZERO2);
-      const tb = sommeBoucles(a, 'tete', t, 2, h);
-      const corps = (a.corps ? evaluer(a.corps, t)[0] : 0) + sommeBoucles(a, 'corps', t, 1, h)[0] + (R ? R.corps : 0);
-      const accroupi = a.accroupi ? Math.min(1, Math.max(0, evaluer(a.accroupi, t)[0])) : 0;
+      const th = valeurPiste(a.tete, T('tete'), ZERO2);
+      const tb = sommeBoucles(a, 'tete', t, 2, H('tete'));
+      const corps = (a.corps ? evaluer(a.corps, T('corps'))[0] : 0) + sommeBoucles(a, 'corps', t, 1, H('corps'))[0] + (R ? R.corps : 0);
+      const accroupi = a.accroupi ? Math.min(1, Math.max(0, evaluer(a.accroupi, T('accroupi'))[0])) : 0;
       const pose = {
         nom: a.nom, x, y: e.y, z, sol: solY, auSol, lacet,
         tete: [th[0] + tb[0], th[1] + tb[1]], penche: corps, accroupi,
-        brasD: membre(a, 'brasD', t, h, fB), brasG: membre(a, 'brasG', t, h, fB), jambeD: membre(a, 'jambeD', t, h, fJ), jambeG: membre(a, 'jambeG', t, h, fJ),
+        brasD: membre(a, 'brasD', T('brasD'), H('brasD'), fB), brasG: membre(a, 'brasG', T('brasG'), H('brasG'), fB), jambeD: membre(a, 'jambeD', T('jambeD'), H('jambeD'), fJ), jambeG: membre(a, 'jambeG', T('jambeG'), H('jambeG'), fJ),
       };
       if (R) { pose.brasD[0] += R.bras; pose.brasG[0] += R.bras; pose.jambeD[0] += R.jambe; pose.jambeG[0] += R.jambe; }
       // articulations libres (additif) : torsion des membres, roulis de la tete, haut du corps entier ; rien n'est ajoute sans elles
       for (const [nom, f] of [['brasD', fB], ['brasG', fB], ['jambeD', fJ], ['jambeG', fJ]]) {
-        const tors = (a[nom] ? (evaluer(a[nom], t)[2] ?? 0) : 0) + sommeBoucles(a, nom, t, 3, h)[2] * f;
+        const tors = (a[nom] ? (evaluer(a[nom], T(nom))[2] ?? 0) : 0) + sommeBoucles(a, nom, t, 3, H(nom))[2] * f;
         if (tors) pose[nom][2] = tors;
       }
-      const roulisTete = (a.tete ? (evaluer(a.tete, t)[2] ?? 0) : 0) + sommeBoucles(a, 'tete', t, 3, h)[2];
+      const roulisTete = (a.tete ? (evaluer(a.tete, T('tete'))[2] ?? 0) : 0) + sommeBoucles(a, 'tete', t, 3, H('tete'))[2];
       if (roulisTete) pose.tete[2] = roulisTete;
       if (corpsComplet[k]) {
-        const cs = a.corps ? evaluer(a.corps, t) : [], sb = sommeBoucles(a, 'corps', t, 3, h);
+        const cs = a.corps ? evaluer(a.corps, T('corps')) : [], sb = sommeBoucles(a, 'corps', t, 3, H('corps'));
         pose.troncComplet = true; pose.troncCote = (cs[1] ?? 0) + sb[1]; pose.troncTorsion = (cs[2] ?? 0) + sb[2];
       }
       if (st.eau && !imposee) pose.eau = true;
       if (st.echelle && !imposee) pose.echelle = true;
       // orientation du corps entier et decalage vertical (pistes facultatives : rien n'est ajoute sans elles)
       const clamp180 = (v) => Math.max(-180, Math.min(180, v));
-      const bascule = aPiste(a, 'bascule') ? clamp180(valeurSeule(a, 'bascule', t, h)) : 0;
-      const roulis = aPiste(a, 'roulis') ? clamp180(valeurSeule(a, 'roulis', t, h)) : 0;
-      let hauteur = aPiste(a, 'hauteur') ? valeurSeule(a, 'hauteur', t, h) : 0;
+      const bascule = aPiste(a, 'bascule') ? clamp180(valeurSeule(a, 'bascule', T('bascule'), H('bascule'))) : 0;
+      const roulis = aPiste(a, 'roulis') ? clamp180(valeurSeule(a, 'roulis', T('roulis'), H('roulis'))) : 0;
+      let hauteur = aPiste(a, 'hauteur') ? valeurSeule(a, 'hauteur', T('hauteur'), H('hauteur')) : 0;
       const incline = Math.max(Math.abs(bascule), Math.abs(roulis));
       // dans l'eau le corps couche flotte plus haut (les hanches a la surface)
       if (pose.eau && incline) hauteur += 0.35 * Math.sin(Math.min(90, incline) * RAD);
@@ -210,11 +225,11 @@ export function animer(scene, terrain = {}) {
       const plie = R && (R.genou > 0.01 || R.coude > 0.01);
       if (articule[k] || plie) {
         const g = R ? R.genou : 0, c = R ? R.coude : 0;
-        pose.coudeD = flexion(a, 'coudeD', t, h, fB, c); pose.coudeG = flexion(a, 'coudeG', t, h, fB, c);
-        pose.genouD = flexion(a, 'genouD', t, h, fJ, g); pose.genouG = flexion(a, 'genouG', t, h, fJ, g);
+        pose.coudeD = flexion(a, 'coudeD', T('coudeD'), H('coudeD'), fB, c); pose.coudeG = flexion(a, 'coudeG', T('coudeG'), H('coudeG'), fB, c);
+        pose.genouD = flexion(a, 'genouD', T('genouD'), H('genouD'), fJ, g); pose.genouG = flexion(a, 'genouG', T('genouG'), H('genouG'), fJ, g);
       }
       // cibles des pieds (cinematique inverse) : avant l'appui, qui pose ensuite le pied le plus bas sur le sol
-      const fk = {}, ciblesPieds = aCibles(a) ? appliquerCibles(a, pose, t, evaluer, 'jambes', fk, etatsIK[k]) : 0;
+      const fk = {}, ciblesPieds = aCibles(a) ? appliquerCibles(a, pose, t, evaluer, 'jambes', fk, etatsIK[k], FG ? T : null) : 0;
       if (articule[k] || plie || incline) {
         // appui : le corps s'ajuste pour que le pied le plus bas repose sur le sol (modele.js, compensationAppui). Poids 1 au sol,
         // decroissant jusqu'a 0 quand l'acteur s'eleve de 2 a 12 cm (saut, chute) : en l'air les pieds ne sont plus attires par le sol.
@@ -233,15 +248,16 @@ export function animer(scene, terrain = {}) {
         }
       }
       // cibles des mains (apres l'appui : le corps a sa hauteur definitive) ; les pieds sont repris si l'appui a deplace le corps
-      if (aCibles(a)) { if (ciblesPieds && pose.dy) appliquerCibles(a, pose, t, evaluer, 'jambes', fk, etatsIK[k]); appliquerCibles(a, pose, t, evaluer, 'bras', fk, etatsIK[k]); }
+      if (aCibles(a)) { if (ciblesPieds && pose.dy) appliquerCibles(a, pose, t, evaluer, 'jambes', fk, etatsIK[k], FG ? T : null); appliquerCibles(a, pose, t, evaluer, 'bras', fk, etatsIK[k], FG ? T : null); }
       // apparence (pistes facultatives : rien n'est ajoute si elles manquent)
-      const sk = skinEn(a, t);
+      const sk = skinEn(a, T('skins'));
       if (sk) pose.skin = sk;
-      if (a.horsImage) pose.horsImage = evaluer(a.horsImage, t)[0] >= 0.5;
-      if (a.lueur) pose.lueur = evaluer(a.lueur, t)[0];
+      if (a.horsImage) pose.horsImage = evaluer(a.horsImage, T('horsImage'))[0] >= 0.5;
+      if (a.lueur) pose.lueur = evaluer(a.lueur, T('lueur'))[0];
       // objets tenus et armure (champs facultatifs : rien n'est ajoute sans eux)
-      for (const [champ, piste] of [['objetD', a.objetD], ['objetG', a.objetG]]) { const id = piste ? valeurObjet(piste, t) : null; if (id) pose[champ] = id; }
-      if (a.armure) { let arm = null; for (const [e, piste] of Object.entries(a.armure)) { const id = valeurObjet(piste, t); if (id) (arm ??= {})[e] = id; } if (arm) pose.armure = arm; }
+      for (const [champ, piste] of [['objetD', a.objetD], ['objetG', a.objetG]]) { const id = piste ? valeurObjet(piste, T(champ)) : null; if (id) pose[champ] = id; }
+      if (a.armure) { let arm = null; for (const [e, piste] of Object.entries(a.armure)) { const id = valeurObjet(piste, T('armure')); if (id) (arm ??= {})[e] = id; } if (arm) pose.armure = arm; }
+      if (FG && etU.fige) pose.figee = true;   // cet acteur est fige : pas de bruits de pas (pas.js, sons.js)
       return pose;
     }));
   }
@@ -300,6 +316,7 @@ export function animer(scene, terrain = {}) {
     if (corrigee[i]) corrections++;
     images.push({ t, fige: infosImage[i].fige, tm: infosImage[i].tm, acteurs: parImage[i], camera: { x: pos[i][0], y: pos[i][1], z: pos[i][2], lacet: lacetCam, tangage: tangageCam, fov: evaluer(c.fov, t)[0] }, corrigee: corrigee[i] });
   }
+  if (terrain.bloc && terrain.solide) notes.push(...notesObstruction(scene, images, terrain));   // seulement avec un vrai terrain
   return { images, corrections, notes, camera: statCamera, sims };
 }
 

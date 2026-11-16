@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { instantsDePas, jambesAnimees } from './pas.js';
 
 export const FREQUENCE = 44100;
+export const VOLUME_MIXAGE = 2.5;       // gain du mixage ; le champ sons.volume de la scene le multiplie
 export const DISTANCE_PAS = 1 / 0.6;   // blocs par pas : le jeu ajoute 0,6 par bloc parcouru et sonne a chaque entier
 const PORTEE = 24;                       // blocs : au dela, le son est tres faible
 
@@ -94,13 +95,24 @@ export function planifierSons({ scene, images, zone, sons, sims = null }) {
     const pan = dh > 0.3 ? Math.max(-1, Math.min(1, (dx * -fz + dz * fx) / dh)) : 0; // composante vers la droite de la camera
     return { gain, pan };
   };
+  // l'acteur k parcourt-il au moins une foulee au sol hors gel ? (sert quand les pieds ne donnent aucun contact)
+  const deplacement = (k) => {
+    let d = 0;
+    for (let i = 1; i < images.length; i++) {
+      const p = images[i].acteurs[k], q = images[i - 1].acteurs[k];
+      if (p.auSol && q.auSol && !images[i].fige && !p.figee) d += Math.hypot(p.x - q.x, p.z - q.z);
+    }
+    return d >= DISTANCE_PAS;
+  };
   if (scene.sons.pas) {
     const manquantes = new Set();
     scene.acteurs.forEach((a, k) => {
       let mouvement = 0, suivant = 1, n = 0;
       // Jambes animees : un pas a chaque contact d'un pied avec le sol (film/pas.js), avec le bloc sous CE pied.
+      let nbContacts = 0;
       if (images.length > 1 && jambesAnimees(images, k)) {
         for (const pas of instantsDePas(images, k)) {
+          nbContacts++;
           const bloc = (x, z) => (zone ? zone.bloc(Math.floor(x), Math.floor(pas.sol - 0.2), Math.floor(z)) : null);
           let etat = bloc(pas.x, pas.z);                                 // bloc sous le pied ; en l'air (bord de marche) : bloc sous le corps
           if (!etat || /(^|:)(cave_|void_)?air$/.test(String(etat).replace(/\[.*$/, ''))) etat = bloc(pas.ax, pas.az);
@@ -113,12 +125,13 @@ export function planifierSons({ scene, images, zone, sons, sims = null }) {
           n++; nbPas++;
           evenements.push({ t: pas.t, fichier, ...gainPan([pas.x, pas.y + 0.3, pas.z], im.camera) });
         }
-        return;
+        if (nbContacts > 0 || !deplacement(k)) return;
+        // aucun contact trouve (pieds qui ne se levent presque pas) mais l'acteur avance : regle de la distance
       }
       for (let i = 1; i < images.length; i++) {
         const p = images[i].acteurs[k], q = images[i - 1].acteurs[k];
         if (!p.auSol || !q.auSol) continue;
-        if (images[i].fige) continue;      // monde gele (champ `gel`) : plus de pas automatiques
+        if (images[i].fige || p.figee) continue;      // monde gele (champ `gel`) ou acteur fige (champ `fige`) : plus de pas automatiques
         const d = Math.hypot(p.x - q.x, p.z - q.z);
         const avant = mouvement;
         mouvement += d * 0.6;
@@ -144,7 +157,18 @@ export function planifierSons({ scene, images, zone, sons, sims = null }) {
     const liste = sons.fichiers(s.nom);
     if (!liste.length) { notes.push(`son "${s.nom}" absent du kit : ignore`); continue; }
     if (s.t < 0 || s.t > scene.duree) { notes.push(`son "${s.nom}" a ${s.t} s : hors de la scene, ignore`); continue; }
-    evenements.push({ t: s.t, fichier: choisir(liste, `liste|${s.nom}|${s.t}`), gain: 1, pan: 0 });
+    // meme chemin que les pas automatiques : la cible (acteur ou point) donne distance et panoramique, le volume multiplie
+    let place = { gain: 1, pan: 0 };
+    if (s.cible) {
+      const im = images[Math.min(images.length - 1, Math.max(0, Math.round(s.t / DT)))];
+      let pos = s.cible.pos;
+      if (s.cible.acteur) {
+        const k = scene.acteurs.findIndex((a) => a.nom === s.cible.acteur), p = im.acteurs[k];
+        pos = [p.x, p.y + 0.3, p.z];
+      }
+      place = gainPan(pos, im.camera);
+    }
+    evenements.push({ t: s.t, fichier: choisir(liste, `liste|${s.nom}|${s.t}`), gain: place.gain * (s.volume ?? 1), pan: place.pan });
   }
   evenements.sort((a, b) => a.t - b.t);
   return { evenements, notes, nbPas };
@@ -152,7 +176,7 @@ export function planifierSons({ scene, images, zone, sons, sims = null }) {
 
 // ---------------------------------------------------------------- mixage
 // Retourne un Buffer PCM s16le stereo 44100 Hz de `duree` secondes (silence s'il n'y a rien).
-export function mixer({ evenements, duree, sons, volume = 2.5 }) {
+export function mixer({ evenements, duree, sons, volume = VOLUME_MIXAGE }) {
   const n = Math.ceil(duree * FREQUENCE);
   const mix = new Float32Array(n * 2);
   for (const e of evenements) {

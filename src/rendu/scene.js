@@ -13,7 +13,7 @@ import { trouverChemins, trouverClairieres, trouverEau, evaluerSegment, verifier
 import { Rasteriseur, MODE_OPAQUE, MODE_DECOUPE, MODE_MELANGE } from './raster.js';
 import { PostTraitement, imageActive, aFlou } from './post.js';
 import { MoteurShader } from '../shader/moteur.js';
-import { CielVanille, ticksDepuisHeure, construireCiel } from './ciel-vanille.js';
+import { CielVanille, ticksDepuisHeure, construireCiel, tableLumiere } from './ciel-vanille.js';
 import { analyser, calculerBloom, calculerRayons, composer, creerTampons } from '../shader/post.js';
 
 const ICI = path.dirname(fileURLToPath(import.meta.url));
@@ -33,13 +33,34 @@ export async function chargerScene({ zonePath, zone, kitDir, travailleurs, optio
   const t0 = performance.now();
   const kit = dossierKit(kitDir);
   const z = zone || lireZone(zonePath);
+  // scene avec un champ `monde` (options.monde = { donnees, replay, lumiere }) : le maillage lit les tableaux d'un Monde modifiable, la lumiere de blocs
+  // est calculee et les sections sont refaites quand le replay change des blocs. Le moteur n'est charge que dans ce cas.
+  let monde = null, optionsM = options, curseur = 0, tickInitial = -1;
+  if (options.monde) {
+    const { Monde } = await import('../moteur/monde.js');
+    const { Lumiere } = await import('../moteur/lumiere.js');
+    monde = new Monde({ zone: z, donnees: options.monde.donnees, suivi: true });
+    const rp = options.monde.replay;
+    for (const p of rp?.palAjouts ?? []) monde.indicePalette(p);   // memes indices de palette que la simulation
+    // tickInitial (essais) : les changements jusqu'a ce tick sont appliques AVANT le maillage de depart (maillage complet de l'etat final)
+    if (rp && options.monde.tickInitial !== undefined) {
+      const fin = rp.indiceApres(options.monde.tickInitial), b = rp.blocs;
+      for (let k = 0; k < fin; k++) monde.ecrire(b[k * 6 + 1], b[k * 6 + 2], b[k * 6 + 3], b[k * 6 + 5]);
+      curseur = fin; tickInitial = options.monde.tickInitial;
+    }
+    const lumiereBlocs = options.monde.lumiere !== false;
+    monde.lumiere = new Lumiere(monde, { blocs: lumiereBlocs });
+    monde.sales = [];
+    optionsM = { ...options, monde, lightmap: lumiereBlocs };
+  }
   const tex = new BibliothequeTextures(kit);
   const modeles = new BibliothequeModeles(kit, tex);
   const couleurs = new CouleursBiomes(kit);
   const tLecture = performance.now();
-  const maillage = mailler({ zone: z, modeles, textures: tex, couleurs, options });
+  const maillage = mailler({ zone: z, modeles, textures: tex, couleurs, options: optionsM });
   const tMaillage = performance.now();
-  const s = new Scene({ zone: z, modeles, textures: tex, maillage, travailleurs, options });
+  const s = new Scene({ zone: z, modeles, textures: tex, maillage, travailleurs, options, monde, replay: options.monde?.replay ?? null, couleurs });
+  s.curseurReplay = curseur; s.tickRejoue = tickInitial;
   s.cielV = new CielVanille(kit);   // ciel du jeu : textures du kit (soleil, lune, nuages) lues une fois
   s.temps = { lectureMs: tLecture - t0, maillageMs: tMaillage - tLecture, totalMs: performance.now() - t0 };
   await s.demarrer();
@@ -48,7 +69,10 @@ export async function chargerScene({ zonePath, zone, kitDir, travailleurs, optio
 }
 
 class Scene {
-  constructor({ zone, modeles, textures, maillage, travailleurs, options }) {
+  constructor({ zone, modeles, textures, maillage, travailleurs, options, monde = null, replay = null, couleurs = null }) {
+    this.monde = monde; this.replay = replay; this.couleurs = couleurs; this.curseurReplay = 0; this.tickRejoue = -1;
+    this.pieces = new Map();   // sections refaites : cle `${section}|${couche}` -> { id, draw }
+    this.prochainePiece = 1; this.statsMaj = { sections: 0, ms: 0, quads: 0, lots: 0, maxMs: 0 };
     this.zone = zone; this.modeles = modeles; this.textures = textures; this.maillage = maillage;
     this.options = options;
     this.nTrav = travailleurs ?? Math.max(1, Math.min(os.availableParallelism(), 4));
@@ -56,11 +80,12 @@ class Scene {
     this.draws = [];
     const atlas = maillage.atlas;
     const tex = { niveaux: atlas.niveaux.map((n) => ({ w: n.w, h: n.h, data: n.data })) };
+    this.texAtlas = tex;
     for (const [nom, mode] of [['opaque', MODE_OPAQUE], ['decoupe', MODE_DECOUPE], ['interne', MODE_DECOUPE], ['melange', MODE_MELANGE]]) {
       const c = maillage.couches[nom];
       if (c.nbQuads === 0) continue;
       // interne : faces de feuilles cachees par d'autres feuilles, dessinees apres les faces exposees ; invisibles au-dela de distInterne
-      this.draws.push({ positions: c.positions, uvs: c.uvs, couleurs: c.couleurs, indices: c.indices, sections: c.sections, ao: c.ao, etiq: c.etiq, tex, mode, deuxFaces: false, partage: false, ...(nom === 'interne' ? { interne: true, distMax: options.distInterne ?? DIST_INTERNE } : {}) });
+      this.draws.push({ positions: c.positions, uvs: c.uvs, couleurs: c.couleurs, indices: c.indices, sections: c.sections, ao: c.ao, etiq: c.etiq, niv: c.niv, tex, mode, deuxFaces: false, partage: false, ...(nom === 'interne' ? { interne: true, distMax: options.distInterne ?? DIST_INTERNE } : {}) });
     }
     this.travailleursListe = [];
     this.idImage = 0;
@@ -79,7 +104,7 @@ class Scene {
     if (this.nTrav <= 0) { this.local = new Rasteriseur(); return; }
     const url = path.join(ICI, 'travailleur.js');
     for (let i = 0; i < this.nTrav; i++) {
-      const w = new Worker(url, { workerData: { draws: this.draws, rangeeDe: i, nW: this.nTrav } });
+      const w = new Worker(url, { workerData: { draws: this.draws, rangeeDe: i, nW: this.nTrav, texAtlas: this.texAtlas } });
       this.travailleursListe.push(w);
     }
   }
@@ -87,6 +112,134 @@ class Scene {
   async fermer() {
     for (const w of this.travailleursListe) await w.terminate();
     this.travailleursListe = [];
+  }
+
+  // ---- lumiere du jeu (scenes avec monde)
+  tableLumiere(heure, gamma) {
+    const g = gamma ?? this.options.gamma ?? 0.5, cle = heure + '|' + g;
+    if (this._lmCle !== cle) { this._lm = tableLumiere(ticksDepuisHeure(heure), g); this._lmCle = cle; }
+    return this._lm;
+  }
+
+  // ---- sections refaites (scenes avec monde) ----
+  // Tous les dessins statiques : le maillage de depart (dont certaines sections sont "mortes") + les pieces rapportees
+  tousDraws() { return this.pieces.size ? this.draws.concat([...this.pieces.values()].map((p) => p.draw)) : this.draws; }
+
+  _construireDraws(maillage) {
+    const draws = [];
+    const atlas = maillage.atlas, options = this.options;
+    const tex = { niveaux: atlas.niveaux.map((n) => ({ w: n.w, h: n.h, data: n.data })) };
+    this.texAtlas = tex;
+    for (const [nom, mode] of [['opaque', MODE_OPAQUE], ['decoupe', MODE_DECOUPE], ['interne', MODE_DECOUPE], ['melange', MODE_MELANGE]]) {
+      const c = maillage.couches[nom];
+      if (c.nbQuads === 0) continue;
+      draws.push({ positions: c.positions, uvs: c.uvs, couleurs: c.couleurs, indices: c.indices, sections: c.sections, ao: c.ao, etiq: c.etiq, niv: c.niv, tex, mode, deuxFaces: false, partage: false, ...(nom === 'interne' ? { interne: true, distMax: options.distInterne ?? DIST_INTERNE } : {}) });
+    }
+    return draws;
+  }
+
+  // Rejoue les changements du replay jusqu'au tick donne (les images vont dans l'ordre du temps), puis refait les sections touchees.
+  async appliquerReplay(tick) {
+    const r = this.replay, m = this.monde;
+    if (!r || !m || tick <= this.tickRejoue) return 0;
+    this.tickRejoue = tick;
+    const fin = r.indiceApres(tick), b = r.blocs;
+    if (this.curseurReplay >= fin) return 0;
+    const cellules = [];
+    for (; this.curseurReplay < fin; this.curseurReplay++) { const k = this.curseurReplay * 6; m.ecrire(b[k + 1], b[k + 2], b[k + 3], b[k + 5]); cellules.push([b[k + 1], b[k + 2], b[k + 3]]); }
+    const n = await this.remailler();
+    // ombres du soleil (shader) : seulement les sections que le soleil relie aux cellules changees
+    if (this.moteur && this.moteur.cuireChangements && n >= 0) this.moteur.cuireChangements(cellules, new Set(this._derniersCles || []));
+    return n;
+  }
+
+  // Refait les sections dont les cellules (blocs ou lumiere) ont change : une cellule salit sa section et celles a moins d'une cellule.
+  async remailler() {
+    const m = this.monde, mail = this.maillage, t0 = performance.now();
+    if (m.sales === null) return this.rebatir();
+    if (!m.sales.length) return 0;
+    const A = m.ancre, PX = m.PX, PZ = m.PZ, cles = new Map();
+    for (const i of m.sales) {
+      const lx = i % PX - 1, t = (i - (lx + 1)) / PX, lz = t % PZ - 1, ly = (t - (lz + 1)) / PZ - 1;
+      const x = m.x0 + lx, y = m.y0 + ly, z = m.z0 + lz;
+      for (let a = Math.floor((x - 1 - A[0]) / 16); a <= Math.floor((x + 1 - A[0]) / 16); a++) {
+        for (let b = Math.floor((y - 1 - A[1]) / 16); b <= Math.floor((y + 1 - A[1]) / 16); b++) {
+          for (let c = Math.floor((z - 1 - A[2]) / 16); c <= Math.floor((z + 1 - A[2]) / 16); c++) cles.set(mail.cleAbs(a, b, c), [a, b, c]);
+        }
+      }
+    }
+    m.sales = [];
+    const maj = { mortes: [], retraits: [], ajouts: [] };
+    this._derniersCles = [...cles.keys()];
+    let quads = 0;
+    for (const [cle, [a, b, c]] of cles) {
+      const res = mail.mailleSection(a, b, c);
+      this._remplacerSection(cle, res, maj);
+      if (res) for (const k of ['opaque', 'decoupe', 'melange', 'interne']) quads += res[k]?.nbQuads ?? 0;
+    }
+    this._envoyerMaj(maj);
+    const ms = performance.now() - t0;
+    const s = this.statsMaj;
+    s.sections += cles.size; s.ms += ms; s.quads += quads; s.lots++; s.maxMs = Math.max(s.maxMs, ms);
+    return cles.size;
+  }
+
+  _remplacerSection(cle, res, maj) {
+    // le maillage de depart ne dessine plus cette section
+    if (!this.mortes) this.mortes = new Set();
+    if (this.options.exportGPU) (this.majGPU ||= { mortes: new Set(), retraits: new Set(), ajouts: new Map() }).mortes.add(cle);
+    if (!this.mortes.has(cle)) {
+      this.mortes.add(cle); maj.mortes.push(cle);
+      for (const d of this.draws) { const n = d.sections.filter((s) => s.cle !== cle); if (n.length !== d.sections.length) d.sections = n; }
+    }
+    for (const nom of ['opaque', 'decoupe', 'melange', 'interne']) {
+      const k = cle + '|' + nom, ancien = this.pieces.get(k);
+      if (ancien) {
+        maj.retraits.push(ancien.id); this.pieces.delete(k);
+        if (this.options.exportGPU) { const p = (this.majGPU ||= { mortes: new Set(), retraits: new Set(), ajouts: new Map() }); if (!p.ajouts.delete(ancien.id)) p.retraits.add(ancien.id); }
+      }
+      const c = res && res[nom];
+      if (!c) continue;
+      const mode = nom === 'opaque' ? MODE_OPAQUE : nom === 'melange' ? MODE_MELANGE : MODE_DECOUPE;
+      const draw = { positions: c.positions, uvs: c.uvs, couleurs: c.couleurs, indices: c.indices, sections: c.sections, ao: c.ao, etiq: c.etiq, niv: c.niv, tex: this.texAtlas, mode, deuxFaces: false, partage: false, ...(nom === 'interne' ? { interne: true, distMax: this.options.distInterne ?? DIST_INTERNE } : {}) };
+      const id = this.prochainePiece++;
+      if (this.moteur && this.moteur.cuirePiece) this.moteur.cuirePiece(draw);   // ombres cuites de la nouvelle piece (shader)
+      this.pieces.set(k, { id, draw });
+      maj.ajouts.push({ id, draw: { ...draw, tex: undefined } });
+      if (this.options.exportGPU) this._pendantGPU(id, nom, c, cle);
+    }
+  }
+
+  // Export GPU : ce qui a change depuis le dernier export (sections mortes, pieces retirees, pieces neuves) ; voir pack/export-gpu.js exporterMaj
+  _pendantGPU(id, nom, c, cle) {
+    const p = (this.majGPU ||= { mortes: new Set(), retraits: new Set(), ajouts: new Map() });
+    p.ajouts.set(id, { id, nom, c, cle });
+  }
+  prendreMajGPU() {
+    const p = this.majGPU;
+    this.majGPU = null;
+    if (!p) return { mortes: [], retraits: [], ajouts: [] };
+    return { mortes: [...p.mortes], retraits: [...p.retraits], ajouts: [...p.ajouts.values()] };
+  }
+
+  _envoyerMaj(maj) {
+    if (!maj.mortes.length && !maj.retraits.length && !maj.ajouts.length) return;
+    for (const w of this.travailleursListe) w.postMessage({ type: 'maj', ...maj });
+  }
+
+  // Apres un agrandissement de la boite : tout est a refaire (rare)
+  async rebatir() {
+    const m = this.monde;
+    this.maillage = mailler({ zone: this.zone, modeles: this.modeles, textures: this.textures, couleurs: this.couleurs, options: { ...this.options, monde: m, lightmap: this.maillage.lightmap } });
+    m.sales = [];
+    this.draws = this._construireDraws(this.maillage);
+    this.pieces.clear(); this.mortes = new Set();
+    await this.fermer();
+    this.travailleursListe = [];
+    if (this.nTrav > 0) await this.demarrer();
+    this._preparerAcces();
+    this.statsMaj.rebatis = (this.statsMaj.rebatis || 0) + 1;
+    return -1;
   }
 
   // ---- maillages dynamiques ----
@@ -136,7 +289,8 @@ class Scene {
   // donne aux workers les tableaux d'ombre cuits (partages : une seule fois, ils sont ensuite remplis sur place)
   envoyerOmbres() {
     const liste = this.draws.map((d) => d.ombre || null);
-    for (const w of this.travailleursListe) w.postMessage({ type: 'ombres', liste });
+    const pieces = [...this.pieces.values()].filter((p) => p.draw.ombre).map((p) => [p.id, p.draw.ombre]);
+    for (const w of this.travailleursListe) w.postMessage({ type: 'ombres', liste, pieces });
   }
 
   _tampons(W, H, F) {
@@ -169,7 +323,7 @@ class Scene {
   }
 
   // ---- rendu ----
-  async rendre({ camera, largeur = 1920, hauteur = 1080, temps = 0, maillagesDynamiques = [], brume, ciel, soleil, loin, mip = true, ssaa = 1, copie = true, lumiere, image, heure, jour, cielFixe } = {}) {
+  async rendre({ camera, largeur = 1920, hauteur = 1080, temps = 0, maillagesDynamiques = [], brume, ciel, soleil, loin, mip = true, ssaa = 1, copie = true, lumiere, image, heure, jour, cielFixe, gamma } = {}) {
     const tDebut = performance.now();
     const sortieW = largeur, sortieH = hauteur;
     largeur *= ssaa; hauteur *= ssaa;
@@ -229,6 +383,8 @@ class Scene {
     params.loin = loin ?? params.brumeFin + 1;
     if (nuage) { params.nuageDebut = 220; params.nuageFin = 576; }   // les nuages ont leur propre brume (loin de la zone) : ils ne suivent pas le bord de zone
     if (lumiere && (lumiere[0] !== 1 || lumiere[1] !== 1 || lumiere[2] !== 1)) params.lumiere = lumiere.map((v) => Math.max(0, v));
+    // lumiere du jeu (scenes avec monde) : table (ciel, bloc) -> couleur, de l'heure du jeu ; elle remplace le facteur global jour/nuit
+    if (this.maillage.lightmap) params.lm = this.tableLumiere(heure ?? 12, gamma);
     // camera sous l'eau : brouillard bleu court, comme dans le jeu
     if (res) Object.assign(params, res.params);
     if (sousEau) {
@@ -246,7 +402,7 @@ class Scene {
       const textures = new Map(this._nouvelles.map((t) => [t.id, { niveaux: [{ w: t.w, h: t.h, data: t.data }] }]));
       this._texLocales = new Map([...(this._texLocales || []), ...textures]);
       for (const k of this._masquesNouveaux) this._masquesLocaux.set(k.id, k.data);
-      const draws = this.draws.concat(dyn.map((d) => ({ ...d, tex: this._texLocales.get(d.texId), masque: d.masqueId ? this._masquesLocaux.get(d.masqueId) : null })));
+      const draws = this.tousDraws().concat(dyn.map((d) => ({ ...d, tex: this._texLocales.get(d.texId), masque: d.masqueId ? this._masquesLocaux.get(d.masqueId) : null })));
       this.dernieresStats = r.rendre({ pixels: this.pixels, W: largeur, H: hauteur, cam, draws, rangeeDe: 0, nW: 1, params, force });
       if (postSh) analyser(this.pixels, r.zbuf, largeur, hauteur, tp, postSh, 0, 1);
     } else {
@@ -324,8 +480,9 @@ class Scene {
 
   _pal(x, y, z) { // indice de palette (monde), bordure comprise
     const { pal, PX, PY, PZ } = this.maillage.interne;
-    const lx = x - this.zone.x0, ly = y - this.zone.y0, lz = z - this.zone.z0;
-    if (lx < -1 || ly < -1 || lz < -1 || lx > this.zone.sx || ly > this.zone.sy || lz > this.zone.sz) return 0;
+    const B = this.boite();
+    const lx = x - B.x0, ly = y - B.y0, lz = z - B.z0;
+    if (lx < -1 || ly < -1 || lz < -1 || lx > B.sx || ly > B.sy || lz > B.sz) return 0;
     return pal[((ly + 1) * PZ + (lz + 1)) * PX + (lx + 1)];
   }
 
@@ -334,7 +491,8 @@ class Scene {
   solEn(x, z) {
     x = Math.floor(x); z = Math.floor(z);
     if (!this.zone.dansZone(x, z)) return null;
-    for (let y = this.zone.y0 + this.zone.sy - 1; y >= this.zone.y0; y--) {
+    const B = this.boite();
+    for (let y = B.y0 + B.sy - 1; y >= B.y0; y--) {
       const p = this._pal(x, y, z);
       if (this.collision[p] && !this.feuillesP[p]) return p === 1 ? null : y + 1;
     }
@@ -344,13 +502,36 @@ class Scene {
   // Niveau de lumiere du ciel (0..15) de la cellule qui contient le point (15 = plein ciel, sous un arbre : 10 a 13).
   niveauLumiere(x, y, z) {
     const { lum, PX, PY, PZ } = this.maillage.interne;
-    const lx = Math.floor(x) - this.zone.x0, ly = Math.floor(y) - this.zone.y0, lz = Math.floor(z) - this.zone.z0;
-    if (lx < -1 || ly < -1 || lz < -1 || lx > this.zone.sx || ly > this.zone.sy || lz > this.zone.sz) return 15;
+    const B = this.boite();
+    const lx = Math.floor(x) - B.x0, ly = Math.floor(y) - B.y0, lz = Math.floor(z) - B.z0;
+    if (lx < -1 || ly < -1 || lz < -1 || lx > B.sx || ly > B.sy || lz > B.sz) return 15;
     return lum[((ly + 1) * PZ + (lz + 1)) * PX + (lx + 1)];
   }
 
   // Luminosite 0..1 (apres la courbe du jeu) a multiplier dans les couleurs des maillages dynamiques.
-  luminositeEn(x, y, z) { return courbeLumiere(this.niveauLumiere(x, y, z), this.options.gamma ?? 0.5); }
+  // Avec un monde (lightmap) : luminance de la table de lumiere du jeu aux niveaux (ciel, bloc) du point, a l'heure du dernier rendu ; sinon courbe du ciel seule.
+  luminositeEn(x, y, z) {
+    if (this.maillage.lightmap && this._lm) {
+      const { lum, blk, PX, PZ } = this.maillage.interne, B = this.boite();
+      const lx = Math.floor(x) - B.x0, ly = Math.floor(y) - B.y0, lz = Math.floor(z) - B.z0;
+      if (lx >= -1 && ly >= -1 && lz >= -1 && lx <= B.sx && ly <= B.sy && lz <= B.sz) {
+        const i = ((ly + 1) * PZ + (lz + 1)) * PX + (lx + 1), k = lum[i] * 16 + blk[i];
+        return Math.min(1, 0.299 * this._lm.R[k] + 0.587 * this._lm.G[k] + 0.114 * this._lm.B[k]);
+      }
+    }
+    return courbeLumiere(this.niveauLumiere(x, y, z), this.options.gamma ?? 0.5);
+  }
+  // Niveau de lumiere de bloc (0..15) de la cellule du point (0 sans monde)
+  niveauBloc(x, y, z) {
+    const { blk, PX, PZ } = this.maillage.interne;
+    if (!blk) return 0;
+    const B = this.boite();
+    const lx = Math.floor(x) - B.x0, ly = Math.floor(y) - B.y0, lz = Math.floor(z) - B.z0;
+    if (lx < -1 || ly < -1 || lz < -1 || lx > B.sx || ly > B.sy || lz > B.sz) return 0;
+    return blk[((ly + 1) * PZ + (lz + 1)) * PX + (lx + 1)];
+  }
+  // Boite des blocs (celle de la zone ; celle du monde, qui peut avoir grandi, quand il y en a un)
+  boite() { return this.monde || this.zone; }
 
   // Vrai si le point est dans une cellule d'eau
   estDansEau(x, y, z) {

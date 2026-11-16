@@ -75,6 +75,8 @@ def boucle():
             elif c["cmd"] == "rendre":
                 raw, info = h.rendre(c)
                 repondre(sortie, {"ok": True, "octets": len(raw), **info}, raw)
+            elif c["cmd"] == "maillage-maj":
+                repondre(sortie, {"ok": True, **h.rendu.mettre_a_jour_maillage(c["dossier"])})
             elif c["cmd"] == "precompiler":
                 h.rendu.precompiler()
                 repondre(sortie, {"ok": True, "compile_ms": h.rendu.stats.get("compile_ms")})

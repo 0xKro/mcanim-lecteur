@@ -3,6 +3,7 @@
 import { evaluer } from './scene.js';
 import { simulerActeur, TICK, VITESSES } from './physique.js';
 import { animer } from './anim.js';
+import { creerFige } from './fige.js';
 import { noteAmplitudes } from './limites.js';
 
 const OCTETS_PAR_ACTEUR = 600;
@@ -121,7 +122,8 @@ export function evenementsActeur(sim, a) {
 // scene : validerScene(...). terrain : voir physique.js. Retourne [{ nom, evenements, texte }].
 export function trajetsDeScene(scene, terrain) {
   return scene.acteurs.map((a) => {
-    const sim = simulerActeur({ piste: pistePos(a), terrain, duree: scene.duree, gel: scene.gel ?? [] });
+    const fg = creerFige(a, scene.gel ?? []);   // acteur fige seul : sa physique s'arrete aussi (fige.js)
+    const sim = simulerActeur({ piste: pistePos(a), terrain, duree: scene.duree, gel: fg ? fg.simGel : scene.gel ?? [], tempsPos: fg?.simTemps ?? null });
     const evenements = evenementsActeur(sim, a);
     return { nom: a.nom, evenements, sim };
   });
@@ -146,8 +148,9 @@ export function texteActeur(nom, evenements) {
 export function texteTrajets(scene, terrain) {
   const t = trajetsDeScene(scene, terrain);
   let note = null;   // articulations libres : amplitudes hors plausible, une ligne (information seule)
-  try { note = noteAmplitudes(scene, animer(scene, terrain)); } catch { /* facultatif */ }
-  return [...t.map((x) => texteActeur(x.nom, x.evenements)), ...(note ? [note] : []), RAPPEL].join('\n');
+  let camera = [];   // camera : herbe, feuilles ou acteur colles a l'objectif (obstruction.js)
+  try { const anim = animer(scene, terrain); note = noteAmplitudes(scene, anim); camera = anim.notes.filter((n) => n.startsWith('camera : de ')); } catch { /* facultatif */ }
+  return [...t.map((x) => texteActeur(x.nom, x.evenements)), ...(note ? [note] : []), ...camera, RAPPEL].join('\n');
 }
 
 // Nombre d'evenements (hors vitesse) et d'avertissements de vitesse, pour la ligne de `mcanim empreinte`.

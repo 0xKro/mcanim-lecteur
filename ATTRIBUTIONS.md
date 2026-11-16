@@ -31,6 +31,29 @@ Aussi reecrit en JavaScript a partir de Horizon (MIT) ; voir `analyse/3-personna
 | Retard du corps sur la direction de marche (0,3 par tick de 1/20 s) ; seuil de mouvement 0,05 bloc par tick | `crates/horizon-client/src/game/perspective.rs` (suivi du corps) | `src/film/anim.js` |
 | Distance entre deux pas (0,6 par bloc parcouru, un pas a chaque entier) | regle du jeu (`Entity.move`), non copiee de Horizon | `src/film/sons.js` |
 
+## Moteur de simulation (`src/moteur/`, P0a et P0b)
+
+Reecrit en JavaScript a partir de Horizon (MIT) : le code de Horizon n'est ni copie ni execute. Ce qui est porte (regles, ordres, formules) :
+
+| Ce qui est porte | Fichier d'origine (Horizon) | Ou chez nous |
+|---|---|---|
+| `Level.setBlock` : drapeaux (`UPDATE_NEIGHBORS` 1, `UPDATE_CLIENTS` 2, `UPDATE_KNOWN_SHAPE` 16, `UPDATE_SUPPRESS_DROPS` 32, `UPDATE_SKIP_ON_PLACE` 512...), limite de profondeur 512 des mises a jour de forme, retrait puis pose puis voisins puis formes | `crates/horizon-world/src/level/update.rs` (`set_block_limit`, `chunk_set_block_state`), `level/mod.rs` (`flags`) | `src/moteur/simulation.js` (`_poserIndice`, `F`) |
+| `CollectingNeighborUpdater` : pile de mises a jour, file "ajoutes" retournee, plafond de mises a jour enchainees, etape par etape (`Multi` : un voisin a la fois) | `level/update.rs` (`add_and_run`, `run_updates`, `Update::next`) | `src/moteur/simulation.js` (`_ajouter`, `_lancerMaj`, `_executerMaj`) |
+| Ordres du jeu : `UPDATE_ORDER` (ouest, est, bas, haut, nord, sud) et `UPDATE_SHAPE_ORDER` (ouest, est, nord, sud, bas, haut) | `level/update.rs` (constantes) | `src/moteur/monde.js` (`ORDRE_VOISINS`, `ORDRE_FORMES`) |
+| `updateOrDestroy`, `destroyBlock` (air ou eau selon `waterlogged`), `removeBlock` | `level/update.rs` | `src/moteur/simulation.js` (`_majOuDetruire`, `_casserLimite`) |
+| Ticks planifies : un tick par (type de bloc, position), file par chunk, ordre (moment, priorite, ordre d'insertion), chunks departages par priorite puis ordre d'insertion, 65 536 par tick, tick planifie pendant l'execution reporte au tick suivant, tick ignore si le bloc a change | `crates/horizon-core/src/ticks/mod.rs` (`ScheduledTick`, `ChunkTicks`, `LevelTicks::begin_tick`), `level/tick.rs` | `src/moteur/ticks.js`, `simulation.js` (`_tick`) |
+| Hasard du jeu : generateur a congruence 48 bits de `java.util.Random` (`LegacyRandom` : multiplicateur 0x5DEECE66D, `next_int_bound`, `next_double`...) | `crates/horizon-core/src/random.rs` | `src/moteur/aleatoire.js` |
+| Ticks aleatoires : `Level.randValue` (x 3 + 1013904223), `getBlockRandomPos` (positions tirees par section), vitesse 3 par defaut | `level/ticks.rs` (`random_tick_value`), `level/tick.rs` (`tick_chunk_random`) | `src/moteur/aleatoire.js` (`TirageBlocs`), `simulation.js` (`_aleatoires`) |
+| Chaine de classes de comportement (`DoorBlock > Block`), un gestionnaire qui ne rend rien passe la main a la classe suivante (`super`) | `level/classes.rs`, `level/shapes.rs` (en-tete), `level/tick.rs:25-120` | `src/moteur/registre.js` |
+| Torches : `BaseTorchBlock.updateShape` / `canSurvive` (appui au centre de la face haute), `WallTorchBlock` (face pleine du mur) | `level/survive.rs`, `level/shapes.rs` | `src/moteur/familles/torches.js` |
+| Herbe qui se propage (jouet, desactive par defaut) : `SpreadingSnowyBlock.randomTick` (4 essais, decalage `nextInt(3)-1, nextInt(5)-3, nextInt(3)-1`, lumiere 9) | `level/tick.rs` (herbe) | `src/moteur/familles/herbe.js` |
+| Lumiere de blocs et du ciel : -1 par bloc (au moins), blocs opaques arretent la lumiere, faces pleines des demi-blocs (`shape_occlusion`), ciel a 15 qui descend sans perte, mise a jour incrementale par retrait puis ajout | `crates/horizon-client-render/src/light.rs` (`relight`, `relight_layer`, `LightChanges`) | `src/moteur/lumiere.js` |
+| Table de lumiere du jeu (`lightmap.fsh`) : `v/(4-3v)`, `sky_light_factor` et `sky_light_color` (pistes de `day.json`), `ambient_light_color`, `block_light_tint` (#ffd88c : lumiere chaude), courbe parabolique du blanc, reglage `gamma` | `crates/horizon-client-render/src/gfx.rs` (`update_lightmap`), `environment_attributes.rs` (`visual/block_light_tint`) | `src/rendu/ciel-vanille.js` (`tableLumiere`) |
+| Tables de donnees par etat (emission, opacite, drapeaux, durete, resistance, friction, sons, formes de collision, classes, etiquettes, feu) | dossier prepare du jeu sur le poste du proprietaire (`facts.json`, `gameplay-facts.json`, `block-behaviours.json`, `cached-collision.nbt`, `block-tags.json`) : lu seulement par `outils/extraire-donnees-jeu.mjs` | nos tables compactes (format a nous) : `relais/d/donnees-jeu-1.json.gz`, `src/moteur/donnees.js` |
+
+Les **donnees** sont des nombres et des noms de blocs sortis du jeu du proprietaire par un outil de developpement ; le fichier produit n'a pas le format
+des fichiers du jeu (le controle `npm run controle` le verifie). Il est telecharge a la demande (groupe `donnees-jeu`), jamais range dans le paquet npm.
+
 ## Licence de Horizon (MIT), a conserver
 
 ```

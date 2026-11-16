@@ -21,7 +21,8 @@
   "files": [
     "src/",
     "bin/",
-    "ATTRIBUTIONS.md"
+    "ATTRIBUTIONS.md",
+    "exemples/"
   ],
   "scripts": {
     "controle": "node scripts/controle-fichiers-jeu.js",

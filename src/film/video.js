@@ -14,6 +14,13 @@ import { Sons, planifierSons, mixer, FREQUENCE } from './sons.js';
 import { trouverFfmpeg } from './ffmpeg.js';
 import { appliquerTextures } from './cache.js';
 import { filigrane, tailleApercu } from './apercu.js';
+import { lireShader } from '../shader/format.js';
+
+// Fichier de shader a utiliser : l'option (chemin deja resolu) l'emporte sur le champ `shader` de la scene (relatif au fichier de scene).
+export function fichierShader(scene, baseDir, option) {
+  if (option) return path.resolve(option);
+  return scene.shader ? path.resolve(baseDir, scene.shader) : null;
+}
 
 // Prepare les skins de tous les acteurs. `surcharges` : { nomActeur: "fichier.png" } (option --skin).
 // Retourne { personnages (le skin de base de chaque acteur), parRef (par acteur : Map "reference de skin" -> Personnage, pour la
@@ -40,10 +47,15 @@ export async function preparerPersonnages(scene, { kitDir, surcharges = {}, base
 
 // Prepare tout ce qui sert a dessiner des images de la scene : kit (avec les textures de la scene), terrain, personnages, animation.
 // Retourne { rs, anim, infos, dessiner(i, { largeur, hauteur, ssaa, copie }) -> RGBA, fermer() }.
-export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, baseDir = process.cwd(), env = process.env, travailleurs }) {
+export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, baseDir = process.cwd(), env = process.env, travailleurs, shader }) {
   const kit = Object.keys(scene.textures ?? {}).length ? appliquerTextures(kitDir, scene.textures, baseDir, { env }) : kitDir;
   const rs = await chargerScene({ zonePath, kitDir: kit, travailleurs });
   try {
+    // shader (facultatif) : lu et controle ici ; sans fichier, ou avec {}, le rendu est celui d'avant au pixel pres
+    const fs0 = fichierShader(scene, baseDir, shader);
+    const sh = fs0 ? lireShader(fs.readFileSync(fs0, 'utf8')) : null;
+    rs.definirShader(sh);
+    const notes = sh ? sh.notes : [];
     const { personnages, parRef, infos } = await preparerPersonnages(scene, { kitDir: kit, surcharges, baseDir });
     const terrain = { solEn: (x, z) => rs.solEn(x, z), estLibre: (x, y, z) => rs.estLibre(x, y, z), solide: (x, y, z) => rs.estSolidePourCamera(x, y, z) };
     const anim = animer(scene, terrain);
@@ -64,20 +76,23 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
       const ciel = cielEn(scene, im.t);
       return rs.rendre({
         camera: im.camera, largeur, hauteur, temps: im.tm, maillagesDynamiques: maillages, ssaa, copie,
-        image: imageEn(scene, im.t), lumiere: ciel?.lumiere, ciel: ciel?.ciel, brume: ciel?.brume, soleil: ciel?.soleil,
+        image: imageEn(scene, im.t), heure: ciel?.heure, jour: ciel?.jour, cielFixe: ciel?.fixe, lumiere: ciel?.lumiere,
+        // le ciel est celui du jeu ; couleurs de ciel et de brume imposees seulement par couleurCiel
+        ciel: ciel?.fixe ? ciel.ciel : undefined, soleil: ciel?.fixe ? ciel.soleil : undefined,
+        brume: ciel?.fixe ? ciel.brume : (ciel?.brume?.debut !== undefined ? { debut: ciel.brume.debut } : undefined),
       });
     };
-    return { rs, anim, infos, kit, dessiner, fermer: () => rs.fermer() };
+    return { rs, anim, infos, kit, notes, dessiner, fermer: () => rs.fermer() };
   } catch (e) { await rs.fermer(); throw e; }
 }
 
 // Rend la scene en MP4. Retourne un compte rendu { sortie, images, secondes, corrections, notes, ... }.
 //   scene : sortie de validerScene. zonePath : fichier .mcz. kitDir : kit (eventuellement fusionne avec un pack).
 //   baseDir : dossier de la scene (les PNG du skin, du masque et des textures y sont cherches).
-export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges = {}, baseDir = process.cwd(), env = process.env, log = () => {}, ssaa = 1, travailleurs }) {
+export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges = {}, baseDir = process.cwd(), env = process.env, log = () => {}, ssaa = 1, travailleurs, shader }) {
   const t0 = Date.now();
   const ffmpeg = trouverFfmpeg(env);
-  const film = await preparerFilm({ scene, zonePath, kitDir, surcharges, baseDir, env, travailleurs });
+  const film = await preparerFilm({ scene, zonePath, kitDir, surcharges, baseDir, env, travailleurs, shader });
   const { rs, anim, infos } = film;
   let tmpAudio = null;
   try {
@@ -123,7 +138,7 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
     await fini;
     return {
       sortie, images: n, duree: scene.duree, secondes: (Date.now() - t0) / 1000, secondesRendu: (Date.now() - tRendu) / 1000,
-      corrections: anim.corrections, camera: anim.camera, skins: infos, notes: [...anim.notes, ...plan.notes], pas: plan.nbPas, evenementsSon: plan.evenements.length,
+      corrections: anim.corrections, camera: anim.camera, skins: infos, notes: [...anim.notes, ...plan.notes, ...film.notes], pas: plan.nbPas, evenementsSon: plan.evenements.length,
       memoireMaxMo: Math.round(process.resourceUsage().maxRSS / 1024), taille: fs.statSync(sortie).size,
     };
   } finally {
@@ -134,17 +149,17 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
 
 // Une seule image de la scene, petite et filigranee, SANS jeton (mcanim apercu). Ecrit un PNG ; retourne { sortie, image, t, taille, secondes }.
 //   t : secondes (0 a la duree). taille : "WxH" (640 de large au plus). Le rendu complet, lui, demande toujours un jeton.
-export async function apercuImage({ scene, zonePath, kitDir, t, sortie, taille, surcharges = {}, baseDir = process.cwd(), env = process.env }) {
+export async function apercuImage({ scene, zonePath, kitDir, t, sortie, taille, surcharges = {}, baseDir = process.cwd(), env = process.env, shader }) {
   const t0 = Date.now();
   if (!(t >= 0 && t <= scene.duree)) throw new Error(`--t : entre 0 et ${scene.duree} secondes (duree de la scene)`);
   const [largeur, hauteur] = tailleApercu(taille, scene);
-  const film = await preparerFilm({ scene, zonePath, kitDir, surcharges, baseDir, env, travailleurs: 0 });
+  const film = await preparerFilm({ scene, zonePath, kitDir, surcharges, baseDir, env, travailleurs: 0, shader });
   try {
     const i = Math.min(film.anim.images.length - 1, Math.round(t * 30));
     const rgba = await film.dessiner(i, { largeur, hauteur, copie: true });
     filigrane(rgba, largeur, hauteur);
     fs.mkdirSync(path.dirname(sortie), { recursive: true });
     fs.writeFileSync(sortie, encoderPNG({ largeur, hauteur, rgba }));
-    return { sortie, image: i, t: film.anim.images[i].t, taille: [largeur, hauteur], secondes: (Date.now() - t0) / 1000, skins: film.infos, notes: film.anim.notes };
+    return { sortie, image: i, t: film.anim.images[i].t, taille: [largeur, hauteur], secondes: (Date.now() - t0) / 1000, skins: film.infos, notes: [...film.anim.notes, ...film.notes] };
   } finally { await film.fermer(); }
 }

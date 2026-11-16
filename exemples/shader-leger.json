@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "nom": "Leger (exemple du lecteur)",
+  "origine": "exemple ecrit pour le lecteur, sans lien avec un pack",
+  "lumiere": {
+    "soleil": {
+      "0": [
+        0.6,
+        0.7,
+        1
+      ],
+      "6": [
+        1,
+        0.7,
+        0.5
+      ],
+      "12": [
+        1,
+        0.96,
+        0.9
+      ],
+      "18": [
+        1,
+        0.62,
+        0.4
+      ]
+    }
+  },
+  "ombres": {
+    "actif": true,
+    "distance": 96,
+    "feuillage": 0.8,
+    "acteurs": true
+  },
+  "ciel": {
+    "soleil": {
+      "halo": 0.5
+    }
+  },
+  "lueur": {
+    "intensite": 0.12,
+    "seuil": 0.8
+  },
+  "tonalite": {
+    "exposition": 1.05
+  },
+  "etalonnage": {
+    "saturation": 1.1,
+    "contraste": 1.05
+  },
+  "ecran": {
+    "vignette": 0.2
+  },
+  "vegetation": {
+    "feuilles": {
+      "amplitude": 0.04
+    },
+    "herbe": {
+      "amplitude": 0.1
+    }
+  }
+}

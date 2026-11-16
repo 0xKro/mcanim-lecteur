@@ -4,7 +4,7 @@
 export const LIMITE_OCTETS = 20 * 1024;
 export const IMAGES_PAR_SECONDE = 30;
 export const FORMATS = { '1920x1080': [1920, 1080], '1080x1920': [1080, 1920] };
-const LISSAGES = new Set(['d', 's', 'x']);
+const LISSAGES = new Set(['d', 's', 'x', 'l']);
 const MEMBRES = ['brasD', 'brasG', 'jambeD', 'jambeG'];
 // Articulations : une valeur par cle, en degres (0 = membre droit, 0 a 150 ; dans une boucle -150 a 150, la somme est ramenee a 0..150).
 export const ARTICULATIONS = ['coudeD', 'coudeG', 'genouD', 'genouG'];
@@ -47,7 +47,7 @@ function lirePiste(brut, chemin, { minArite, maxArite, temps = [0, Infinity], co
     let n = k.length;
     if (typeof k[n - 1] === 'string') {
       l = k[n - 1];
-      if (!LISSAGES.has(l)) err(ch, `lissage "${l}" inconnu (permis : "d", "s", "x")`);
+      if (!LISSAGES.has(l)) err(ch, `lissage "${l}" inconnu (permis : "d", "s", "x", "l")`);
       n--;
     }
     if (n < 1 || !estNombre(k[0])) err(ch, 'le premier element doit etre le temps (nombre)');
@@ -68,6 +68,7 @@ function lirePiste(brut, chemin, { minArite, maxArite, temps = [0, Infinity], co
 
 // Formes de lissage. u dans [0,1].
 export const lissages = {
+  l: (u) => u,                                 // lineaire : vitesse constante (dans une boucle : appui du pied sur le sol)
   d: (u) => u * u * (3 - 2 * u),               // doux : depart et arrivee ralentis
   s: (u) => (1 - Math.cos(Math.PI * u)) / 2,   // sinus
 };
@@ -197,6 +198,7 @@ export function validerScene(s) {
     ciel: s.ciel !== undefined ? lireTable(s.ciel, 'ciel', LEVIERS_CIEL) : null,
     gel: s.gel !== undefined ? lireGel(s.gel, s.duree) : [],
     textures: s.textures !== undefined ? lireTextures(s.textures) : {},
+    shader: s.shader !== undefined ? lireRefShader(s.shader) : null,   // chemin du fichier shader.json (docs/FORMAT-SHADER.md)
   };
 }
 
@@ -205,6 +207,12 @@ export function validerScene(s) {
 function verifierSkin(v, ch) {
   if (typeof v !== 'string' || !v) err(ch, 'texte attendu (pseudo, skin par defaut, "@identifiant" ou fichier PNG)');
   if (v.startsWith('@') && !/^@[A-Za-z0-9_-]{22}$/.test(v)) err(ch, '"@" doit etre suivi de l\'identifiant de 22 caracteres (lettres, chiffres, - et _) donne par lister_avatars');
+  return v;
+}
+
+// Champ facultatif `shader` : chemin d'un fichier .json relatif au fichier de scene (le contenu est lu et controle au rendu).
+function lireRefShader(v) {
+  if (typeof v !== 'string' || !/\.json$/i.test(v) || v.length > 200) err('shader', 'chemin d\'un fichier .json attendu (relatif au fichier de scene), par exemple "shader.json"');
   return v;
 }
 
@@ -242,7 +250,7 @@ const LEVIERS_IMAGE = {
   fondu: { arite: 4, min: 0, max: 1 },
 };
 const LEVIERS_CIEL = {
-  heure: { arite: 1, min: 0, max: 24 }, lumiere: { arite: 1, min: 0, max: 2 }, couleurCiel: { arite: 3, min: 0, max: 1 }, brume: { arite: 1, min: 0, max: 300 },
+  heure: { arite: 1, min: 0, max: 24 }, jour: { arite: 1, min: 0, max: 100000 }, lumiere: { arite: 1, min: 0, max: 2 }, couleurCiel: { arite: 3, min: 0, max: 1 }, brume: { arite: 1, min: 0, max: 300 },
 };
 
 function lireTable(brut, ch, leviers) {

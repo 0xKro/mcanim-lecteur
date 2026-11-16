@@ -21,18 +21,23 @@ export const courbeLumiere = (niveau, gamma = 0.5) => {
 
 // Tampon de quads qui grandit tout seul
 class Tampon {
-  constructor() { this.n = 0; this.cap = 4096; this.pos = new Float32Array(this.cap * 12); this.uv = new Float32Array(this.cap * 8); this.col = new Uint32Array(this.cap * 4); this.spr = new Int32Array(this.cap); this.sec = new Int32Array(this.cap); this.flip = new Uint8Array(this.cap); }
+  constructor() { this.n = 0; this.cap = 4096; this.pos = new Float32Array(this.cap * 12); this.uv = new Float32Array(this.cap * 8); this.col = new Uint32Array(this.cap * 4); this.spr = new Int32Array(this.cap); this.sec = new Int32Array(this.cap); this.flip = new Uint8Array(this.cap); this.aob = new Uint8Array(this.cap * 4); this.eti = new Uint8Array(this.cap * 4); }
   garantir() {
     if (this.n < this.cap) return;
     const c = this.cap * 2;
     const g = (a, k) => { const b = new a.constructor(c * k); b.set(a); return b; };
-    this.pos = g(this.pos, 12); this.uv = g(this.uv, 8); this.col = g(this.col, 4); this.spr = g(this.spr, 1); this.sec = g(this.sec, 1); this.flip = g(this.flip, 1);
+    this.pos = g(this.pos, 12); this.uv = g(this.uv, 8); this.col = g(this.col, 4); this.spr = g(this.spr, 1); this.sec = g(this.sec, 1); this.flip = g(this.flip, 1); this.aob = g(this.aob, 4); this.eti = g(this.eti, 4);
     this.cap = c;
   }
 }
 
 const OFFSET_XZ = /^(short_grass|fern|tall_grass|large_fern|dandelion|poppy|blue_orchid|allium|azure_bluet|red_tulip|orange_tulip|white_tulip|pink_tulip|oxeye_daisy|cornflower|lily_of_the_valley|wither_rose|sunflower|lilac|rose_bush|peony|dead_bush|seagrass|tall_seagrass|hanging_roots|bamboo|torchflower|pointed_dripstone)$/;
 const NON_COLLISION = /(grass|fern|dandelion|poppy|orchid|allium|bluet|tulip|daisy|cornflower|lily_of|lily_pad|rose|peony|lilac|sunflower|bush|mushroom|sapling|vine|torch|lichen|carpet|^snow$|leaf_litter|petals|wildflowers|rail|_sign|button|pressure_plate|tripwire|^string$|^fire$|seagrass|kelp|cobweb|dripleaf|roots|sprout|fungus|^wheat$|carrots|potatoes|beetroots|_stem|sugar_cane|dead_bush|berries|berry|firefly|bubble|^ladder$|^lever$|banner|^water$|^lava$|torchflower|eyeblossom|flower$|^moss_carpet$|frogspawn|pitcher_crop|^light$|^barrier$)/;
+
+// Etiquette par sommet (pour les options du shader, voir src/shader) : bits 0-2 = genre (0 rien, 1 surface d'eau, 2 feuilles, 3 plante),
+// bits 3-7 = poids du balancement pour une plante (0 au pied, 31 en haut). Sans shader elles ne servent a rien.
+export const ETI_EAU = 1, ETI_FEUILLES = 2, ETI_PLANTE = 3;
+const PLANTES = /^(short_grass|fern|tall_grass|large_fern|dandelion|poppy|blue_orchid|allium|azure_bluet|red_tulip|orange_tulip|white_tulip|pink_tulip|oxeye_daisy|cornflower|lily_of_the_valley|wither_rose|sunflower|lilac|rose_bush|peony|dead_bush|torchflower|wheat|carrots|potatoes|beetroots|sweet_berry_bush|pink_petals|wildflowers|short_dry_grass|tall_dry_grass|bush)$/;
 
 function graine(x, y, z) { // Mth.getSeed du jeu
   let l = BigInt.asIntN(64, BigInt(Math.imul(x, 3129871))) ^ (BigInt.asIntN(64, BigInt(z)) * 116129781n) ^ BigInt(y);
@@ -88,6 +93,10 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
     aoSh[i] = e.aoSolide ? 0.2 : 1;
     if (e.type === 1 && e.geo.length === 0 && !e.aleatoire) kind[i] = 0;
   }
+
+  const genre = new Uint8Array(NP);
+  for (let i = 2; i < NP; i++) { const e = etats[i]; if (e && e.type === 1) genre[i] = e.feuilles ? ETI_FEUILLES : PLANTES.test(e.nom) ? ETI_PLANTE : 0; }
+  let etiCourant = 0, etiHalf = 0;   // genre du bloc en cours et moitie (0 normal, 1 bas d'une grande plante, 2 haut)
 
   // ---------- lumiere du ciel ----------
   const lum = new Uint8Array(PX * PY * PZ);
@@ -155,6 +164,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
   const aoBord = new Float32Array(4);
   const luBord = new Float32Array(4);
   const br = new Float32Array(4);
+  const aoc = new Float32Array(4);
 
   function emettreQuad(couche, tex, q, i, lx, ly, lz, dx, dy, dz, colonne, vertCol) {
     // lumiere/AO aux 4 coins du carre devant la face
@@ -174,6 +184,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
     if (flat) {
       const brt = lumiere(q.emission || kind[pal[i]] === 3 ? 15 : Lc);
       br[0] = br[1] = br[2] = br[3] = brt;
+      aoc[0] = aoc[1] = aoc[2] = aoc[3] = 1;
     } else {
       const sCentre = aoSh[pc];
       for (let c = 0; c < 4; c++) {
@@ -186,7 +197,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
         const lb = opac[pb] >= 15 ? Lc : lum[base + ob];
         const lk = opac[pk] >= 15 ? Lc : lum[nk];
         const l = q.emission || kind[pal[i]] === 3 ? 15 : (la + lb + lk + Lc) * 0.25;
-        br[c] = ao * lumiere(l);
+        br[c] = ao * lumiere(l); aoc[c] = ao;
       }
     }
     const ombre = OMBRE_DIR[q.dirOmbre];
@@ -213,6 +224,8 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
       const w1 = Math.min(1, Math.max(0, p[ax1])), w2 = Math.min(1, Math.max(0, p[ax2]));
       const v = (1 - w1) * (1 - w2) * br[0] + w1 * (1 - w2) * br[1] + (1 - w1) * w2 * br[2] + w1 * w2 * br[3];
       vb[k] = v;
+      T.aob[n * 4 + k] = Math.min(255, Math.round(((1 - w1) * (1 - w2) * aoc[0] + w1 * (1 - w2) * aoc[1] + (1 - w1) * w2 * aoc[2] + w1 * w2 * aoc[3]) * 255));
+      T.eti[n * 4 + k] = etiCourant === ETI_PLANTE ? ETI_PLANTE | (Math.min(31, Math.round(31 * Math.min(1, Math.max(0, (p[1] + (etiHalf === 2 ? 1 : 0)) / (etiHalf ? 2 : 1))))) << 3) : etiCourant;
       const f = v * ombre;
       const R = Math.min(255, (r * f + 0.5) | 0), G = Math.min(255, (g * f + 0.5) | 0), B = Math.min(255, (bl * f + 0.5) | 0);
       T.col[co + k] = (255 << 24) | (B << 16) | (G << 8) | R;
@@ -226,7 +239,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
   }
 
   // Un quad de fluide (positions locales a la cellule en blocs) avec couleur uniforme
-  function quadFluide(couche, sprite, pts, uvs, rgbF, f, secteur) {
+  function quadFluide(couche, sprite, pts, uvs, rgbF, f, secteur, tag = 0) {
     const T = tampons[couche];
     T.garantir();
     const n = T.n++;
@@ -237,6 +250,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
       T.col[n * 4 + k] = (255 << 24) | (B << 16) | (G << 8) | R;
     }
     T.flip[n] = 0; T.spr[n] = sprite.id; T.sec[n] = secteur;
+    for (let k = 0; k < 4; k++) { T.aob[n * 4 + k] = 255; T.eti[n * 4 + k] = tag; }
     stat.quads++;
   }
 
@@ -259,7 +273,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
     // haut
     if (!(opaque[dessus]) && !(dessusEau)) {
       const f = FLU_OMBRE[1] * lumiere(niveauLum(i));
-      quadFluide(couche, sTop, [[X, Y + h, Z], [X, Y + h, Z + 1], [X + 1, Y + h, Z + 1], [X + 1, Y + h, Z]], [[0, 0], [0, 1], [1, 1], [1, 0]], coul, f, secteur);
+      quadFluide(couche, sTop, [[X, Y + h, Z], [X, Y + h, Z + 1], [X + 1, Y + h, Z + 1], [X + 1, Y + h, Z]], [[0, 0], [0, 1], [1, 1], [1, 0]], coul, f, secteur, lave ? 0 : ETI_EAU);
     }
     // cotes
     const faces = [[2, OFFDIR[2]], [3, OFFDIR[3]], [4, OFFDIR[4]], [5, OFFDIR[5]]];
@@ -301,6 +315,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
         let dx = 0, dz = 0;
         if (OFFSET_XZ.test(e.nom)) [dx, dz] = decalageXZ(zone.x0 + x, zone.z0 + z);
         const vertCol = teintesPal[p];
+        etiCourant = genre[p]; etiHalf = etiCourant === ETI_PLANTE ? (e.props && e.props.half === 'lower' ? 1 : e.props && e.props.half === 'upper' ? 2 : 0) : 0;
         for (const q of geo) {
           if (q.cull >= 0) {
             const np = pal[i + OFFDIR[q.cull]];
@@ -344,6 +359,7 @@ function assembler(T, textures, atlas, nbSec) {
   const uvs = new Float32Array(new SharedArrayBuffer(n * 8 * 4));
   const couleurs = new Uint32Array(new SharedArrayBuffer(n * 4 * 4));
   const indices = new Uint32Array(new SharedArrayBuffer(n * 6 * 4));
+  const ao = new Uint8Array(new SharedArrayBuffer(Math.max(1, n * 4))), etiq = new Uint8Array(new SharedArrayBuffer(Math.max(1, n * 4)));
   const bbox = new Float32Array(nbSec * 6);
   for (let s = 0; s < nbSec; s++) { bbox[s * 6] = bbox[s * 6 + 1] = bbox[s * 6 + 2] = Infinity; bbox[s * 6 + 3] = bbox[s * 6 + 4] = bbox[s * 6 + 5] = -Infinity; }
   const AW = atlas.largeur, AH = atlas.hauteur;
@@ -353,6 +369,7 @@ function assembler(T, textures, atlas, nbSec) {
     const o = suivant[s]++;
     positions.set(T.pos.subarray(i * 12, i * 12 + 12), o * 12);
     couleurs.set(T.col.subarray(i * 4, i * 4 + 4), o * 4);
+    ao.set(T.aob.subarray(i * 4, i * 4 + 4), o * 4); etiq.set(T.eti.subarray(i * 4, i * 4 + 4), o * 4);
     const sp = textures.sprites[T.spr[i]];
     for (let k = 0; k < 4; k++) {
       const u = Math.min(sp.w - eps, Math.max(eps, T.uv[i * 8 + k * 2] * sp.w));
@@ -372,7 +389,7 @@ function assembler(T, textures, atlas, nbSec) {
   for (let s = 0; s < nbSec; s++) {
     if (compte[s + 1] > compte[s]) sections.push({ debut: compte[s] * 6, nb: (compte[s + 1] - compte[s]) * 6, bbox: Array.from(bbox.subarray(s * 6, s * 6 + 6)) });
   }
-  return { positions, uvs, couleurs, indices, sections, nbQuads: n };
+  return { positions, uvs, couleurs, indices, sections, nbQuads: n, ao, etiq };
 }
 
 export { COUCHE_OPAQUE, COUCHE_DECOUPE, COUCHE_MELANGE, COUCHE_INTERNE };

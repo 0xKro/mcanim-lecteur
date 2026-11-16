@@ -95,7 +95,14 @@ mesh = {
 | `post.js` | post-traitement de l'image finale (`image`) |
 | `travailleur.js` | worker de rendu |
 | `chemins.js` | couloirs praticables, clairieres, eau, verification d'un segment (pour `resumeTerrain`) |
+| `ciel-vanille.js` | ciel du jeu : états, étoiles, nuages |
+| `../shader/` | format `shader.json` (`format.js`), moteur par image (`moteur.js`), ombres cuites (`ombres.js`), passes d'image (`post.js`), lumière (`ciel.js`) |
 | `scene.js` | l'API ci-dessus |
+
+## Ciel du jeu et shader (toujours dans le rendu de base)
+- `ciel-vanille.js` : ciel de Minecraft 26.3 (couleurs par heure et biome, lueur du lever/coucher, soleil et lune texturés, étoiles, nuages épais). Paramètres de `rendre` : `heure` (0..24, défaut 12), `jour` (phase de la lune), `cielFixe` ; un `ciel: {zenith, horizon, bas}` explicite désactive tout cela (ciel uni, comme `couleurCiel`). Les nuages sont un maillage « melange » (`nuage: true`) avec leur propre brume (220 à 576 blocs) et sans la lumière du terrain ; ils ne comptent pas dans la brume automatique des acteurs. Sans les textures du kit (groupe `environnement`), seuls les couleurs et les étoiles sont dessinés.
+- `scene.definirShader(lireShader(json))` (voir `src/shader/` et `docs/FORMAT-SHADER.md`) : ombres cuites (un octet par sommet, tableau partagé `ombre` de chaque dessin), lumière du monde, brume (courbe, brume basse), balancement des feuilles et des plantes (par sommet, position monde : pas de fissure), eau (teinte, opacité, reflet du ciel et ondulations par pixel), modifications du ciel du jeu, puis passes d'image : réduction par les workers, flou de la lueur (principal) en même temps que les rayons (workers), composition par bandes (exposition, courbe, étalonnage, vignette), PUIS l'étalonnage `image` de la scène. Un fichier vide ou à options neutres donne exactement la même image que sans fichier. `scene.moteur.stats` : cuisson des ombres.
+- Étiquettes de sommet (`etiq`, genre eau/feuilles/plante + poids du pied) et occlusion (`ao`) sont cuites par le mailleur ; sans shader elles ne servent pas.
 
 ## Brouillard et bord de zone
 - Par defaut le brouillard est AUTOMATIQUE, recalcule a chaque image : `fin` = distance horizontale de la camera au bord de zone le plus proche moins 4 blocs (jamais moins de 32) ; `debut` = 60 % de `fin`, repousse (jusqu'a 85 % de `fin`) pour ne jamais avaler un maillage dynamique, donc l'acteur suivi (`debut` >= sa plus grande distance horizontale + 3). Un `brume.debut` / `brume.fin` explicite l'emporte. Exemple : camera au centre d'une zone de rayon 128 : brume de 60 a 100 blocs.
@@ -118,7 +125,7 @@ mesh = {
 - Les textures animees sont reecrites dans l'atlas partage avant chaque image (quelques sprites de 16x16).
 
 ## Defauts connus
-- Pas de lumiere de blocs (sauf blocs emissifs traites comme pleine lumiere), pas d'ombre portee, pas de nuages. La nuit n'existe que comme facteur global (`lumiere`, voir `film/look.js`), sans lune, etoiles ni torches allumees.
+- Pas de lumiere de blocs (sauf blocs emissifs traites comme pleine lumiere) ; ombres portees seulement avec un shader. La nuit n'existe que comme facteur global (`lumiere`, voir `film/look.js`), sans lune, etoiles ni torches allumees.
 - Eau : plan plat a 14/16, pas de lissage des coins, pas de courant, tri des surfaces translucides par section seulement.
 - Les blocs dessines par code dans le jeu (coffres, lits, panneaux, banniere, tetes) sont une boite de remplacement ou absents.
 - Aux bords de la zone le terrain s'arrete, mais le brouillard automatique le cache (voir « Brouillard et bord de zone ») sauf camera tres pres du bord.

@@ -2,6 +2,7 @@
 // Voir docs/CONCEPTION.md ("Image", "Ciel et lumiere"). Aucune ambiance preparee : seulement des leviers numeriques.
 import { evaluer } from './scene.js';
 import { normaliserImage, imageActive } from '../rendu/post.js';
+import { lumiereMonde, ticksDepuisHeure } from '../rendu/ciel-vanille.js';
 
 const lerp = (a, b, u) => a + (b - a) * u;
 const melange3 = (a, b, u) => [lerp(a[0], b[0], u), lerp(a[1], b[1], u), lerp(a[2], b[2], u)];
@@ -38,8 +39,11 @@ const FACTEUR_NUIT = 0.12;   // part de la lumiere du jour qui reste a minuit
 
 // Heure (0..24) -> { ciel: {zenith, horizon, bas} (0..255), brume: couleur, lumiere: [r,g,b] (facteur terrain), soleil: direction | false }
 // 12 h = les valeurs par defaut du rendu, exactement.
-export function cielDepuisHeure(heure) {
-  const { g, crepuscule: tw } = luminositeCiel(heure);
+// Options (shader.json) : lueur = multiplicateur du rouge/orange du crepuscule, inclinaison = degres (rotation de la course du soleil autour de l'axe est-ouest,
+// positif = le soleil de midi bascule vers le sud, +z). Sans options le resultat est celui d'avant, exactement.
+export function cielDepuisHeure(heure, { lueur = 1, inclinaison = 0 } = {}) {
+  const { g, crepuscule: tw0 } = luminositeCiel(heure);
+  const tw = lueur === 1 ? tw0 : Math.min(1, tw0 * lueur);
   const ciel = {};
   for (const c of ['zenith', 'horizon', 'bas']) {
     const base = melange3(NUIT[c], JOUR[c], g);
@@ -51,8 +55,12 @@ export function cielDepuisHeure(heure) {
   const a = ((heure - 12) / 24) * 2 * Math.PI;
   const d = [0.35 * Math.cos(a) - 0.9 * Math.sin(a), 0.8 * Math.cos(a), -0.45 * Math.cos(a)];
   const n = Math.hypot(...d);
-  const soleil = d[1] > -0.02 ? d.map((x) => x / n) : false;
-  return { ciel, brume: ciel.horizon, lumiere: teinte.map((x) => x * f), soleil };
+  let dir = d.map((x) => x / n);
+  if (inclinaison) { const c = Math.cos((inclinaison * Math.PI) / 180), si = Math.sin((inclinaison * Math.PI) / 180); dir = [dir[0], dir[1] * c - dir[2] * si, dir[1] * si + dir[2] * c]; }
+  const soleil = dir[1] > -0.02 ? dir : false;
+  void f; void teinte;
+  // lumiere du monde : pistes sky_light_factor et sky_light_color du jeu (1 le jour, 0,24 bleute la nuit)
+  return { ciel, brume: ciel.horizon, lumiere: lumiereMonde(ticksDepuisHeure(heure)), soleil, soleilDir: dir, g, crepuscule: tw0 };
 }
 
 // Reglages de rendu au temps t, ou null si la scene n'a pas de `ciel` : { lumiere, ciel, brume, soleil } (chaque champ peut manquer).
@@ -62,6 +70,9 @@ export function cielEn(scene, t) {
   const v = (nom) => (c[nom] ? evaluer(c[nom], t) : undefined);
   const sortie = {};
   const heure = v('heure')?.[0];
+  if (heure !== undefined) sortie.heure = heure;
+  const jour = v('jour')?.[0];   // numero du jour : phase de la lune (0 = pleine lune)
+  if (jour !== undefined) sortie.jour = jour;
   let lumiere = [1, 1, 1];
   if (heure !== undefined) {
     const d = cielDepuisHeure(heure);
@@ -72,7 +83,7 @@ export function cielEn(scene, t) {
     const rgb = col.map((x) => x * 255);
     sortie.ciel = { zenith: rgb, horizon: rgb, bas: rgb };
     sortie.brume = { ...(sortie.brume || {}), couleur: rgb };
-    sortie.soleil = false;
+    sortie.soleil = false; sortie.fixe = true;
   }
   const dist = v('brume')?.[0];
   if (dist !== undefined) sortie.brume = { ...(sortie.brume || {}), debut: dist };

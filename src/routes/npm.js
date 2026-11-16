@@ -56,7 +56,7 @@ export async function run(ctx) {
   if (meta.dist.shasum && sum !== meta.dist.shasum) throw new Error(`tarball npm: sha1 ${sum} au lieu de ${meta.dist.shasum}`);
   if (J['blocks_states.json']) for (const [k, v] of Object.entries(J['blocks_states.json'])) ctx.put(`assets/minecraft/blockstates/${k}.json`, Buffer.from(JSON.stringify(v)));
   if (J['blocks_models.json']) for (const [k, v] of Object.entries(J['blocks_models.json'])) ctx.put(`assets/minecraft/models/block/${k}.json`, Buffer.from(JSON.stringify(v)));
-  const missing = ['sons', 'biomes'].filter((g) => groups.has(g));
+  const missing = ['sons', 'biomes', 'environnement'].filter((g) => groups.has(g));
   if (groups.has('worldgen')) missing.push('worldgen');
   return {
     missing,

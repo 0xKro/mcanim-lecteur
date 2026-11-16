@@ -339,35 +339,43 @@ function calculerMatrices(parties, pose) {
   return mats;
 }
 
-// Hauteur (blocs, au-dessus du sol de la pose a plat) du point le plus bas des deux pieds. Les jambes sont les memes en wide et en slim.
+// Coins de semelle des deux pieds (le bas de la boite du bas de jambe, couche externe comprise : c'est le point le plus bas du maillage).
+// Retourne [{ pied: 'D'|'G', coin: 0..3, avant, haut }] : `avant` = abscisse vers l'avant du joueur (blocs, corps de face), `haut` = hauteur
+// (blocs, meme repere que le decalage `dy`, 0 = sol de la pose a plat). Les jambes sont les memes en wide et en slim.
+// Sert a l'appui (ci-dessous) et aux mesures de glissement du pied (test/marche.test.js, outils/marche-ik.mjs).
 const PARTIES_REF = definirParties(false);
-function basDesPieds(pose) {
+export function coinsPieds(pose) {
   const mats = calculerMatrices(PARTIES_REF, { ...pose, balancement: false });
-  let bas = Infinity;
+  const coins = [];
   for (const j of [2, 3]) {
     const p = PARTIES_REF[LIMBES[j].ip], m = mats[partieArt(j, N_ARC)];
     const ym = p.orig[1] + p.taille[1] / 2, kz = p.orig[2] + p.taille[2] / 2 + LIMBES[j].signe * PIVOT_INTERIEUR * p.taille[2] / 2;
-    const g = p.ext.g;   // couche externe comprise : c'est le point le plus bas du maillage
+    const g = p.ext.g;
+    let c = 0;
     for (const x of [p.orig[0] - g, p.orig[0] + p.taille[0] + g]) for (const z of [p.orig[2] - g, p.orig[2] + p.taille[2] + g]) {
       const l = [x, p.orig[1] + p.taille[1] + g - ym, z - kz];
       const py = (m.R[3] * l[0] + m.R[4] * l[1] + m.R[5] * l[2]) / 16 + m.t[1];
-      bas = Math.min(bas, -(py + DECALAGE_Y) * ECHELLE);
+      const pz = (m.R[6] * l[0] + m.R[7] * l[1] + m.R[8] * l[2]) / 16 + m.t[2];
+      coins.push({ pied: j === 2 ? 'D' : 'G', coin: c++, avant: -pz * ECHELLE, haut: -(py + DECALAGE_Y) * ECHELLE });
     }
   }
-  return bas;
+  return coins;
 }
+const basDesPieds = (pose) => Math.min(...coinsPieds(pose).map((c) => c.haut));
 
-// Appui : decalage vertical (blocs) du corps. Le pied le plus bas reste ou il serait avec les genoux tendus (memes hanches) :
-// un genou qui plie sous le poids abaisse le corps (dy < 0) ; une jambe levee qui plie ne le tire pas vers le bas. Si le mollet
-// tombe a la verticale et descend plus bas que l'autre pied, le corps ne monte pas (le pied reste au-dessus du sol) ; il ne monte que
-// de ce qu'il faut pour qu'un pied basculant sur la pointe ne passe pas sous le sol (moins d'un demi-pixel).
-// Zero exactement sans flexion de genou.
+// Appui : decalage vertical (blocs) du corps pour que le pied le plus bas repose sur le sol a chaque instant (`pos` reste la position
+// des pieds de la pose a plat). dy = hauteur du pied le plus bas jambes tendues et droites - hauteur du pied le plus bas de la pose :
+//  - negatif quand les pieds sont plus hauts que le sol (jambes ecartees, genou porteur plie) : le corps descend, au plus de
+//    DESCENTE_MAX ; au-dela la foulee est trop longue pour les jambes et les pieds flottent ;
+//  - petit positif (au plus 4 cm) quand un pied qui bascule sur sa pointe passerait sous le sol ;
+//  - jamais de saut : le pied le plus bas varie sans discontinuite (min de deux fonctions continues) ; les jambes ne se tendent
+//    jamais plus que droites, donc le corps ne monte pas au-dessus de sa hauteur a plat de plus de ce demi-pixel.
+// Zero exactement sans flexion de genou ET jambes a la verticale. (anim.js l'attenue quand l'acteur quitte le sol.)
 const SOL = basDesPieds({});
+export const DESCENTE_MAX = 0.12;   // blocs : amplitude maximale de l'appui (bob d'une marche : 0,02 a 0,08)
 export function compensationAppui(pose) {
-  if (!(flexion(pose, LIMBES[2]) > 1e-4) && !(flexion(pose, LIMBES[3]) > 1e-4)) return 0;
-  const art = basDesPieds(pose);
-  const dy = Math.min(0, basDesPieds({ ...pose, genouD: 0, genouG: 0 }) - art);
-  return art + dy < SOL ? SOL - art : dy;
+  const dy = SOL - basDesPieds(pose);
+  return Math.max(-DESCENTE_MAX, Math.min(0.04, dy));
 }
 
 // Repere du modele (blocs, Y bas) -> monde relatif aux pieds (blocs, Y haut).

@@ -12,6 +12,9 @@ import { mailler, courbeLumiere } from './maillage.js';
 import { trouverChemins, trouverClairieres, trouverEau, evaluerSegment, verifierChemin } from './chemins.js';
 import { Rasteriseur, MODE_OPAQUE, MODE_DECOUPE, MODE_MELANGE } from './raster.js';
 import { PostTraitement, imageActive, aFlou } from './post.js';
+import { MoteurShader } from '../shader/moteur.js';
+import { CielVanille, ticksDepuisHeure, construireCiel } from './ciel-vanille.js';
+import { analyser, calculerBloom, calculerRayons, composer, creerTampons } from '../shader/post.js';
 
 const ICI = path.dirname(fileURLToPath(import.meta.url));
 const DIST_INTERNE = 32;   // distance horizontale (blocs) au-dela de laquelle les faces internes des feuilles ne sont plus dessinees
@@ -37,6 +40,7 @@ export async function chargerScene({ zonePath, zone, kitDir, travailleurs, optio
   const maillage = mailler({ zone: z, modeles, textures: tex, couleurs, options });
   const tMaillage = performance.now();
   const s = new Scene({ zone: z, modeles, textures: tex, maillage, travailleurs, options });
+  s.cielV = new CielVanille(kit);   // ciel du jeu : textures du kit (soleil, lune, nuages) lues une fois
   s.temps = { lectureMs: tLecture - t0, maillageMs: tMaillage - tLecture, totalMs: performance.now() - t0 };
   await s.demarrer();
   s.temps.totalMs = performance.now() - t0;
@@ -56,7 +60,7 @@ class Scene {
       const c = maillage.couches[nom];
       if (c.nbQuads === 0) continue;
       // interne : faces de feuilles cachees par d'autres feuilles, dessinees apres les faces exposees ; invisibles au-dela de distInterne
-      this.draws.push({ positions: c.positions, uvs: c.uvs, couleurs: c.couleurs, indices: c.indices, sections: c.sections, tex, mode, deuxFaces: false, partage: false, ...(nom === 'interne' ? { interne: true, distMax: options.distInterne ?? DIST_INTERNE } : {}) });
+      this.draws.push({ positions: c.positions, uvs: c.uvs, couleurs: c.couleurs, indices: c.indices, sections: c.sections, ao: c.ao, etiq: c.etiq, tex, mode, deuxFaces: false, partage: false, ...(nom === 'interne' ? { interne: true, distMax: options.distInterne ?? DIST_INTERNE } : {}) });
     }
     this.travailleursListe = [];
     this.idImage = 0;
@@ -120,7 +124,25 @@ class Scene {
       if (!masqueId) { masqueId = this.prochainMasque++; this.masqueIds.set(mk.valeurs, masqueId); this._masquesNouveaux.push({ id: masqueId, data: Uint8Array.from(mk.valeurs) }); }
     }
     const kM = Math.max(0, Math.min(256, Math.round((m.forceMasque ?? 1) * 256))), kE = Math.max(0, Math.min(256, Math.round((m.lueur ?? 0) * 256)));
-    return { positions: pos, uvs, couleurs: col, indices: ind, sections: [{ debut: 0, nb: ind.length, bbox: [...mn, ...mx] }], texId: tex, mode, deuxFaces: !!m.deuxFaces, partage: true, masqueId, kM, kE, exempt: !!m.exempt };
+    return { positions: pos, uvs, couleurs: col, indices: ind, sections: [{ debut: 0, nb: ind.length, bbox: [...mn, ...mx] }], texId: tex, mode, deuxFaces: !!m.deuxFaces, partage: true, masqueId, kM, kE, exempt: !!m.exempt, nuage: !!m.nuage };
+  }
+
+  // ---- shader (voir src/shader et docs/FORMAT-SHADER.md) : null ou un fichier lu par lireShader ; vide = rendu d'avant, au pixel pres
+  definirShader(sh) {
+    this.moteur = sh && !sh.actif.rien ? new MoteurShader(this, sh) : null;
+    this.notesShader = sh ? sh.notes : [];
+  }
+
+  // donne aux workers les tableaux d'ombre cuits (partages : une seule fois, ils sont ensuite remplis sur place)
+  envoyerOmbres() {
+    const liste = this.draws.map((d) => d.ombre || null);
+    for (const w of this.travailleursListe) w.postMessage({ type: 'ombres', liste });
+  }
+
+  _tampons(W, H, F) {
+    const t = this._tp;
+    if (t && t.W === W && t.H === H && t.F === F) return t;
+    return (this._tp = creerTampons(W, H, F));
   }
 
   ajouterMaillage(m) { const id = this.prochainMaillage++; this.persistants.set(id, m); return id; }
@@ -137,16 +159,18 @@ class Scene {
     let debut = fin * 0.6;
     let proche = 0;
     for (const d of dyn) {
+      if (d.nuage) continue;
       const bb = d.sections[0].bbox;
       const dx = Math.max(Math.abs(bb[0] - cam.x), Math.abs(bb[3] - cam.x)), dz = Math.max(Math.abs(bb[2] - cam.z), Math.abs(bb[5] - cam.z));
       proche = Math.max(proche, Math.hypot(dx, dz));
     }
     if (proche + 3 > debut) debut = Math.min(proche + 3, fin * 0.85);
-    return { debut, fin, bord };
+    return { debut, fin, bord, proche };
   }
 
   // ---- rendu ----
-  async rendre({ camera, largeur = 1920, hauteur = 1080, temps = 0, maillagesDynamiques = [], brume, ciel, soleil, loin, mip = true, ssaa = 1, copie = true, lumiere, image } = {}) {
+  async rendre({ camera, largeur = 1920, hauteur = 1080, temps = 0, maillagesDynamiques = [], brume, ciel, soleil, loin, mip = true, ssaa = 1, copie = true, lumiere, image, heure, jour, cielFixe } = {}) {
+    const tDebut = performance.now();
     const sortieW = largeur, sortieH = hauteur;
     largeur *= ssaa; hauteur *= ssaa;
     const cam = { x: camera.x, y: camera.y, z: camera.z, lacet: camera.lacet ?? 0, tangage: camera.tangage ?? 0, fov: camera.fov ?? 70 };
@@ -156,15 +180,39 @@ class Scene {
     }
     this.textures.mettreAJour(temps);
     this._nouvelles = []; this._masquesNouveaux = [];
-    const dyn = [...this.persistants.values(), ...maillagesDynamiques].map((m) => this._preparer(m));
+    const meshes = [...this.persistants.values(), ...maillagesDynamiques];
+    let dyn = meshes.map((m) => this._preparer(m));
+    const b = this.brumeAuto(cam, dyn);
+    // ciel du jeu (toujours, sauf couleur de ciel imposee par l'appelant : `ciel` explicite ou couleurCiel de la scene)
+    const sousEau = this.estDansEau(cam.x, cam.y, cam.z);
+    const vanilleOn = !ciel && !cielFixe && !!this.cielV && !sousEau;
+    let etV = null;
+    if (vanilleOn) {
+      const base = this.cielV.couleursCamera(this.zone, cam.x, cam.z);
+      etV = this.cielV.etat(ticksDepuisHeure(heure ?? 12), jour ?? 0, base);
+    }
+    // shader : lumiere, brume, ombres, eau, balancement, modifications du ciel, passes d'image (rien du tout sans fichier de shader)
+    let cielV = null, nuage = null;
+    if (vanilleOn) {
+      cielV = construireCiel(this.cielV, etV, cam, this.moteur ? this.moteur.modsCiel(heure) : null, temps * 20);
+      nuage = cielV.nuage;
+      ciel = cielV.couleurs;
+    }
+    let res = null;
+    if (this.moteur) {
+      res = this.moteur.preparer({ heure, temps, cam, W: largeur, H: hauteur, ssaa, lumiere, brume, auto: b, meshes, ciel: ciel || { zenith: [120, 167, 255], horizon: [192, 216, 255], bas: [170, 195, 235] } });
+      lumiere = res.lumiere; brume = res.brume;
+      if (res.meshes !== meshes) dyn = res.meshes.map((m) => this._preparer(m));
+    }
+    if (nuage) dyn.push(this._preparer(nuage));
+    const postSh = res ? res.post : null;
     // couleur selective : le tampon de force n'existe (et ne coute) que si l'image est etalonnee ET qu'un maillage est exempte
     const postActif = imageActive(image);
-    const veutForce = postActif && dyn.some((d) => d.masqueId || d.exempt);
+    const veutForce = (postActif || (postSh && res.veutForce)) && dyn.some((d) => d.masqueId || d.exempt);
     if (veutForce && !this.force) this.force = new Uint8Array(new SharedArrayBuffer(largeur * hauteur));
     const force = veutForce ? this.force : null;
     // le post-traitement se fait par les workers (chacun ses bandes) quand il n'y a ni flou ni surechantillonnage ; sinon thread principal
     const postParWorkers = postActif && ssaa === 1 && !aFlou(image) && !this.local && this.travailleursListe.length > 0;
-    const b = this.brumeAuto(cam, dyn);
     const params = {
       proche: 0.05, mip,
       brumeDebut: brume?.debut ?? b.debut, brumeFin: brume?.fin ?? b.fin,
@@ -173,18 +221,25 @@ class Scene {
     };
     // couleur de la brume : par defaut (ou si elle est egale a l'horizon du ciel) la brume prend, rangee par rangee, la couleur du ciel
     // derriere elle ; la brume epaisse est donc invisible sur le ciel. Une couleur differente est utilisee telle quelle.
+    if (cielV) params.vanille = cielV.vanille;
     const cb = brume?.couleur, h = params.cielHorizon;
     params.brumeCiel = !cb || (Math.abs(cb[0] - h[0]) < 1 && Math.abs(cb[1] - h[1]) < 1 && Math.abs(cb[2] - h[2]) < 1);
     params.brume = params.brumeCiel ? h : cb;
     if (params.brumeFin <= params.brumeDebut) params.brumeFin = params.brumeDebut + 8;
     params.loin = loin ?? params.brumeFin + 1;
+    if (nuage) { params.nuageDebut = 220; params.nuageFin = 576; }   // les nuages ont leur propre brume (loin de la zone) : ils ne suivent pas le bord de zone
     if (lumiere && (lumiere[0] !== 1 || lumiere[1] !== 1 || lumiere[2] !== 1)) params.lumiere = lumiere.map((v) => Math.max(0, v));
     // camera sous l'eau : brouillard bleu court, comme dans le jeu
-    if (this.estDansEau(cam.x, cam.y, cam.z)) {
-      const c = [24, 56, 150];
-      params.brumeDebut = 0; params.brumeFin = 28; params.loin = loin ?? 29; params.brumeCiel = true; params.brume = c; params.cielZenith = c; params.cielHorizon = c; params.cielBas = c; params.soleil = null;
+    if (res) Object.assign(params, res.params);
+    if (sousEau) {
+      let c = [24, 56, 150], fin = 28;
+      const se = this.moteur ? this.moteur.sousEau(heure) : null;
+      if (se) { if (se.couleur) c = se.couleur; if (se.distance) fin = se.distance; if (se.lum !== 1) params.lumiere = (params.lumiere || [1, 1, 1]).map((x) => x * se.lum); }
+      params.vanille = null; params.eau = null; params.fogLut = null; params.fogH = null; params.ven = null;
+      params.brumeDebut = 0; params.brumeFin = fin; params.loin = loin ?? fin + 1; params.brumeCiel = true; params.brume = c; params.cielZenith = c; params.cielHorizon = c; params.cielBas = c; params.soleil = null;
     }
     const id = ++this.idImage;
+    const tp = postSh ? this._tampons(largeur, hauteur, postSh.F) : null;
     const sw = this.local || !this.travailleursListe.length;
     if (sw) {
       const r = this.local || (this.local = new Rasteriseur());
@@ -193,6 +248,7 @@ class Scene {
       for (const k of this._masquesNouveaux) this._masquesLocaux.set(k.id, k.data);
       const draws = this.draws.concat(dyn.map((d) => ({ ...d, tex: this._texLocales.get(d.texId), masque: d.masqueId ? this._masquesLocaux.get(d.masqueId) : null })));
       this.dernieresStats = r.rendre({ pixels: this.pixels, W: largeur, H: hauteur, cam, draws, rangeeDe: 0, nW: 1, params, force });
+      if (postSh) analyser(this.pixels, r.zbuf, largeur, hauteur, tp, postSh, 0, 1);
     } else {
       const promesses = this.travailleursListe.map((w, i) => new Promise((ok, ko) => {
         const cle = id * 100 + i;
@@ -200,20 +256,51 @@ class Scene {
         w.on('message', h);
         w.once('error', ko);
         // les masques sont envoyes a tous les workers la premiere fois (liste cumulee tant que l'image n'a pas ete rendue)
-        w.postMessage({ type: 'image', id: cle, pixels: this.pixels, W: largeur, H: hauteur, cam, dynamiques: dyn, texturesNouvelles: this._nouvelles, masquesNouveaux: this._masquesNouveaux, params, force, post: postParWorkers ? image : null });
+        w.postMessage({ type: 'image', id: cle, pixels: this.pixels, W: largeur, H: hauteur, cam, dynamiques: dyn, texturesNouvelles: this._nouvelles, masquesNouveaux: this._masquesNouveaux, params, force, post: postParWorkers && !postSh ? image : null, ana: postSh ? { tp, par: postSh } : null });
       }));
-      const res = await Promise.all(promesses);
-      this.dernieresStats = { workers: res.map((r) => r.stats) };
+      const fin = await Promise.all(promesses);
+      this.dernieresStats = { workers: fin.map((r) => r.stats) };
+    }
+    // passes d'image du shader : flou de la lueur et des rayons (petite image, thread principal), puis composition par bandes
+    let composeFait = false;
+    const tPost0 = performance.now();
+    this.msRendu = tPost0 - tDebut;
+    if (postSh) {
+      // rayons (workers, par rangees) en meme temps que le flou de la lueur (thread principal)
+      let attente = null;
+      if (postSh.rayons && !sw) {
+        const cle0 = id * 100 + 20;
+        attente = Promise.all(this.travailleursListe.map((w, i) => new Promise((ok, ko) => {
+          const h = (m) => { if (m.type === 'fini' && m.id === cle0 + i) { w.off('message', h); w.off('error', ko); ok(); } };
+          w.on('message', h); w.once('error', ko);
+          w.postMessage({ type: 'rayons', id: cle0 + i, tp, par: postSh });
+        })));
+      }
+      calculerBloom(tp, postSh);
+      if (attente) await attente; else calculerRayons(tp, postSh, 0, 1);
+      this.msFlous = performance.now() - tPost0;
+      if (ssaa === 1 && !sw) {
+        const cle = id * 100 + 50;
+        await Promise.all(this.travailleursListe.map((w, i) => new Promise((ok, ko) => {
+          const h = (m) => { if (m.type === 'fini' && m.id === cle + i) { w.off('message', h); w.off('error', ko); ok(); } };
+          w.on('message', h); w.once('error', ko);
+          w.postMessage({ type: 'composer', id: cle + i, pixels: this.pixels, W: largeur, H: hauteur, tp, par: postSh, force, post: postParWorkers ? image : null });
+        })));
+        composeFait = true;
+      } else if (ssaa === 1) { composer(this.pixels, largeur, hauteur, tp, postSh, force, 0, 1); composeFait = true; }
+      this.msPasses = performance.now() - tPost0;
     }
     if (ssaa > 1) { // reduction : moyenne des ssaa x ssaa pixels (la force d'exemption aussi)
       if (!this.sortie || this.sortie.length !== sortieW * sortieH) { this.sortie = new Uint32Array(sortieW * sortieH); this.forceRed = null; }
       reduire(this.pixels, largeur, this.sortie, sortieW, sortieH, ssaa);
       let fr = null;
       if (force) { if (!this.forceRed) this.forceRed = new Uint8Array(sortieW * sortieH); reduireForce(force, largeur, this.forceRed, sortieW, sortieH, ssaa); fr = this.forceRed; }
+      if (postSh) composer(this.sortie, sortieW, sortieH, tp, postSh, fr, 0, 1);
       if (postActif) this.post.appliquer(this.sortie, sortieW, sortieH, image, fr);
       const o = new Uint8Array(this.sortie.buffer, 0, sortieW * sortieH * 4);
       return copie ? Uint8Array.from(o) : o;
     }
+    void composeFait;
     if (postActif && !postParWorkers) this.post.appliquer(this.pixels, largeur, hauteur, image, force);
     const out = new Uint8Array(this.pixels.buffer, 0, largeur * hauteur * 4);
     return copie ? Uint8Array.from(out) : out;

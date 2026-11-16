@@ -15,11 +15,12 @@ export const GROUPS = {
   colormap: ['assets/minecraft/textures/colormap/'],
   skins: ['assets/minecraft/textures/entity/player/'],
   sons: ['assets/minecraft/sounds.json', 'assets/minecraft/sounds/'],
+  environnement: ['assets/minecraft/textures/environment/'], // ciel : soleil, lune (8 phases), nuages (voir src/rendu/ciel-vanille.js)
   biomes: ['data/minecraft/worldgen/biome/'], // temperature, humidite, couleurs (teintes herbe/feuilles/eau)
   worldgen: ['data/minecraft/worldgen/'], // facultatif (le reste de worldgen)
 };
-export const DEFAULT_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'sons'];
-export const JAR_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'worldgen'];
+export const DEFAULT_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'environnement', 'sons'];
+export const JAR_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'environnement', 'worldgen'];
 
 export function groupOf(rel) {
   for (const [g, prefixes] of Object.entries(GROUPS)) {

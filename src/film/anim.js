@@ -168,8 +168,12 @@ export function animer(scene, terrain = {}) {
       if (articule[k]) {
         pose.coudeD = flexion(a, 'coudeD', t, h); pose.coudeG = flexion(a, 'coudeG', t, h);
         pose.genouD = flexion(a, 'genouD', t, h); pose.genouG = flexion(a, 'genouG', t, h);
-        // appui : le corps s'ajuste pour que le pied le plus bas reste a sa hauteur genoux tendus (modele.js, compensationAppui)
-        if (a.appui && (pose.genouD > 0 || pose.genouG > 0)) pose.dy = compensationAppui(pose);
+        // appui : le corps s'ajuste pour que le pied le plus bas repose sur le sol (modele.js, compensationAppui). Poids 1 au sol,
+        // decroissant jusqu'a 0 quand l'acteur s'eleve de 2 a 12 cm (saut, chute) : en l'air les pieds ne sont plus attires par le sol.
+        if (a.appui && (pose.genouD > 0 || pose.genouG > 0)) {
+          const poids = Math.max(0, Math.min(1, 1 - (e.y - solY - 0.02) / 0.10));
+          pose.dy = poids * compensationAppui(pose);
+        }
       }
       // apparence (pistes facultatives : rien n'est ajoute si elles manquent)
       const sk = skinEn(a, t);

@@ -20,21 +20,33 @@ import { obtenirZone, trouverKit, appliquerPack } from '../src/film/cache.js';
 import { verifierFichiers } from '../src/film/fichiers.js';
 import { textZonesSkin } from '../src/perso/zones.js';
 import { encoderPNG, decoderPNG } from '../src/rendu/png.js';
+import { lireShader, ErreurShader } from '../src/shader/format.js';
 
 const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai terrain)
   mcanim terrain <zone> [--pas 8]     telecharge la zone et le kit, resume du terrain (chemins, clairieres, eau)
   mcanim terrain <zone> --chemin x1,z1,x2,z2   verifie un trajet droit : libre, ou premier obstacle
   mcanim empreinte <scene.json>       controle la scene, affiche empreinte et duree
-  mcanim rendre <scene.json> --jeton <jeton> [--sortie f.mp4] [--pack pack.zip] [--skin nom=fichier.png]
-  mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360]   UNE image de la scene, petite, filigranee, SANS jeton
+  mcanim rendre <scene.json> --jeton <jeton> [--sortie f.mp4] [--pack pack.zip] [--skin nom=fichier.png] [--shader shader.json]
+  mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360] [--shader shader.json]   UNE image de la scene, petite, filigranee, SANS jeton
                                       (verifie couleurs, masques, cadrage avant de payer ; le rendu complet exige le jeton)
   mcanim skin <ref> [--sortie skin.png] [--zones]   exporte le skin 64x64 (a retoucher) et affiche ou sont visage, cheveux, corps
   mcanim texture <jeu/chemin> [--sortie f.png]      exporte une texture du jeu (ex. block/oak_leaves) a retoucher
   mcanim kit                          recupere le kit de base
   (options de rendre : --ssaa 2 pour un rendu plus lisse, 3 fois plus lent)
-  champs de scene facultatifs : image, ciel, gel, textures ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui (fiches du site)`;
+  --shader shader.json : ombres du soleil, ciel, brume, rayons de lumiere, bloom, eau, feuilles qui bougent... (format : docs/FORMAT-SHADER.md ;
+                         exemples : exemples/shader-leger.json, shader-tout.json ; ou le champ de scene "shader": "shader.json", chemin relatif a la scene ; l'option l'emporte)
+  champs de scene facultatifs : image, ciel, gel, textures, shader ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui (fiches du site)`;
 
 class Usage extends Error {}
+
+// Shader : fichier de l'option --shader (relatif au dossier courant) ou champ `shader` de la scene (relatif a la scene). Controle complet avant tout
+// telechargement ; retourne le chemin a donner au rendu (ou null).
+function controlerShader(scene, baseDir, option) {
+  const f = option ? path.resolve(option) : scene.shader ? path.resolve(baseDir, scene.shader) : null;
+  if (!f) return null;
+  try { lireShader(lireTexte(f)); } catch (e) { if (e instanceof ErreurShader) throw new Usage(e.message); throw e; }
+  return f;
+}
 
 // Lecture d'un fichier de scene avec un message clair s'il manque.
 function lireTexte(chemin) {
@@ -101,7 +113,7 @@ async function commandeEmpreinte(argv) {
 }
 
 async function commandeRendre(argv) {
-  const { pos, opt } = lireArgs(argv, { valeurs: ['jeton', 'sortie', 'pack', 'ssaa'], multiples: ['skin'] });
+  const { pos, opt } = lireArgs(argv, { valeurs: ['jeton', 'sortie', 'pack', 'ssaa', 'shader'], multiples: ['skin'] });
   if (pos.length !== 1) throw new Usage('usage : mcanim rendre <scene.json> --jeton <jeton> [--sortie f.mp4] [--pack pack.zip] [--skin nom=fichier.png]');
   if (!opt.jeton) throw new Usage('il faut un jeton : --jeton <jeton> (obtenu avec autoriser_scene)');
   const surcharges = {};
@@ -121,6 +133,7 @@ async function commandeRendre(argv) {
   const charge = verifierJeton(opt.jeton, { empreinte: e, duree: scene.duree, zone: scene.zone });
   const baseDir = path.dirname(path.resolve(pos[0]));
   verifierFichiers(scene, baseDir, surcharges);   // PNG cites par la scene (masque, textures, skins) : avant tout telechargement
+  const shader = controlerShader(scene, baseDir, opt.shader);
 
   // 2. zone, kit, pack
   const zone = await obtenirZone(scene.zone, { zh: charge.zh });
@@ -133,7 +146,7 @@ async function commandeRendre(argv) {
   const sortie = path.resolve(opt.sortie || path.basename(pos[0]).replace(/\.json$/i, '') + '.mp4');
   fs.mkdirSync(path.dirname(sortie), { recursive: true });
   const { rendreVideo } = await import('../src/film/video.js');
-  const r = await rendreVideo({ scene, zonePath: zone.chemin, kitDir: kit, sortie, surcharges, baseDir, log: dire, ssaa });
+  const r = await rendreVideo({ scene, zonePath: zone.chemin, kitDir: kit, sortie, surcharges, baseDir, log: dire, ssaa, shader });
 
   const repli = r.skins.filter((s) => s.repli);
   const notes = [...r.notes];
@@ -188,7 +201,7 @@ async function commandeTexture(argv) {
 
 // Une image de la scene a l'instant t, sans jeton : petite, avec un filigrane. Le rendu complet (mcanim rendre) exige toujours un jeton.
 async function commandeApercu(argv) {
-  const { pos, opt } = lireArgs(argv, { valeurs: ['t', 'sortie', 'taille', 'pack', 'skin'] });
+  const { pos, opt } = lireArgs(argv, { valeurs: ['t', 'sortie', 'taille', 'pack', 'skin', 'shader'] });
   if (pos.length !== 1) throw new Usage('usage : mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360]');
   const t = opt.t === undefined ? 0 : Number(opt.t);
   if (!Number.isFinite(t) || t < 0) throw new Usage('--t : un nombre de secondes >= 0, par exemple --t 3.5');
@@ -198,15 +211,18 @@ async function commandeApercu(argv) {
   const surcharges = {};
   if (opt.skin) { const i = opt.skin.indexOf('='); if (i < 1) throw new Usage('--skin attend nom=fichier.png'); surcharges[opt.skin.slice(0, i)] = path.resolve(opt.skin.slice(i + 1)); }
   verifierFichiers(scene, baseDir, surcharges);
+  const shader = controlerShader(scene, baseDir, opt.shader);
   const zone = await obtenirZone(scene.zone);
   let kit = await trouverKit({});
   if (opt.pack) kit = await appliquerPack(kit, path.resolve(opt.pack));
   const sortie = path.resolve(opt.sortie || 'apercu.png');
   const { apercuImage } = await import('../src/film/video.js');
-  const r = await apercuImage({ scene, zonePath: zone.chemin, kitDir: kit, t, sortie, taille: opt.taille, surcharges, baseDir }).catch((e) => { if (/^--(t|taille)/.test(e.message)) throw new Usage(e.message); throw e; });
+  const r = await apercuImage({ scene, zonePath: zone.chemin, kitDir: kit, t, sortie, taille: opt.taille, surcharges, baseDir, shader }).catch((e) => { if (/^--(t|taille)/.test(e.message)) throw new Usage(e.message); throw e; });
   const repli = r.skins.filter((s) => s.repli);
   dire(`apercu ${r.sortie} | t=${r.t.toFixed(2)} s (image ${r.image}) | ${r.taille.join('x')} | ${sec(Date.now() - t0)} s | filigrane : ce n'est PAS le rendu final, mcanim rendre demande un jeton`);
-  if (repli.length) dire('notes : ' + noteSkinsDeRepli(repli));
+  const notesA = (r.notes || []).filter((n) => /^options non prises/.test(n));
+  if (repli.length) notesA.push(noteSkinsDeRepli(repli));
+  if (notesA.length) dire('notes : ' + notesA.join(' ; '));
 }
 
 async function main() {

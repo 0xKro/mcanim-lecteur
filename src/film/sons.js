@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { instantsDePas, jambesAnimees } from './pas.js';
 
 export const FREQUENCE = 44100;
 export const DISTANCE_PAS = 1 / 0.6;   // blocs par pas : le jeu ajoute 0,6 par bloc parcouru et sonne a chaque entier
@@ -97,6 +98,23 @@ export function planifierSons({ scene, images, zone, sons }) {
     const manquantes = new Set();
     scene.acteurs.forEach((a, k) => {
       let mouvement = 0, suivant = 1, n = 0;
+      // Jambes animees : un pas a chaque contact d'un pied avec le sol (film/pas.js), avec le bloc sous CE pied.
+      if (images.length > 1 && jambesAnimees(images, k)) {
+        for (const pas of instantsDePas(images, k)) {
+          const bloc = (x, z) => (zone ? zone.bloc(Math.floor(x), Math.floor(pas.sol - 0.2), Math.floor(z)) : null);
+          let etat = bloc(pas.x, pas.z);                                 // bloc sous le pied ; en l'air (bord de marche) : bloc sous le corps
+          if (!etat || /(^|:)(cave_|void_)?air$/.test(String(etat).replace(/\[.*$/, ''))) etat = bloc(pas.ax, pas.az);
+          let fam = familleDeBloc(etat);
+          let liste = sons.fichiers(evenementPas(fam));
+          if (!liste.length) { manquantes.add(fam); fam = 'grass'; liste = sons.fichiers(evenementPas('grass')); }
+          if (!liste.length) continue;
+          const fichier = choisir(liste, `pas|${k}|${n}`);
+          const im = images[Math.min(images.length - 1, Math.max(0, Math.round(pas.t / DT)))];
+          n++; nbPas++;
+          evenements.push({ t: pas.t, fichier, ...gainPan([pas.x, pas.y + 0.3, pas.z], im.camera) });
+        }
+        return;
+      }
       for (let i = 1; i < images.length; i++) {
         const p = images[i].acteurs[k], q = images[i - 1].acteurs[k];
         if (!p.auSol || !q.auSol) continue;

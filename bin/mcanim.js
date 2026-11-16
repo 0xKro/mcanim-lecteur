@@ -6,6 +6,7 @@
 //   mcanim skin <ref> [--sortie skin.png] [--zones] [--modele wide|slim]
 //   mcanim texture <jeu/chemin> [--sortie f.png] [--pack pack.zip]
 //   mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360] [--pack pack.zip]
+//   mcanim shader --guide | --cles <famille> | --verifier f.json | --extraire pack.zip [--sortie dossier] | --exemples
 //   mcanim kit
 // Les sorties sont COURTES (elles coutent des tokens au client) ; en cas d'echec : message sur stderr, code non nul.
 import fs from 'node:fs';
@@ -21,6 +22,7 @@ import { verifierFichiers } from '../src/film/fichiers.js';
 import { textZonesSkin } from '../src/perso/zones.js';
 import { encoderPNG, decoderPNG } from '../src/rendu/png.js';
 import { lireShader, ErreurShader } from '../src/shader/format.js';
+import { texteGuide, texteFamille, verifierTexte } from '../src/shader/guide.js';
 
 const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai terrain)
   mcanim terrain <zone> [--pas 8]     telecharge la zone et le kit, resume du terrain (chemins, clairieres, eau)
@@ -31,6 +33,11 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
                                       (verifie couleurs, masques, cadrage avant de payer ; le rendu complet exige le jeton)
   mcanim skin <ref> [--sortie skin.png] [--zones]   exporte le skin 64x64 (a retoucher) et affiche ou sont visage, cheveux, corps
   mcanim texture <jeu/chemin> [--sortie f.png]      exporte une texture du jeu (ex. block/oak_leaves) a retoucher
+  mcanim shader --guide               reference courte pour traduire un pack de shaders en shader.json (cles, methode)
+  mcanim shader --cles <famille>      une famille de cles en detail (ex. ciel, lumiere, eau)
+  mcanim shader --verifier f.json     controle un shader.json : erreur avec le chemin de la cle, cles ignorees
+  mcanim shader --extraire pack.zip [--sortie dossier]   resume court des reglages d'un pack .zip (profils, options, const)
+  mcanim shader --exemples            ou sont shader-leger.json et shader-tout.json
   mcanim kit                          recupere le kit de base
   (options de rendre : --ssaa 2 pour un rendu plus lisse, 3 fois plus lent)
   --shader shader.json : ombres du soleil, ciel, brume, rayons de lumiere, bloom, eau, feuilles qui bougent... (format : docs/FORMAT-SHADER.md ;
@@ -225,6 +232,38 @@ async function commandeApercu(argv) {
   if (notesA.length) dire('notes : ' + notesA.join(' ; '));
 }
 
+// Aide au traducteur de packs de shaders : tout est du texte court, rien n'est telecharge.
+async function commandeShader(argv) {
+  const { opt } = lireArgs(argv, { valeurs: ['cles', 'verifier', 'extraire', 'sortie'], drapeaux: ['guide', 'exemples'] });
+  if (opt.guide) return dire(texteGuide());
+  if (opt.cles !== undefined) {
+    const r = texteFamille(opt.cles);
+    if (!r.ok) throw new Usage(r.texte);
+    return dire(r.texte);
+  }
+  if (opt.verifier !== undefined) {
+    const r = verifierTexte(lireTexte(path.resolve(opt.verifier)));
+    if (!r.ok) throw new Usage(r.texte);
+    return dire(r.texte);
+  }
+  if (opt.extraire !== undefined) {
+    const zip = path.resolve(opt.extraire);
+    if (!fs.existsSync(zip)) throw new Usage(`pack introuvable : ${zip}`);
+    const sortie = path.resolve(opt.sortie || path.basename(zip).replace(/\.zip$/i, '') + '-extrait');
+    const { extraire } = await import('../src/shader/extraire.js');
+    let r;
+    try { r = await extraire(zip, sortie); } catch (e) { throw new Usage(`pack illisible : ${e.message}`); }
+    return dire(r.texte);
+  }
+  if (opt.exemples) {
+    const d = path.resolve(fileURLToPath(new URL('../exemples/', import.meta.url)));
+    return dire(`exemples (a copier puis modifier) :
+${path.join(d, 'shader-leger.json')}   ombres, bloom, vignette, feuilles : ~ +25 % de temps de rendu
+${path.join(d, 'shader-tout.json')}   toutes les familles du palier 1 : ~ +55 %`);
+  }
+  throw new Usage('usage : mcanim shader --guide | --cles <famille> | --verifier shader.json | --extraire pack.zip [--sortie dossier] | --exemples');
+}
+
 async function main() {
   const [cmd, ...reste] = process.argv.slice(2);
   switch (cmd) {
@@ -234,6 +273,7 @@ async function main() {
     case 'skin': return commandeSkin(reste);
     case 'texture': return commandeTexture(reste);
     case 'apercu': return commandeApercu(reste);
+    case 'shader': return commandeShader(reste);
     case 'kit': return commandeKit();
     case '--version': case '-v': return dire(JSON.parse(fs.readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')).version);
     case undefined: case 'aide': case '--help': case '-h': return dire(AIDE);

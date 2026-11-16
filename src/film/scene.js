@@ -250,7 +250,7 @@ const LEVIERS_IMAGE = {
   fondu: { arite: 4, min: 0, max: 1 },
 };
 const LEVIERS_CIEL = {
-  heure: { arite: 1, min: 0, max: 24 }, jour: { arite: 1, min: 0, max: 100000 }, lumiere: { arite: 1, min: 0, max: 2 }, couleurCiel: { arite: 3, min: 0, max: 1 }, brume: { arite: 1, min: 0, max: 300 },
+  heure: { arite: 1, min: 0, max: 24 }, gamma: { arite: 1, min: 0, max: 1 }, jour: { arite: 1, min: 0, max: 100000 }, lumiere: { arite: 1, min: 0, max: 2 }, couleurCiel: { arite: 3, min: 0, max: 1 }, brume: { arite: 1, min: 0, max: 300 },
 };
 
 function lireTable(brut, ch, leviers) {

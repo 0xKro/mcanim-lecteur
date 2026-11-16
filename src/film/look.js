@@ -41,7 +41,7 @@ const FACTEUR_NUIT = 0.12;   // part de la lumiere du jour qui reste a minuit
 // 12 h = les valeurs par defaut du rendu, exactement.
 // Options (shader.json) : lueur = multiplicateur du rouge/orange du crepuscule, inclinaison = degres (rotation de la course du soleil autour de l'axe est-ouest,
 // positif = le soleil de midi bascule vers le sud, +z). Sans options le resultat est celui d'avant, exactement.
-export function cielDepuisHeure(heure, { lueur = 1, inclinaison = 0 } = {}) {
+export function cielDepuisHeure(heure, { lueur = 1, inclinaison = 0, gamma = 0.5 } = {}) {
   const { g, crepuscule: tw0 } = luminositeCiel(heure);
   const tw = lueur === 1 ? tw0 : Math.min(1, tw0 * lueur);
   const ciel = {};
@@ -60,7 +60,7 @@ export function cielDepuisHeure(heure, { lueur = 1, inclinaison = 0 } = {}) {
   const soleil = dir[1] > -0.02 ? dir : false;
   void f; void teinte;
   // lumiere du monde : pistes sky_light_factor et sky_light_color du jeu (1 le jour, 0,24 bleute la nuit)
-  return { ciel, brume: ciel.horizon, lumiere: lumiereMonde(ticksDepuisHeure(heure)), soleil, soleilDir: dir, g, crepuscule: tw0 };
+  return { ciel, brume: ciel.horizon, lumiere: lumiereMonde(ticksDepuisHeure(heure), gamma), soleil, soleilDir: dir, g, crepuscule: tw0 };
 }
 
 // Reglages de rendu au temps t, ou null si la scene n'a pas de `ciel` : { lumiere, ciel, brume, soleil } (chaque champ peut manquer).
@@ -75,7 +75,7 @@ export function cielEn(scene, t) {
   if (jour !== undefined) sortie.jour = jour;
   let lumiere = [1, 1, 1];
   if (heure !== undefined) {
-    const d = cielDepuisHeure(heure);
+    const d = cielDepuisHeure(heure, { gamma: v('gamma')?.[0] });
     sortie.ciel = d.ciel; sortie.brume = { couleur: d.brume }; sortie.soleil = d.soleil; lumiere = d.lumiere;
   }
   const col = v('couleurCiel');

@@ -287,7 +287,16 @@ export function construireCiel(cv, et, cam, mods, ticksMonde) {
 // dans la couleur des sommets (1 le jour ; 0,24 x bleuté la nuit).
 const PISTE_LUM_FACTEUR = [[730, [1]], [11270, [1]], [13140, [0.24]], [22860, [0.24]]];
 const PISTE_LUM_COULEUR = [[730, [1, 1, 1]], [11270, [1, 1, 1]], [13140, [0x7a / 255, 0x7a / 255, 1]], [22860, [0x7a / 255, 0x7a / 255, 1]]];
-export function lumiereMonde(ticks) {
+// Couleur de la case (ciel 15, bloc 0) de la lightmap du jeu (Horizon, gfx.rs update_lightmap + lightmap.fsh) :
+//   brut = ambient_light_color + sky_light_color * sky_light_factor     (ambient_light_color de l'overworld : #0a0a0a ; ciel 15 = courbe 1)
+//   puis reglage de luminosite `gamma` (0 = Moody, 0,5 = defaut du jeu, 1 = Bright) : max = plus grand canal, notGamma = brut * (1 - (1-max)^4) / max,
+//   resultat = brut + (notGamma - brut) * gamma. Le jour le brut depasse 1 : tout vaut 1, rien ne change. La nuit le plancher ambiant et le
+//   reglage relevent la lumiere : bleu lisible, jamais noir. (Avant : facteur x couleur seulement, soit 0,24 : trop sombre.)
+export const AMBIANT_OVERWORLD = 0x0a / 255;
+export function lumiereMonde(ticks, gamma = 0.5) {
   const f = piste(PISTE_LUM_FACTEUR, ticks)[0], c = piste(PISTE_LUM_COULEUR, ticks);
-  return c.map((v) => v * f);
+  const brut = c.map((v) => Math.min(1, Math.max(0, AMBIANT_OVERWORLD + v * f)));
+  const max = Math.max(...brut, 1e-6);
+  const k = (1 - Math.pow(1 - max, 4)) / max;
+  return brut.map((v) => v + (v * k - v) * gamma);
 }

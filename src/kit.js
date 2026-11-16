@@ -18,9 +18,14 @@ export const GROUPS = {
   environnement: ['assets/minecraft/textures/environment/'], // ciel : soleil, lune (8 phases), nuages (voir src/rendu/ciel-vanille.js)
   biomes: ['data/minecraft/worldgen/biome/'], // temperature, humidite, couleurs (teintes herbe/feuilles/eau)
   worldgen: ['data/minecraft/worldgen/'], // facultatif (le reste de worldgen)
+  // groupes A LA DEMANDE (recuperes seulement quand une scene en a besoin : voir GROUPES_A_LA_DEMANDE) :
+  objets: ['assets/minecraft/items/', 'assets/minecraft/models/item/', 'assets/minecraft/textures/item/'],   // objets tenus en main (champs `objet` et `objetG`)
+  armures: ['assets/minecraft/equipment/', 'assets/minecraft/textures/entity/equipment/'],                    // armure portee (champ `armure`)
 };
+// Hors de DEFAULT_GROUPS : le premier lancement reste leger. `trouverKit({ groupes })` (film/cache.js) les ajoute quand la scene en a besoin.
+export const GROUPES_A_LA_DEMANDE = ['objets', 'armures'];
 export const DEFAULT_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'environnement', 'sons'];
-export const JAR_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'environnement', 'worldgen'];
+export const JAR_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'environnement', 'worldgen', 'objets', 'armures'];
 
 export function groupOf(rel) {
   for (const [g, prefixes] of Object.entries(GROUPS)) {

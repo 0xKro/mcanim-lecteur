@@ -16,6 +16,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lireScene } from '../src/film/scene.js';
 import { empreinte } from '../src/film/empreinte.js';
+import { empreinteComplete } from '../src/film/empreinte-fichiers.js';
+import { groupesDeScene, planifier as planifierHabillage, chercherObjets } from '../src/objets/plan.js';   // objets tenus et armure (kit a la demande, controles, note)
+import { materiauxDuKit } from '../src/objets/armure.js';   // empreinte = scene + contenu des fichiers cites + options (CONCEPTION.md partie 4)
 import { verifierJeton } from '../src/film/jeton.js';
 import { noteSkinsDeRepli } from '../src/perso/skin.js';
 import { resumeCamera } from '../src/film/camera.js';
@@ -35,7 +38,8 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   mcanim terrain <zone> [--pas 8]     telecharge la zone et le kit, resume du terrain (chemins, clairieres, eau)
   mcanim terrain <zone> --chemin x1,z1,x2,z2   verifie un trajet droit : libre, ou premier obstacle
   mcanim trajet <scene.json>          ce qui arrive aux acteurs sur leur chemin : saut, chute, eau, echelle, marches, mur, vitesses ; gratuit, court
-  mcanim empreinte <scene.json>       controle la scene, affiche empreinte et duree
+  mcanim empreinte <scene.json> [memes options que rendre]   controle la scene, affiche empreinte et duree ; l'empreinte couvre le CONTENU des PNG / shader / pack cites et les options
+                                      de rendu (--skin --pack --shader --pack-shader --echelle --profil --option) : un octet change apres autoriser_scene = jeton refuse (modifier_scene)
   mcanim rendre <scene.json> --jeton <jeton> [--sortie f.mp4] [--pack pack.zip] [--skin nom=fichier.png] [--shader shader.json]
   mcanim rendre ... --pack-shader pack.zip [--echelle 1|0.5] [--profil NOM] [--option NOM=VALEUR ...] [--repli]   VRAI pack de shaders (le code du pack tourne sur
                                       un OpenGL logiciel ; lent : quelques secondes par image ; 0.5 = le pack tourne a mi-taille puis l'image est agrandie)
@@ -49,11 +53,12 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   mcanim shader --extraire pack.zip [--sortie dossier]   resume court des reglages d'un pack .zip (profils, options, const) ; memes noms pour --profil / --option
   mcanim shader --diagnostic          peut-on rendre avec un VRAI pack de shaders ici ? (moteur OpenGL logiciel, version, limites ; 4 lignes)
   mcanim shader --exemples            ou sont shader-leger.json et shader-tout.json
+  mcanim objets --cherche <mot>       identifiants d'objets du jeu (20 au plus) pour les champs objet / objetG ; --armures : materiaux du champ armure
   mcanim kit                          recupere le kit de base
   (options de rendre : --ssaa 2 pour un rendu plus lisse, 3 fois plus lent)
   --shader shader.json : ombres du soleil, ciel, brume, rayons de lumiere, bloom, eau, feuilles qui bougent... (format : docs/FORMAT-SHADER.md ;
                          exemples : exemples/shader-leger.json, shader-tout.json ; ou le champ de scene "shader": "shader.json", chemin relatif a la scene ; l'option l'emporte)
-  champs de scene facultatifs : image, ciel, gel, textures, shader, packShader (pack .zip, chemin relatif a la scene) ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui (fiches du site)
+  champs de scene facultatifs : image, ciel, gel, textures, shader, packShader (pack .zip, chemin relatif a la scene) ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui, objet objetG [t,"id"|null] (objet tenu en main droite / gauche ; mcanim objets --cherche mot), armure {tete,torse,jambes,pieds} (fiches du site)
   hauteur automatique (physique du jeu : saut 0.42, gravite 0.08, pas de 0.6, chute, eau, echelle) a partir de pos [t,x,z] ; acteur : bascule [t,deg] roulis [t,deg]
   (corps entier autour des hanches, 90 = a plat) hauteur [t,blocs] (decalage vertical) reactions:false (coupe les reactions automatiques du corps)
   membres libres : brasD brasG jambeD jambeG [t,avant,cote,torsion] (cote < 0 : croise le corps ; torsion > 0 : rotation interne), tete [t,lacet,tangage,roulis],
@@ -173,10 +178,14 @@ async function commandeTrajet(argv) {
 }
 
 async function commandeEmpreinte(argv) {
-  const { pos } = lireArgs(argv);
-  if (pos.length !== 1) throw new Usage('usage : mcanim empreinte <scene.json>');
+  // memes options que rendre pour tout ce qui change l'image : elles entrent dans l'empreinte (--ssaa et --repli : sans effet sur elle)
+  const { pos, opt } = lireArgs(argv, { valeurs: ['pack', 'shader', 'pack-shader', 'echelle', 'profil', 'ssaa'], multiples: ['skin', 'option'], drapeaux: ['repli'] });
+  if (pos.length !== 1) throw new Usage('usage : mcanim empreinte <scene.json> [memes options de rendu que rendre : --skin --pack --shader --pack-shader --echelle --profil --option]');
   const { brut, scene } = lireScene(lireTexte(pos[0]));
-  dire(`empreinte ${empreinte(brut)} | duree ${scene.duree} s | ${scene.format} | ${scene.acteurs.length} acteur(s) | ${scene.images} images`);
+  for (const s of opt.skin || []) if (s.indexOf('=') < 1) throw new Usage(`--skin attend nom=fichier.png (recu : ${s})`);
+  const fp = empreinteComplete(brut, { scene, baseDir: path.dirname(path.resolve(pos[0])), opt });
+  dire(`empreinte ${fp.empreinte} | duree ${scene.duree} s | ${scene.format} | ${scene.acteurs.length} acteur(s) | ${scene.images} images`);
+  dire(fp.texte);
   try { const n = noteAmplitudes(scene, animer(scene)); if (n) dire(n); } catch { /* la note d'amplitudes est facultative */ }
   // meme simulation que le rendu : combien d'evenements de trajet (zone deja dans le cache seulement ; jamais d'erreur ici)
   try {
@@ -207,19 +216,29 @@ async function commandeRendre(argv) {
   // 1. scene et jeton : rien n'est telecharge ni calcule si l'un des deux est mauvais
   const { brut, scene } = lireScene(lireTexte(pos[0]));
   for (const nom of Object.keys(surcharges)) if (!scene.acteurs.some((a) => a.nom === nom)) throw new Usage(`--skin : aucun acteur nomme "${nom}"`);
-  const e = empreinte(brut);
-  const charge = verifierJeton(opt.jeton, { empreinte: e, duree: scene.duree, zone: scene.zone });
   const baseDir = path.dirname(path.resolve(pos[0]));
-  verifierFichiers(scene, baseDir, surcharges);   // PNG cites par la scene (masque, textures, skins) : avant tout telechargement
+  // l'empreinte couvre le contenu des fichiers cites et les options de rendu : un octet change = jeton refuse (modifier_scene)
+  const fp = empreinteComplete(brut, { scene, baseDir, opt });   // verifie aussi que les PNG cites existent (avant tout telechargement)
+  const e = fp.empreinte;
+  const verifier = (extra = {}) => {
+    try { return verifierJeton(opt.jeton, { empreinte: e, duree: scene.duree, zone: scene.zone, ...extra }); } catch (err) {
+      if (fp.fichiers.length && /empreinte differente/.test(err.message)) throw new Error("jeton refuse : la scene, un fichier cite (skin, masque, texture, shader, pack) ou une option de rendu a change depuis l'autorisation ; demande une retouche (modifier_scene) avec la nouvelle empreinte (mcanim empreinte avec les memes options), puis rends avec le nouveau jeton");
+      throw err;
+    }
+  };
+  const charge = verifier();
   const shader = controlerShader(scene, baseDir, opt.shader);
   const reel = await controlerPackShader(scene, baseDir, opt, dire);
 
   // 2. zone, kit, pack
   const zone = await obtenirZone(scene.zone, { zh: charge.zh });
-  verifierJeton(opt.jeton, { empreinte: e, duree: scene.duree, zone: scene.zone, zoneSha256: zone.sha256 });
-  let kit = await trouverKit({});
+  verifier({ zoneSha256: zone.sha256 });
+  let kit = await trouverKit({ groupes: groupesDeScene(scene) });
   if (opt.pack) kit = await appliquerPack(kit, path.resolve(opt.pack));
+  const habillage = planifierHabillage(scene, kit);   // objets et armure : identifiants controles AVANT le rendu
+  if (habillage.erreur) throw new Usage(habillage.erreur);
   dire(`jeton ok, zone prete${opt.pack ? ', pack applique' : ''} (${sec(Date.now() - t0)} s)`);
+  if (habillage.note) dire(habillage.note);
 
   // 3. rendu
   const sortie = path.resolve(opt.sortie || path.basename(pos[0]).replace(/\.json$/i, '') + '.mp4');
@@ -295,8 +314,11 @@ async function commandeApercu(argv) {
   const reel = await controlerPackShader(scene, baseDir, opt, dire);
   if (reel) dire(`apercu avec un vrai pack de shaders : ${path.basename(reel.chemin)}${reel.resume.length ? ', ' + reel.resume.join(' ') : ''} ; non gere : ${reel.nonGere.join(' ; ')}`);
   const zone = await obtenirZone(scene.zone);
-  let kit = await trouverKit({});
+  let kit = await trouverKit({ groupes: groupesDeScene(scene) });
   if (opt.pack) kit = await appliquerPack(kit, path.resolve(opt.pack));
+  const habillage = planifierHabillage(scene, kit);
+  if (habillage.erreur) throw new Usage(habillage.erreur);
+  if (habillage.note) dire(habillage.note);
   const sortie = path.resolve(opt.sortie || 'apercu.png');
   const { apercuImage } = await import('../src/film/video.js');
   const r = await apercuImage({ scene, zonePath: zone.chemin, kitDir: kit, t, sortie, taille: opt.taille, surcharges, baseDir, shader: reel ? null : shader, ...(reel ? { packShader: reel.chemin, optionsPack: reel.optionsPack, echelle: reel.echelle, log: dire } : {}) }).catch((e) => { if (/^--(t|taille)/.test(e.message)) throw new Usage(e.message); throw e; });
@@ -305,6 +327,21 @@ async function commandeApercu(argv) {
   const notesA = (r.notes || []).filter((n) => /^options non prises/.test(n));
   if (repli.length) notesA.push(noteSkinsDeRepli(repli));
   if (notesA.length) dire('notes : ' + notesA.join(' ; '));
+}
+
+// Aide gratuite : cherche des identifiants d'objets (et de materiaux d'armure) pour ne pas deviner les noms.
+async function commandeObjets(argv) {
+  const { opt } = lireArgs(argv, { valeurs: ['cherche'], drapeaux: ['armures'] });
+  if (opt.armures) {
+    const kit = await trouverKit({ groupes: ['armures'] });
+    return dire(`materiaux d'armure : ${materiauxDuKit(kit).join(', ')} (champ armure : un materiau ou un objet comme diamond_helmet ; "golden" = gold, "turtle" = turtle_scute)`);
+  }
+  if (!opt.cherche) throw new Usage('usage : mcanim objets --cherche <mot>  (ex. sword, fish, torch, planks)   |   mcanim objets --armures');
+  const kit = await trouverKit({ groupes: ['objets'] });
+  const { premiers, total } = chercherObjets(kit, opt.cherche);
+  if (!total) return dire(`aucun objet ne contient "${opt.cherche}" (essaie un mot anglais plus court : sword, apple, planks)`);
+  dire(`${premiers.join(' ')}${total > premiers.length ? `
+(+${total - premiers.length} autres : precise le mot)` : ''}`);
 }
 
 // Aide au traducteur de packs de shaders : tout est du texte court, rien n'est telecharge.
@@ -359,6 +396,7 @@ async function main() {
     case 'apercu': return commandeApercu(reste);
     case 'shader': return commandeShader(reste);
     case 'kit': return commandeKit();
+    case 'objets': return commandeObjets(reste);
     case '--version': case '-v': return dire(JSON.parse(fs.readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')).version);
     case undefined: case 'aide': case '--help': case '-h': return dire(AIDE);
     default: throw new Usage(`commande inconnue : ${cmd}\n${AIDE}`);

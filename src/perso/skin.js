@@ -126,10 +126,17 @@ async function skinMojang(pseudo, fabriqueNet) {
 }
 
 // ---------------------------------------------------------------- resolution
+// Le rgba rendu porte le dossier du kit (propriete `kitDir`) : le Personnage s'en sert pour lire les textures et modeles des objets tenus
+// et de l'armure (src/objets/), sans que le film ait a lui passer le kit. Aucun autre effet.
+export async function resoudreSkin(args) {
+  const r = await resoudreSkinBrut(args);
+  if (args.kitDir && r?.rgba) r.rgba.kitDir = args.kitDir;
+  return r;
+}
 // Retourne { rgba, modele ('wide'|'slim'), origine, detail, repli (bool) }.
 //   description : texte du champ `skin`. surcharge : chemin PNG donne par --skin nom=fichier.png.
 //   modele : 'wide' | 'slim' | null (null = a deviner).
-export async function resoudreSkin({ description, modele, kitDir, surcharge, fabriqueNet = () => new Net({ connectTimeout: 2000 }), baseDir = process.cwd(), mojang = skinMojang, relais = obtenirSkinRelais, env = process.env }) {
+async function resoudreSkinBrut({ description, modele, kitDir, surcharge, fabriqueNet = () => new Net({ connectTimeout: 2000 }), baseDir = process.cwd(), mojang = skinMojang, relais = obtenirSkinRelais, env = process.env }) {
   const choisir = (m) => m ?? 'wide';
   if (surcharge) {
     const f = path.resolve(baseDir, surcharge);

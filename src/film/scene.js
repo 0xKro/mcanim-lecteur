@@ -14,6 +14,7 @@ export const BASCULE_MAX = 180, HAUTEUR_MAX = 10;
 // Articulations libres : angles a 3 valeurs (epaule, hanche, tete, tronc), cibles de mains et de pieds ; plafond absurde +-360 (limites.js, cibles.js).
 import { PLAFOND } from './limites.js';
 import { lireCibles, MEMBRES_CIBLES } from './cibles.js';
+import { lireHabillage } from './objets-scene.js';   // objet, objetG, armure (docs/CONCEPTION.md, tableau de l'acteur)
 const PISTES_BOUCLE = [...MEMBRES, ...ARTICULATIONS, 'tete', 'corps', 'lacet', 'bascule', 'roulis', 'hauteur'];
 export const MAX_CLES_SKINS = 16, MAX_GELS = 8, MAX_TEXTURES = 32;
 
@@ -167,6 +168,7 @@ export function validerScene(s) {
     if (a.horsImage !== undefined) o.horsImage = borner(lirePiste(a.horsImage, `${ch}.horsImage`, { minArite: 1, maxArite: 1 }), `${ch}.horsImage`, 0, 1);
     if (a.lueur !== undefined) o.lueur = borner(lirePiste(a.lueur, `${ch}.lueur`, { minArite: 1, maxArite: 1 }), `${ch}.lueur`, 0, 1);
     if (a.masque !== undefined) o.masque = verifierPng(a.masque, `${ch}.masque`);
+    Object.assign(o, lireHabillage(a, ch, (c, msg) => err(c, msg)));   // objetD, objetG, armure : pistes de changements d'un coup
     if (a.lacet !== undefined) o.lacet = lirePiste(a.lacet, `${ch}.lacet`, { minArite: 1, maxArite: 1 });
     if (a.tete !== undefined) o.tete = borner(lirePiste(a.tete, `${ch}.tete`, { minArite: 2, maxArite: 3 }), `${ch}.tete`, -PLAFOND, PLAFOND);
     if (a.corps !== undefined) o.corps = borner(lirePiste(a.corps, `${ch}.corps`, { minArite: 1, maxArite: 3 }), `${ch}.corps`, -PLAFOND, PLAFOND);

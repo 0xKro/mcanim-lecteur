@@ -5,6 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { Net } from '../net.js';
 import { ensureKit } from '../index.js';
+import { DEFAULT_GROUPS, GROUPES_A_LA_DEMANDE, readInfo } from '../kit.js';
 import { FileSource, readCentralDirectory, extractWanted } from '../zip.js';
 import { sha256Base64url } from './empreinte.js';
 import { dossierKit } from '../rendu/scene.js';
@@ -29,9 +30,11 @@ export function dossierCache(env = process.env) {
 
 // ---------------------------------------------------------------- kit
 // Retourne le dossier du kit (<cache>/kit/26.3). MCANIM_KIT : dossier de kit deja pret (essais).
-export async function trouverKit({ env = process.env, log = () => {} } = {}) {
+// `groupes` : groupes A LA DEMANDE en plus de ceux de base (kit.js, GROUPES_A_LA_DEMANDE : 'objets', 'armures') ; seuls les manquants
+// sont telecharges, une fois, dans le meme cache.
+export async function trouverKit({ env = process.env, log = () => {}, groupes = [] } = {}) {
   if (env.MCANIM_KIT) return dossierKit(env.MCANIM_KIT);
-  const { dir, report } = await ensureKit({ cacheDir: path.join(dossierCache(env), 'kit'), route: 'auto', log });
+  const { dir, report } = await ensureKit({ cacheDir: path.join(dossierCache(env), 'kit'), route: 'auto', log, ...(groupes.length ? { groups: [...DEFAULT_GROUPS, ...groupes] } : {}) });
   if (!report.complete) throw new Error(`kit de base incomplet (manque : ${(report.missing || []).slice(0, 3).join(', ')}...)`);
   return dir;
 }
@@ -102,6 +105,14 @@ export async function obtenirSkinRelais(id, { env = process.env, essais = 6, att
   return { chemin, octets, telechargee: true };
 }
 
+// Un kit fusionne est une copie du kit de base : s'il manquait un groupe a la demande quand on l'a fait (objets, armures), il serait
+// perime des qu'on le telecharge. Le nom du kit fusionne dit donc quels groupes a la demande il contient ('' sans eux : noms d'avant).
+function suffixeGroupes(kitDir) {
+  const g = readInfo(kitDir)?.groups ?? {};
+  const l = GROUPES_A_LA_DEMANDE.filter((x) => g[x]);
+  return l.length ? '-g' + l.map((x) => x[0]).join('') : '';
+}
+
 // ---------------------------------------------------------------- pack de ressources
 // Fabrique (ou reutilise) un kit "fusionne" : le kit de base + les fichiers assets/minecraft/ du pack par-dessus.
 // Le rendu lit donc le pack sans rien savoir de lui. Retourne le dossier du kit fusionne.
@@ -120,7 +131,7 @@ export async function appliquerPack(kitDir, packChemin, { env = process.env } = 
   } else {
     empreinte = sha256Base64url(fs.readFileSync(packChemin)).slice(0, 16);
   }
-  const cible = path.join(dossierCache(env), 'kits-pack', `${path.basename(path.dirname(kitDir))}-${path.basename(kitDir)}-${empreinte}`);
+  const cible = path.join(dossierCache(env), 'kits-pack', `${path.basename(path.dirname(kitDir))}-${path.basename(kitDir)}-${empreinte}${suffixeGroupes(kitDir)}`);
   if (fs.existsSync(path.join(cible, '.pret'))) return cible;
   fs.rmSync(cible, { recursive: true, force: true });
   // copie du kit de base (liens durs quand c'est possible : presque pas de place prise)
@@ -183,7 +194,7 @@ export function appliquerTextures(kitDir, textures, baseDir, { env = process.env
     h.update(nom).update(octets);
     return { nom, octets };
   });
-  const cible = path.join(dossierCache(env), 'kits-pack', `${path.basename(path.dirname(kitDir))}-${path.basename(kitDir)}-tex-${h.digest('base64url').slice(0, 16)}`);
+  const cible = path.join(dossierCache(env), 'kits-pack', `${path.basename(path.dirname(kitDir))}-${path.basename(kitDir)}-tex-${h.digest('base64url').slice(0, 16)}${suffixeGroupes(kitDir)}`);
   if (fs.existsSync(path.join(cible, '.pret'))) return cible;
   fs.rmSync(cible, { recursive: true, force: true });
   copierKit(kitDir, cible);

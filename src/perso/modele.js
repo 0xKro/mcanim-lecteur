@@ -5,6 +5,8 @@
 // Chaine vers le monde (blocs), voir `versMonde` : decalage (0, -1,501, 0), echelle 0,9375,
 // symetrie (-1,-1,1), rotation autour de Y de (180 - lacet) degres, puis position des pieds.
 
+import { habiller } from '../objets/habillage.js';   // armure et objets tenus (ajout : le corps seul ne passe pas par la)
+
 const RAD = Math.PI / 180;
 export const ECHELLE = 0.9375;
 export const DECALAGE_Y = -1.501;     // blocs, avant l'echelle
@@ -193,6 +195,7 @@ export class Personnage {
   // par texel (couleur selective, voir rendu/LISEZMOI.md).
   constructor({ rgba, modele = 'wide', masque = null }) {
     this.modele = modele;
+    this.kitDir = rgba?.kitDir ?? null;   // pose par resoudreSkin (perso/skin.js) : kit des objets tenus et de l'armure (src/objets/)
     this.parties = definirParties(modele === 'slim');
     this.texture = { largeur: 64, hauteur: 64, rgba };
     this.masque = masque;
@@ -295,7 +298,34 @@ export class Personnage {
     // ET rend les pixels du masque lumineux (non assombris par la lumiere ni l'ombrage). `horsImage` = tout le corps est exempte.
     if (this.masque) { m.masque = this.masque; m.forceMasque = pose.lueur ?? 1; m.lueur = pose.lueur ?? 0; }
     if (pose.horsImage) m.exempt = true;
+    if ((pose.armure || pose.objetD || pose.objetG) && this.kitDir) return habiller(this, m, pose, mats, masque, lumiere, brut);
     return m;
+  }
+
+  // Projette des sommets ajoutes (armure, objets tenus : src/objets/habillage.js) avec EXACTEMENT la chaine de `maillage` (pose, lacet,
+  // accroupi, bascule, ombrage de face). `mats` : les matrices des parties (les memes que le corps, plus celles des objets) ; `ext` :
+  // { local (px), normales, partie } ; retourne { positions, couleurs, normales? } (normales : repere monde, normalisees).
+  projeter(ext, mats, pose, lumiere = 1, brut = false) {
+    const th = (180 - (pose.lacet ?? 0)) * RAD, ct = Math.cos(th), st = Math.sin(th);
+    const crouch = pose.accroupi ?? 0, dy = (pose.dy ?? 0) + (pose.hauteur ?? 0);
+    const inc = inclinaison(pose.bascule, pose.roulis);
+    const n = ext.partie.length;
+    const positions = new Float32Array(n * 3), couleurs = new Float32Array(n * 3), normales = brut ? new Float32Array(n * 3) : null;
+    for (let s = 0; s < n; s++) {
+      const m = mats[ext.partie[s]];
+      const lx = ext.local[s * 3], ly = ext.local[s * 3 + 1], lz = ext.local[s * 3 + 2];
+      const px = (m.R[0] * lx + m.R[1] * ly + m.R[2] * lz) / 16 + m.t[0], py = (m.R[3] * lx + m.R[4] * ly + m.R[5] * lz) / 16 + m.t[1], pz = (m.R[6] * lx + m.R[7] * ly + m.R[8] * lz) / 16 + m.t[2];
+      const [wx, wy, wz] = versMonde(px, py, pz, ct, st, inc);
+      positions[s * 3] = pose.x + wx; positions[s * 3 + 1] = pose.y + wy - BAISSE_ACCROUPI * crouch + dy; positions[s * 3 + 2] = pose.z + wz;
+      const nx = ext.normales[s * 3], ny = ext.normales[s * 3 + 1], nz = ext.normales[s * 3 + 2];
+      let rx = m.R[0] * nx + m.R[1] * ny + m.R[2] * nz, ry = m.R[3] * nx + m.R[4] * ny + m.R[5] * nz, rz = m.R[6] * nx + m.R[7] * ny + m.R[8] * nz;
+      const l = Math.hypot(rx, ry, rz) || 1; rx /= l; ry /= l; rz /= l;   // une echelle d'objet ne change pas l'ombrage
+      const [vx, vy, vz] = versMondeDir(rx, ry, rz, ct, st, inc);
+      if (brut) { couleurs[s * 3] = 1; couleurs[s * 3 + 1] = 1; couleurs[s * 3 + 2] = 1; normales[s * 3] = vx; normales[s * 3 + 1] = vy; normales[s * 3 + 2] = vz; continue; }
+      const o = ombre(vx, vy, vz) * lumiere;
+      couleurs[s * 3] = o; couleurs[s * 3 + 1] = o; couleurs[s * 3 + 2] = o;
+    }
+    return { positions, couleurs, normales };
   }
 
   // Rotation (R) et position du pivot (t, en blocs, repere du modele) de chaque partie : les 6 d'origine, puis pour chaque membre
@@ -565,3 +595,6 @@ export function mainsDansCorps(pose, slim = false) {
 }
 export const matricesPose = (pose, slim = false) => calculerMatrices(partiesDe(slim), pose);
 export const matriceMembre = (nom, v) => rotationMembre(nom, v);   // rotation de l'epaule ou de la hanche pour [avant, cote, torsion], sans balancement
+
+// ---------------------------------------------------------------- pour src/objets/ (armure, objets tenus) : memes briques que le corps
+export { Reservoir, ajouterFace, ajouterMembreScinde, calculerMatrices, partieArt, LIMBES, N_ARC, flexion, mult3, rotX, rotY, appliquer3 };

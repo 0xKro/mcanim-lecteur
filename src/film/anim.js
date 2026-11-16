@@ -7,6 +7,7 @@ import { planifierCameraSuivi, planifierCameraLibre } from './camera.js';
 import { compensationAppui, descenteBascule, decalageYeux } from '../perso/modele.js';
 import { simulerActeur, creerSol, lisser01 } from './physique.js';
 import { reactionsA } from './reactions.js';
+import { valeurObjet } from './objets-scene.js';   // objets tenus et armure : pistes de changements d'un coup
 import { appliquerCibles, aCibles } from './cibles.js';   // articulations libres : cibles des mains et des pieds (cinematique inverse)
 
 const RAD = Math.PI / 180;
@@ -238,6 +239,9 @@ export function animer(scene, terrain = {}) {
       if (sk) pose.skin = sk;
       if (a.horsImage) pose.horsImage = evaluer(a.horsImage, t)[0] >= 0.5;
       if (a.lueur) pose.lueur = evaluer(a.lueur, t)[0];
+      // objets tenus et armure (champs facultatifs : rien n'est ajoute sans eux)
+      for (const [champ, piste] of [['objetD', a.objetD], ['objetG', a.objetG]]) { const id = piste ? valeurObjet(piste, t) : null; if (id) pose[champ] = id; }
+      if (a.armure) { let arm = null; for (const [e, piste] of Object.entries(a.armure)) { const id = valeurObjet(piste, t); if (id) (arm ??= {})[e] = id; } if (arm) pose.armure = arm; }
       return pose;
     }));
   }

@@ -4,6 +4,7 @@
 //   mcanim trajet <scene.json>
 //   mcanim empreinte <scene.json>
 //   mcanim rendre <scene.json> --jeton <jeton> [--sortie f.mp4] [--pack pack.zip] [--skin nom=fichier.png]
+//        [--pack-shader pack.zip [--echelle 1|0.5] [--profil NOM] [--option NOM=VALEUR ...] [--repli]]   (vrai pack de shaders, plus lent)
 //   mcanim skin <ref> [--sortie skin.png] [--zones] [--modele wide|slim]
 //   mcanim texture <jeu/chemin> [--sortie f.png] [--pack pack.zip]
 //   mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360] [--pack pack.zip]
@@ -26,6 +27,9 @@ import { lireShader, ErreurShader } from '../src/shader/format.js';
 import { texteGuide, texteFamille, verifierTexte } from '../src/shader/guide.js';
 import { texteTrajets, trajetsDeScene, compterEvenements, profilSegment } from '../src/film/trajet.js';
 import { terrainDepuis } from '../src/film/physique.js';
+import { lireReglages, preparerOptions, nonGere, ErreurPack } from '../src/shader/reglages.js';
+import { noteAmplitudes } from '../src/film/limites.js';   // articulations libres : amplitudes hors plausible (une ligne)
+import { animer } from '../src/film/scene.js';
 
 const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai terrain)
   mcanim terrain <zone> [--pas 8]     telecharge la zone et le kit, resume du terrain (chemins, clairieres, eau)
@@ -33,22 +37,28 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   mcanim trajet <scene.json>          ce qui arrive aux acteurs sur leur chemin : saut, chute, eau, echelle, marches, mur, vitesses ; gratuit, court
   mcanim empreinte <scene.json>       controle la scene, affiche empreinte et duree
   mcanim rendre <scene.json> --jeton <jeton> [--sortie f.mp4] [--pack pack.zip] [--skin nom=fichier.png] [--shader shader.json]
-  mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360] [--shader shader.json]   UNE image de la scene, petite, filigranee, SANS jeton
+  mcanim rendre ... --pack-shader pack.zip [--echelle 1|0.5] [--profil NOM] [--option NOM=VALEUR ...] [--repli]   VRAI pack de shaders (le code du pack tourne sur
+                                      un OpenGL logiciel ; lent : quelques secondes par image ; 0.5 = le pack tourne a mi-taille puis l'image est agrandie)
+  mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360] [--shader shader.json | --pack-shader pack.zip ...]   UNE image de la scene, petite, filigranee, SANS jeton
                                       (verifie couleurs, masques, cadrage avant de payer ; le rendu complet exige le jeton)
   mcanim skin <ref> [--sortie skin.png] [--zones]   exporte le skin 64x64 (a retoucher) et affiche ou sont visage, cheveux, corps
   mcanim texture <jeu/chemin> [--sortie f.png]      exporte une texture du jeu (ex. block/oak_leaves) a retoucher
   mcanim shader --guide               reference courte pour traduire un pack de shaders en shader.json (cles, methode)
   mcanim shader --cles <famille>      une famille de cles en detail (ex. ciel, lumiere, eau)
   mcanim shader --verifier f.json     controle un shader.json : erreur avec le chemin de la cle, cles ignorees
-  mcanim shader --extraire pack.zip [--sortie dossier]   resume court des reglages d'un pack .zip (profils, options, const)
+  mcanim shader --extraire pack.zip [--sortie dossier]   resume court des reglages d'un pack .zip (profils, options, const) ; memes noms pour --profil / --option
+  mcanim shader --diagnostic          peut-on rendre avec un VRAI pack de shaders ici ? (moteur OpenGL logiciel, version, limites ; 4 lignes)
   mcanim shader --exemples            ou sont shader-leger.json et shader-tout.json
   mcanim kit                          recupere le kit de base
   (options de rendre : --ssaa 2 pour un rendu plus lisse, 3 fois plus lent)
   --shader shader.json : ombres du soleil, ciel, brume, rayons de lumiere, bloom, eau, feuilles qui bougent... (format : docs/FORMAT-SHADER.md ;
                          exemples : exemples/shader-leger.json, shader-tout.json ; ou le champ de scene "shader": "shader.json", chemin relatif a la scene ; l'option l'emporte)
-  champs de scene facultatifs : image, ciel, gel, textures, shader ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui (fiches du site)
+  champs de scene facultatifs : image, ciel, gel, textures, shader, packShader (pack .zip, chemin relatif a la scene) ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui (fiches du site)
   hauteur automatique (physique du jeu : saut 0.42, gravite 0.08, pas de 0.6, chute, eau, echelle) a partir de pos [t,x,z] ; acteur : bascule [t,deg] roulis [t,deg]
-  (corps entier autour des hanches, 90 = a plat) hauteur [t,blocs] (decalage vertical) reactions:false (coupe les reactions automatiques du corps)`;
+  (corps entier autour des hanches, 90 = a plat) hauteur [t,blocs] (decalage vertical) reactions:false (coupe les reactions automatiques du corps)
+  membres libres : brasD brasG jambeD jambeG [t,avant,cote,torsion] (cote < 0 : croise le corps ; torsion > 0 : rotation interne), tete [t,lacet,tangage,roulis],
+  corps [t,penche,cote,torsion] (haut du corps autour des hanches), mainD mainG piedD piedG [t,cible,poids] (cible : point du corps, [droite,haut,avant] ou {"monde":[x,y,z]} ;
+  null = relache), coudeVers genouVers [t,dehors,haut,avant], souple:true (pas de note d'amplitude) ; fiches articulations et mains ; mcanim empreinte / trajet signalent les amplitudes hors plausible`;
 
 class Usage extends Error {}
 
@@ -59,6 +69,30 @@ function controlerShader(scene, baseDir, option) {
   if (!f) return null;
   try { lireShader(lireTexte(f)); } catch (e) { if (e instanceof ErreurShader) throw new Usage(e.message); throw e; }
   return f;
+}
+
+// Vrai pack de shaders (--pack-shader, ou champ `packShader` de la scene) : controle complet AVANT tout telechargement. Retourne null (pas de pack reel)
+// ou { chemin, echelle, optionsPack, resume[], nonGere[] }. Si le rendu reel est impossible ici : erreur d'une ligne, ou (avec --repli) null apres l'avoir dit.
+async function controlerPackShader(scene, baseDir, opt, dire) {
+  const chemin = opt['pack-shader'] ? path.resolve(opt['pack-shader']) : scene.packShader ? path.resolve(baseDir, scene.packShader) : null;
+  if (!chemin) {
+    if (opt.profil !== undefined || opt.option || opt.echelle !== undefined) throw new Usage('--profil, --option et --echelle demandent --pack-shader pack.zip (ou le champ "packShader" de la scene)');
+    return null;
+  }
+  let echelle = 1;
+  if (opt.echelle !== undefined) { echelle = Number(opt.echelle); if (![1, 0.5].includes(echelle)) throw new Usage('--echelle : 1 (pleine taille, defaut) ou 0.5 (le pack tourne a mi-taille puis l\'image est agrandie)'); }
+  let reglages;
+  try { reglages = await lireReglages(chemin); } catch (e) { if (e instanceof ErreurPack) throw new Usage(e.message); throw e; }
+  let r;
+  try { r = preparerOptions(reglages, { profil: opt.profil, valeurs: opt.option || [] }); } catch (e) { if (e instanceof ErreurPack) throw new Usage(e.message); throw e; } finally { reglages.nettoyer(); }
+  const manque = nonGere(reglages);
+  const { diagnostic } = await import('../src/pack/hote.js');
+  const d = diagnostic();
+  if (!d.ok) {
+    if (opt.repli) { dire(`rendu avec un vrai pack impossible ici (${d.raison}) ; --repli : je continue avec le rendu de base`); return null; }
+    throw new Usage(`rendu avec un vrai pack impossible ici : ${d.raison}. Rien n'est rendu ; pour continuer avec notre rendu approximatif, relance avec --repli (ou avec --shader shader.json)`);
+  }
+  return { chemin, echelle, optionsPack: { surcharges: r.surcharges }, resume: r.resume, nonGere: manque };
 }
 
 // Lecture d'un fichier de scene avec un message clair s'il manque.
@@ -143,6 +177,7 @@ async function commandeEmpreinte(argv) {
   if (pos.length !== 1) throw new Usage('usage : mcanim empreinte <scene.json>');
   const { brut, scene } = lireScene(lireTexte(pos[0]));
   dire(`empreinte ${empreinte(brut)} | duree ${scene.duree} s | ${scene.format} | ${scene.acteurs.length} acteur(s) | ${scene.images} images`);
+  try { const n = noteAmplitudes(scene, animer(scene)); if (n) dire(n); } catch { /* la note d'amplitudes est facultative */ }
   // meme simulation que le rendu : combien d'evenements de trajet (zone deja dans le cache seulement ; jamais d'erreur ici)
   try {
     const t = await terrainDeScene(scene, { telecharger: false });
@@ -156,7 +191,7 @@ async function commandeEmpreinte(argv) {
 }
 
 async function commandeRendre(argv) {
-  const { pos, opt } = lireArgs(argv, { valeurs: ['jeton', 'sortie', 'pack', 'ssaa', 'shader'], multiples: ['skin'] });
+  const { pos, opt } = lireArgs(argv, { valeurs: ['jeton', 'sortie', 'pack', 'ssaa', 'shader', 'pack-shader', 'echelle', 'profil'], multiples: ['skin', 'option'], drapeaux: ['repli'] });
   if (pos.length !== 1) throw new Usage('usage : mcanim rendre <scene.json> --jeton <jeton> [--sortie f.mp4] [--pack pack.zip] [--skin nom=fichier.png]');
   if (!opt.jeton) throw new Usage('il faut un jeton : --jeton <jeton> (obtenu avec autoriser_scene)');
   const surcharges = {};
@@ -177,6 +212,7 @@ async function commandeRendre(argv) {
   const baseDir = path.dirname(path.resolve(pos[0]));
   verifierFichiers(scene, baseDir, surcharges);   // PNG cites par la scene (masque, textures, skins) : avant tout telechargement
   const shader = controlerShader(scene, baseDir, opt.shader);
+  const reel = await controlerPackShader(scene, baseDir, opt, dire);
 
   // 2. zone, kit, pack
   const zone = await obtenirZone(scene.zone, { zh: charge.zh });
@@ -189,13 +225,14 @@ async function commandeRendre(argv) {
   const sortie = path.resolve(opt.sortie || path.basename(pos[0]).replace(/\.json$/i, '') + '.mp4');
   fs.mkdirSync(path.dirname(sortie), { recursive: true });
   const { rendreVideo } = await import('../src/film/video.js');
-  const r = await rendreVideo({ scene, zonePath: zone.chemin, kitDir: kit, sortie, surcharges, baseDir, log: dire, ssaa, shader });
+  if (reel) dire(`vrai pack de shaders : ${path.basename(reel.chemin)}, echelle ${reel.echelle}${reel.resume.length ? ', ' + reel.resume.join(' ') : ''} ; non gere : ${reel.nonGere.join(' ; ')}`);
+  const r = await rendreVideo({ scene, zonePath: zone.chemin, kitDir: kit, sortie, surcharges, baseDir, log: dire, ssaa, shader: reel ? null : shader, ...(reel ? { packShader: reel.chemin, echelle: reel.echelle, optionsPack: reel.optionsPack } : {}) });
 
   const repli = r.skins.filter((s) => s.repli);
   const notes = [...r.notes];
   if (repli.length) notes.push(noteSkinsDeRepli(repli));
   if (notes.length) dire('notes : ' + notes.join(' ; '));
-  dire(`OK ${sortie} | ${r.duree} s | ${r.images} images | ${sec(r.secondes * 1000)} s de calcul | ${resumeCamera(r.camera, r.images) ?? 'camera sans correction'} | skins de repli : ${repli.length} | ${(r.taille / 1048576).toFixed(1)} Mo | memoire max ${r.memoireMaxMo} Mo`);
+  dire(`OK ${sortie} | ${r.duree} s | ${r.images} images | ${sec(r.secondes * 1000)} s de calcul | ${resumeCamera(r.camera, r.images) ?? 'camera sans correction'} | skins de repli : ${repli.length} | ${(r.taille / 1048576).toFixed(1)} Mo | memoire max ${r.memoireMaxMo} Mo${reel ? ` | pack : ${r.secondesParImage.toFixed(2)} s par image, hote ${r.memoireHoteMo ?? '?'} Mo, chauffe ${r.chauffe} images${r.tempsParImage ? `, par image : hote ${r.tempsParImage.hoteMs} ms + transfert ${r.tempsParImage.transfertMs} ms + Node ${r.tempsParImage.nodeMs} ms` : ''}` : ''}`);
 }
 
 // Skin d'un acteur exporte en PNG 64x64 (ancien format 64x32 deja converti) + disposition des parties : pour le retoucher.
@@ -244,7 +281,7 @@ async function commandeTexture(argv) {
 
 // Une image de la scene a l'instant t, sans jeton : petite, avec un filigrane. Le rendu complet (mcanim rendre) exige toujours un jeton.
 async function commandeApercu(argv) {
-  const { pos, opt } = lireArgs(argv, { valeurs: ['t', 'sortie', 'taille', 'pack', 'skin', 'shader'] });
+  const { pos, opt } = lireArgs(argv, { valeurs: ['t', 'sortie', 'taille', 'pack', 'skin', 'shader', 'pack-shader', 'echelle', 'profil'], multiples: ['option'], drapeaux: ['repli'] });
   if (pos.length !== 1) throw new Usage('usage : mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360]');
   const t = opt.t === undefined ? 0 : Number(opt.t);
   if (!Number.isFinite(t) || t < 0) throw new Usage('--t : un nombre de secondes >= 0, par exemple --t 3.5');
@@ -255,12 +292,14 @@ async function commandeApercu(argv) {
   if (opt.skin) { const i = opt.skin.indexOf('='); if (i < 1) throw new Usage('--skin attend nom=fichier.png'); surcharges[opt.skin.slice(0, i)] = path.resolve(opt.skin.slice(i + 1)); }
   verifierFichiers(scene, baseDir, surcharges);
   const shader = controlerShader(scene, baseDir, opt.shader);
+  const reel = await controlerPackShader(scene, baseDir, opt, dire);
+  if (reel) dire(`apercu avec un vrai pack de shaders : ${path.basename(reel.chemin)}${reel.resume.length ? ', ' + reel.resume.join(' ') : ''} ; non gere : ${reel.nonGere.join(' ; ')}`);
   const zone = await obtenirZone(scene.zone);
   let kit = await trouverKit({});
   if (opt.pack) kit = await appliquerPack(kit, path.resolve(opt.pack));
   const sortie = path.resolve(opt.sortie || 'apercu.png');
   const { apercuImage } = await import('../src/film/video.js');
-  const r = await apercuImage({ scene, zonePath: zone.chemin, kitDir: kit, t, sortie, taille: opt.taille, surcharges, baseDir, shader }).catch((e) => { if (/^--(t|taille)/.test(e.message)) throw new Usage(e.message); throw e; });
+  const r = await apercuImage({ scene, zonePath: zone.chemin, kitDir: kit, t, sortie, taille: opt.taille, surcharges, baseDir, shader: reel ? null : shader, ...(reel ? { packShader: reel.chemin, optionsPack: reel.optionsPack, echelle: reel.echelle, log: dire } : {}) }).catch((e) => { if (/^--(t|taille)/.test(e.message)) throw new Usage(e.message); throw e; });
   const repli = r.skins.filter((s) => s.repli);
   dire(`apercu ${r.sortie} | t=${r.t.toFixed(2)} s (image ${r.image}) | ${r.taille.join('x')} | ${sec(Date.now() - t0)} s | filigrane : ce n'est PAS le rendu final, mcanim rendre demande un jeton`);
   const notesA = (r.notes || []).filter((n) => /^options non prises/.test(n));
@@ -270,7 +309,13 @@ async function commandeApercu(argv) {
 
 // Aide au traducteur de packs de shaders : tout est du texte court, rien n'est telecharge.
 async function commandeShader(argv) {
-  const { opt } = lireArgs(argv, { valeurs: ['cles', 'verifier', 'extraire', 'sortie'], drapeaux: ['guide', 'exemples'] });
+  const { opt } = lireArgs(argv, { valeurs: ['cles', 'verifier', 'extraire', 'sortie'], drapeaux: ['guide', 'exemples', 'diagnostic'] });
+  if (opt.diagnostic) {
+    const { diagnostic } = await import('../src/pack/hote.js');
+    const d = diagnostic();
+    if (!d.ok) throw new Usage(`rendu avec un vrai pack : NON (${d.raison}). Le rendu de base reste disponible.`);
+    return dire(d.lignes.join('\n'));
+  }
   if (opt.guide) return dire(texteGuide());
   if (opt.cles !== undefined) {
     const r = texteFamille(opt.cles);
@@ -289,7 +334,9 @@ async function commandeShader(argv) {
     const { extraire } = await import('../src/shader/extraire.js');
     let r;
     try { r = await extraire(zip, sortie); } catch (e) { throw new Usage(`pack illisible : ${e.message}`); }
-    return dire(r.texte);
+    let note = '';
+    try { const rg = await lireReglages(zip); rg.nettoyer(); note = `\nrendu reel (rendre --pack-shader ${path.basename(zip)} [--profil NOM] [--option NOM=VALEUR]) : non gere encore : ${nonGere(rg).join(' ; ')}`; } catch { /* le resume reste valable */ }
+    return dire(r.texte + note);
   }
   if (opt.exemples) {
     const d = path.resolve(fileURLToPath(new URL('../exemples/', import.meta.url)));
@@ -297,7 +344,7 @@ async function commandeShader(argv) {
 ${path.join(d, 'shader-leger.json')}   ombres, bloom, vignette, feuilles : ~ +25 % de temps de rendu
 ${path.join(d, 'shader-tout.json')}   toutes les familles du palier 1 : ~ +55 %`);
   }
-  throw new Usage('usage : mcanim shader --guide | --cles <famille> | --verifier shader.json | --extraire pack.zip [--sortie dossier] | --exemples');
+  throw new Usage('usage : mcanim shader --diagnostic | --guide | --cles <famille> | --verifier shader.json | --extraire pack.zip [--sortie dossier] | --exemples');
 }
 
 async function main() {

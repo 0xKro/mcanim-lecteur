@@ -2,6 +2,8 @@
 // pour que Claude choisisse les animations qui conviennent. Utilise la meme simulation que le rendu (physique.js).
 import { evaluer } from './scene.js';
 import { simulerActeur, TICK, VITESSES } from './physique.js';
+import { animer } from './anim.js';
+import { noteAmplitudes } from './limites.js';
 
 const OCTETS_PAR_ACTEUR = 600;
 export const RAPPEL = 'ajoute les animations correspondantes (fiches : sauter, descendre, echelle, nager) ; sans elles, les réactions automatiques sont appliquées';
@@ -143,7 +145,9 @@ export function texteActeur(nom, evenements) {
 // Reponse complete de `mcanim trajet`.
 export function texteTrajets(scene, terrain) {
   const t = trajetsDeScene(scene, terrain);
-  return [...t.map((x) => texteActeur(x.nom, x.evenements)), RAPPEL].join('\n');
+  let note = null;   // articulations libres : amplitudes hors plausible, une ligne (information seule)
+  try { note = noteAmplitudes(scene, animer(scene, terrain)); } catch { /* facultatif */ }
+  return [...t.map((x) => texteActeur(x.nom, x.evenements)), ...(note ? [note] : []), RAPPEL].join('\n');
 }
 
 // Nombre d'evenements (hors vitesse) et d'avertissements de vitesse, pour la ligne de `mcanim empreinte`.

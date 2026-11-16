@@ -11,6 +11,9 @@ export const ARTICULATIONS = ['coudeD', 'coudeG', 'genouD', 'genouG'];
 export const FLEXION_MAX = 150;
 // Orientation du corps entier : bascule et roulis en degres (voir perso/modele.js, inclinaison), hauteur : decalage vertical en blocs.
 export const BASCULE_MAX = 180, HAUTEUR_MAX = 10;
+// Articulations libres : angles a 3 valeurs (epaule, hanche, tete, tronc), cibles de mains et de pieds ; plafond absurde +-360 (limites.js, cibles.js).
+import { PLAFOND } from './limites.js';
+import { lireCibles, MEMBRES_CIBLES } from './cibles.js';
 const PISTES_BOUCLE = [...MEMBRES, ...ARTICULATIONS, 'tete', 'corps', 'lacet', 'bascule', 'roulis', 'hauteur'];
 export const MAX_CLES_SKINS = 16, MAX_GELS = 8, MAX_TEXTURES = 32;
 
@@ -165,16 +168,21 @@ export function validerScene(s) {
     if (a.lueur !== undefined) o.lueur = borner(lirePiste(a.lueur, `${ch}.lueur`, { minArite: 1, maxArite: 1 }), `${ch}.lueur`, 0, 1);
     if (a.masque !== undefined) o.masque = verifierPng(a.masque, `${ch}.masque`);
     if (a.lacet !== undefined) o.lacet = lirePiste(a.lacet, `${ch}.lacet`, { minArite: 1, maxArite: 1 });
-    if (a.tete !== undefined) o.tete = lirePiste(a.tete, `${ch}.tete`, { minArite: 2, maxArite: 2 });
-    if (a.corps !== undefined) o.corps = lirePiste(a.corps, `${ch}.corps`, { minArite: 1, maxArite: 1 });
+    if (a.tete !== undefined) o.tete = borner(lirePiste(a.tete, `${ch}.tete`, { minArite: 2, maxArite: 3 }), `${ch}.tete`, -PLAFOND, PLAFOND);
+    if (a.corps !== undefined) o.corps = borner(lirePiste(a.corps, `${ch}.corps`, { minArite: 1, maxArite: 3 }), `${ch}.corps`, -PLAFOND, PLAFOND);
     if (a.bascule !== undefined) o.bascule = borner(lirePiste(a.bascule, `${ch}.bascule`, { minArite: 1, maxArite: 1 }), `${ch}.bascule`, -BASCULE_MAX, BASCULE_MAX);
     if (a.roulis !== undefined) o.roulis = borner(lirePiste(a.roulis, `${ch}.roulis`, { minArite: 1, maxArite: 1 }), `${ch}.roulis`, -BASCULE_MAX, BASCULE_MAX);
     if (a.hauteur !== undefined) o.hauteur = borner(lirePiste(a.hauteur, `${ch}.hauteur`, { minArite: 1, maxArite: 1 }), `${ch}.hauteur`, -HAUTEUR_MAX, HAUTEUR_MAX);
     if (a.reactions !== undefined && typeof a.reactions !== 'boolean') err(`${ch}.reactions`, 'true ou false attendu (false : coupe les reactions automatiques du corps au saut, a la chute et a l atterrissage)');
     o.reactions = a.reactions !== false;
     if (a.accroupi !== undefined) o.accroupi = lirePiste(a.accroupi, `${ch}.accroupi`, { minArite: 1, maxArite: 1 });
-    for (const m of MEMBRES) if (a[m] !== undefined) o[m] = lirePiste(a[m], `${ch}.${m}`, { minArite: 1, maxArite: 2 });
+    for (const m of MEMBRES) if (a[m] !== undefined) o[m] = borner(lirePiste(a[m], `${ch}.${m}`, { minArite: 1, maxArite: 3 }), `${ch}.${m}`, -PLAFOND, PLAFOND);
     for (const m of ARTICULATIONS) if (a[m] !== undefined) o[m] = borner(lirePiste(a[m], `${ch}.${m}`, { minArite: 1, maxArite: 1 }), `${ch}.${m}`, 0, FLEXION_MAX);
+    // articulations libres : cibles des mains et des pieds, direction du coude et du genou, acteur souple (amplitudes sans note)
+    for (const m of MEMBRES_CIBLES) if (a[m] !== undefined) o[m] = lireCibles(a[m], `${ch}.${m}`, (c, msg) => err(c.replace(/^scene./, ''), msg));
+    for (const m of ['coudeVers', 'genouVers']) if (a[m] !== undefined) o[m] = lirePiste(a[m], `${ch}.${m}`, { minArite: 3, maxArite: 3 });
+    if (a.souple !== undefined && typeof a.souple !== 'boolean') err(`${ch}.souple`, 'true ou false attendu (true : aucune note sur les amplitudes hors plausible, pour un mouvement de dessin anime voulu)');
+    o.souple = a.souple === true;
     if (a.appui !== undefined && typeof a.appui !== 'boolean' && !(typeof a.appui === 'number' && a.appui >= 0 && a.appui <= 1)) err(`${ch}.appui`, 'true, false ou un nombre de 0 a 1 attendu (false : le corps ne s\'ajuste pas quand les genoux plient ; 0.5 : le corps ne descend que de moitie quand les jambes s\'ecartent, le pied flotte un peu : phase aerienne de la course)');
     o.appui = typeof a.appui === 'number' ? a.appui : a.appui !== false;
     if (a.boucles !== undefined) {
@@ -206,6 +214,7 @@ export function validerScene(s) {
     gel: s.gel !== undefined ? lireGel(s.gel, s.duree) : [],
     textures: s.textures !== undefined ? lireTextures(s.textures) : {},
     shader: s.shader !== undefined ? lireRefShader(s.shader) : null,   // chemin du fichier shader.json (docs/FORMAT-SHADER.md)
+    packShader: s.packShader !== undefined ? lireRefPackShader(s.packShader) : null,   // vrai pack de shaders (.zip) : rendu OpenGL logiciel, docs/SHADERS-REELS.md
   };
 }
 
@@ -220,6 +229,12 @@ function verifierSkin(v, ch) {
 // Champ facultatif `shader` : chemin d'un fichier .json relatif au fichier de scene (le contenu est lu et controle au rendu).
 function lireRefShader(v) {
   if (typeof v !== 'string' || !/\.json$/i.test(v) || v.length > 200) err('shader', 'chemin d\'un fichier .json attendu (relatif au fichier de scene), par exemple "shader.json"');
+  return v;
+}
+
+// Champ facultatif `packShader` : chemin d'un pack de shaders .zip relatif au fichier de scene (rendu avec le code du pack ; plus lent que `shader`).
+function lireRefPackShader(v) {
+  if (typeof v !== 'string' || !/\.zip$/i.test(v) || v.length > 200) err('packShader', 'chemin d\'un pack de shaders .zip attendu (relatif au fichier de scene), par exemple "mon-pack.zip"');
   return v;
 }
 
@@ -312,9 +327,10 @@ function lireBoucle(b, ch, duree) {
   const o = { de: b.de, a: b.a, periode: b.periode, fondu: b.fondu ?? 0.2, pistes: {} };
   for (const nom of PISTES_BOUCLE) {
     if (b[nom] === undefined) continue;
-    const a = nom === 'tete' ? { minArite: 2, maxArite: 2 } : ['corps', 'lacet', 'bascule', 'roulis', 'hauteur'].includes(nom) || ARTICULATIONS.includes(nom) ? { minArite: 1, maxArite: 1 } : { minArite: 1, maxArite: 2 };
+    const a = nom === 'tete' ? { minArite: 2, maxArite: 3 } : nom === 'corps' ? { minArite: 1, maxArite: 3 } : ['lacet', 'bascule', 'roulis', 'hauteur'].includes(nom) || ARTICULATIONS.includes(nom) ? { minArite: 1, maxArite: 1 } : { minArite: 1, maxArite: 3 };
     o.pistes[nom] = lirePiste(b[nom], `${ch}.${nom}`, { ...a, temps: [0, 1] });
     if (ARTICULATIONS.includes(nom)) borner(o.pistes[nom], `${ch}.${nom}`, -FLEXION_MAX, FLEXION_MAX);
+    if (['tete', 'corps', ...MEMBRES].includes(nom)) borner(o.pistes[nom], `${ch}.${nom}`, -PLAFOND, PLAFOND);
     if (nom === 'bascule' || nom === 'roulis') borner(o.pistes[nom], `${ch}.${nom}`, -BASCULE_MAX, BASCULE_MAX);
     if (nom === 'hauteur') borner(o.pistes[nom], `${ch}.${nom}`, -HAUTEUR_MAX, HAUTEUR_MAX);
   }

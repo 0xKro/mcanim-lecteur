@@ -87,13 +87,32 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
   } catch (e) { await rs.fermer(); throw e; }
 }
 
+// Film avec un vrai pack : prepare l'hote GL puis fixe le nombre d'images de chauffe (mesure une fois par pack, gardee dans le cache).
+export async function preparerFilmReel({ scene, zonePath, kitDir, surcharges, baseDir, env, packShader, echelle, optionsPack, log, chauffe }) {
+  const pf = await import('../pack/film.js');
+  const chemin = path.resolve(packShader);
+  const film = await pf.preparerFilmPack({ scene, zonePath, kitDir, surcharges, baseDir, env, packShader: chemin, echelle, options: optionsPack ?? {}, log, chauffe });
+  try {
+    if (chauffe === undefined) {
+      const cle = pf.cleChauffe(chemin, optionsPack?.surcharges);
+      let n = pf.lireCacheChauffe(cle);
+      if (!n) { log('premiere utilisation de ce pack : mesure des images de chauffe...'); n = await pf.mesurerChauffe(film); pf.ecrireCacheChauffe(cle, n); }
+      film.reglerChauffe(n);
+      log(`chauffe : ${n} images avant la premiere image du film`);
+    }
+  } catch (e) { await film.fermer(); throw e; }
+  return film;
+}
+
 // Rend la scene en MP4. Retourne un compte rendu { sortie, images, secondes, corrections, notes, ... }.
 //   scene : sortie de validerScene. zonePath : fichier .mcz. kitDir : kit (eventuellement fusionne avec un pack).
 //   baseDir : dossier de la scene (les PNG du skin, du masque et des textures y sont cherches).
-export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges = {}, baseDir = process.cwd(), env = process.env, log = () => {}, ssaa = 1, travailleurs, shader }) {
+//   packShader (chemin d'un pack .zip ou dossier) : les images viennent d'un VRAI pack de shaders (hote OpenGL logiciel, src/pack/film.js) ;
+//   echelle : 1 = pleine taille, 0.5 = le pack tourne a mi-taille puis l'image est agrandie ; optionsPack : { surcharges, reglages } deja controles.
+export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges = {}, baseDir = process.cwd(), env = process.env, log = () => {}, ssaa = 1, travailleurs, shader, packShader, echelle = 1, optionsPack }) {
   const t0 = Date.now();
   const ffmpeg = trouverFfmpeg(env);
-  const film = await preparerFilm({ scene, zonePath, kitDir, surcharges, baseDir, env, travailleurs, shader });
+  const film = packShader ? await preparerFilmReel({ scene, zonePath, kitDir, surcharges, baseDir, env, packShader, echelle, optionsPack, log }) : await preparerFilm({ scene, zonePath, kitDir, surcharges, baseDir, env, travailleurs, shader });
   const { rs, anim, infos } = film;
   let tmpAudio = null;
   try {
@@ -127,13 +146,17 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
 
     // --- images
     const n = images.length;
-    const jalons = new Set([Math.floor(n * 0.25), Math.floor(n * 0.5), Math.floor(n * 0.75)]);
+    // rendu normal : 25, 50, 75 % ; vrai pack (long) : une ligne tous les 10 % avec le temps restant estime
+    const jalons = new Set(packShader ? [1, 2, 3, 4, 5, 6, 7, 8, 9].map((k) => Math.floor(n * k / 10)) : [Math.floor(n * 0.25), Math.floor(n * 0.5), Math.floor(n * 0.75)]);
     const tRendu = Date.now();
     for (let i = 0; i < n; i++) {
       const rgba = await film.dessiner(i, { largeur, hauteur, ssaa });
       if (erreurPipe) break;
       if (!ff.stdin.write(rgba)) await new Promise((ok) => ff.stdin.once('drain', ok));
-      if (jalons.has(i)) log(`rendu ${Math.round(((i + 1) / n) * 100)} % (${((Date.now() - tRendu) / 1000).toFixed(0)} s)`);
+      if (jalons.has(i)) {
+        const ecoule = (Date.now() - tRendu) / 1000, fait = i + 1;
+        log(`rendu ${Math.round((fait / n) * 100)} % (${ecoule.toFixed(0)} s${packShader ? `, reste environ ${Math.round(ecoule / fait * (n - fait) / 60 * 10) / 10} min` : ''})`);
+      }
     }
     ff.stdin.end();
     await fini;
@@ -141,6 +164,7 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
       sortie, images: n, duree: scene.duree, secondes: (Date.now() - t0) / 1000, secondesRendu: (Date.now() - tRendu) / 1000,
       corrections: anim.corrections, camera: anim.camera, skins: infos, notes: [...anim.notes, ...plan.notes, ...film.notes], pas: plan.nbPas, evenementsSon: plan.evenements.length,
       memoireMaxMo: Math.round(process.resourceUsage().maxRSS / 1024), taille: fs.statSync(sortie).size,
+      ...(packShader ? { echelle, secondesParImage: (Date.now() - tRendu) / 1000 / n, memoireHoteMo: film.memoireHoteMo?.() ?? null, chauffe: film.chauffe?.() ?? null, tempsParImage: film.stats && film.stats.images ? { hoteMs: Math.round(film.stats.hoteMs / film.stats.images), transfertMs: Math.round(film.stats.transfertMs / film.stats.images * 10) / 10, nodeMs: Math.round(film.stats.nodeMs / film.stats.images) } : null } : {}),
     };
   } finally {
     await film.fermer();
@@ -150,11 +174,19 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
 
 // Une seule image de la scene, petite et filigranee, SANS jeton (mcanim apercu). Ecrit un PNG ; retourne { sortie, image, t, taille, secondes }.
 //   t : secondes (0 a la duree). taille : "WxH" (640 de large au plus). Le rendu complet, lui, demande toujours un jeton.
-export async function apercuImage({ scene, zonePath, kitDir, t, sortie, taille, surcharges = {}, baseDir = process.cwd(), env = process.env, shader }) {
+export async function apercuImage({ scene, zonePath, kitDir, t, sortie, taille, surcharges = {}, baseDir = process.cwd(), env = process.env, shader, packShader, optionsPack, echelle = 1, log = () => {} }) {
   const t0 = Date.now();
   if (!(t >= 0 && t <= scene.duree)) throw new Error(`--t : entre 0 et ${scene.duree} secondes (duree de la scene)`);
   const [largeur, hauteur] = tailleApercu(taille, scene);
-  const film = await preparerFilm({ scene, zonePath, kitDir, surcharges, baseDir, env, travailleurs: 0, shader });
+  // vrai pack : l'image est calculee directement a la taille de l'apercu (avec la chauffe en cache, ou 16 images si le pack est nouveau)
+  const film = packShader
+    ? await (async () => {
+      const pf = await import('../pack/film.js');
+      const chemin = path.resolve(packShader);
+      const n = pf.lireCacheChauffe(pf.cleChauffe(chemin, optionsPack?.surcharges)) ?? 16;
+      return preparerFilmReel({ scene: { ...scene, largeur, hauteur }, zonePath, kitDir, surcharges, baseDir, env, packShader, echelle, optionsPack, log, chauffe: n });
+    })()
+    : await preparerFilm({ scene, zonePath, kitDir, surcharges, baseDir, env, travailleurs: 0, shader });
   try {
     const i = Math.min(film.anim.images.length - 1, Math.round(t * 30));
     const rgba = await film.dessiner(i, { largeur, hauteur, copie: true });

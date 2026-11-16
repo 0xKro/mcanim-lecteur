@@ -70,3 +70,22 @@ de luminosité des étoiles, du rouge du lever et du coucher, courbe d'adoucisse
 où la référence est muette : distance de rendu 12 chunks, pas de pluie, éventail du coucher résolu par dichotomie sur le rayon, nuages jusqu'à 576 blocs.
 
 Copyright (c) Horizon contributors. Licence MIT : voir le texte ci-dessus (même texte).
+
+## Route B : rendu avec un vrai pack de shaders (src/pack/) : portage d'idees depuis Horizon
+
+Le rendu "vrai pack" (`docs/SHADERS-REELS.md`) reprend la LOGIQUE du client Horizon (licence MIT, texte ci-dessus) pour la partie qui reproduit le comportement
+d'Iris. Rien n'est copie : tout est réécrit en Python (`src/pack/hote/mcpack/`) et en JavaScript. Ce qui est porté, et d'où :
+
+| Notre fichier | Idée reprise | Source Horizon |
+|---|---|---|
+| `mcpack/proprietes.py` | lecture des `.properties` : continuations `\`, `#if/#ifdef/#elif/#else/#endif/#define/#include` avec les options et macros du jeu | `horizon-shaders/src/properties.rs`, `condition.rs` |
+| `mcpack/expr.py` | langage des uniforms personnalisés : opérateurs, `if` à branches multiples, `in`, `equals`, `smooth` (demi-vie en dixièmes de seconde), `vec2/3/4`, accès `matrice.colonne.ligne`, valeur 0 pour un nom inconnu, type final imposé | `horizon-shaders/src/custom.rs` |
+| `mcpack/idmap.py` | `block.<id>=` : espace de noms par défaut `minecraft:`, filtres `:prop=v1,v2`, l'entrée la plus précise gagne puis la première du fichier, `entity.properties` : première ligne gagne | `horizon-shaders/src/block_ids.rs` |
+| `mcpack/glsl.py` (`MACROS_JEU`) | la liste des `#define` que le jeu injecte (`MC_VERSION`, `MC_GL_VERSION`, `MC_RENDER_STAGE_*` numérotés dans l'ordre des étapes, `DH_BLOCK_*`...) | `horizon-shaders/src/macros.rs` |
+| `mcpack/uniformes.py`, `mcpack/matrices.py` | positions du soleil et de la lune (`vue * Ry(-90) * Rz(inclinaison) * Rx(angle) * (0,100,0)`), `sunAngle` / `shadowAngle`, `shadowModelView` (`Rx(90) Rz(-angle) Rx(inclinaison)`), `shadowProjection` (ortho +-distance, plans -100,05 et 156) | `horizon-client-render/src/gfx/pack_uniforms.rs` |
+| `mcpack/rendu.py` | règle de « bascule » des cibles `colortexN` (le passage lit la principale, écrit l'alternative, puis elles s'échangent) ; une texture perso posée sur un `colortexN` cesse de le remplacer quand un programme du même étage l'écrit | `horizon-client-render/src/gfx/pack_post.rs` (commentaires et tests sur `released`) |
+
+Les packs de shaders (Bliss, Sildur's Vibrant...) ne sont jamais dans le dépôt ni dans le paquet : ce sont des ENTRÉES fournies par l'utilisateur, lues en mémoire.
+`test/pack-mini/` est un pack minimal écrit par nous pour les tests.
+
+Le rendu OpenGL logiciel utilise Mesa (MIT) déjà présent dans la session (`libEGL.so.1`, llvmpipe) ; rien n'est embarqué.

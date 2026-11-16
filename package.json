@@ -22,7 +22,9 @@
     "src/",
     "bin/",
     "ATTRIBUTIONS.md",
-    "exemples/"
+    "exemples/",
+    "!**/__pycache__",
+    "!**/*.pyc"
   ],
   "scripts": {
     "controle": "node scripts/controle-fichiers-jeu.js",

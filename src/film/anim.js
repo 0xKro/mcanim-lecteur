@@ -7,6 +7,7 @@ import { planifierCameraSuivi, planifierCameraLibre } from './camera.js';
 import { compensationAppui, descenteBascule, decalageYeux } from '../perso/modele.js';
 import { simulerActeur, creerSol, lisser01 } from './physique.js';
 import { reactionsA } from './reactions.js';
+import { appliquerCibles, aCibles } from './cibles.js';   // articulations libres : cibles des mains et des pieds (cinematique inverse)
 
 const RAD = Math.PI / 180;
 const DT = 1 / 30; // 30 images par seconde (IMAGES_PAR_SECONDE de scene.js)
@@ -103,7 +104,10 @@ export function animer(scene, terrain = {}) {
   const acteurs = scene.acteurs;
   const parNom = new Map(acteurs.map((a, i) => [a.nom, i]));
   const notes = [];
-  const articule = acteurs.map((a) => ['coudeD', 'coudeG', 'genouD', 'genouG'].some((n) => a[n] || a.boucles.some((b) => b.pistes[n])));
+  const articule = acteurs.map((a) => ['coudeD', 'coudeG', 'genouD', 'genouG'].some((n) => a[n] || a.boucles.some((b) => b.pistes[n])) || aCibles(a));
+  // corps [t, penche, cote, torsion] (plus d'une valeur) : le haut du corps entier tourne autour des hanches ; une seule valeur : le dos du jeu
+  const etatsIK = acteurs.map(() => ({}));   // dernier pivot de coude de chaque membre tenu par une cible (continuite d'une image a l'autre)
+  const corpsComplet = acteurs.map((a) => (a.corps?.arite ?? 1) > 1 || a.boucles.some((b) => (b.pistes.corps?.arite ?? 1) > 1));
 
   // Pied du joueur : plus haut sol sous les 4 coins et le centre (comme la boite du jeu), dalles et escaliers a leur vraie hauteur.
   const solSous = (x, z) => { const m = solFin.sous(x, z); return m ? m.y : null; };
@@ -177,6 +181,17 @@ export function animer(scene, terrain = {}) {
         brasD: membre(a, 'brasD', t, h, fB), brasG: membre(a, 'brasG', t, h, fB), jambeD: membre(a, 'jambeD', t, h, fJ), jambeG: membre(a, 'jambeG', t, h, fJ),
       };
       if (R) { pose.brasD[0] += R.bras; pose.brasG[0] += R.bras; pose.jambeD[0] += R.jambe; pose.jambeG[0] += R.jambe; }
+      // articulations libres (additif) : torsion des membres, roulis de la tete, haut du corps entier ; rien n'est ajoute sans elles
+      for (const [nom, f] of [['brasD', fB], ['brasG', fB], ['jambeD', fJ], ['jambeG', fJ]]) {
+        const tors = (a[nom] ? (evaluer(a[nom], t)[2] ?? 0) : 0) + sommeBoucles(a, nom, t, 3, h)[2] * f;
+        if (tors) pose[nom][2] = tors;
+      }
+      const roulisTete = (a.tete ? (evaluer(a.tete, t)[2] ?? 0) : 0) + sommeBoucles(a, 'tete', t, 3, h)[2];
+      if (roulisTete) pose.tete[2] = roulisTete;
+      if (corpsComplet[k]) {
+        const cs = a.corps ? evaluer(a.corps, t) : [], sb = sommeBoucles(a, 'corps', t, 3, h);
+        pose.troncComplet = true; pose.troncCote = (cs[1] ?? 0) + sb[1]; pose.troncTorsion = (cs[2] ?? 0) + sb[2];
+      }
       if (st.eau && !imposee) pose.eau = true;
       if (st.echelle && !imposee) pose.echelle = true;
       // orientation du corps entier et decalage vertical (pistes facultatives : rien n'est ajoute sans elles)
@@ -197,6 +212,8 @@ export function animer(scene, terrain = {}) {
         pose.coudeD = flexion(a, 'coudeD', t, h, fB, c); pose.coudeG = flexion(a, 'coudeG', t, h, fB, c);
         pose.genouD = flexion(a, 'genouD', t, h, fJ, g); pose.genouG = flexion(a, 'genouG', t, h, fJ, g);
       }
+      // cibles des pieds (cinematique inverse) : avant l'appui, qui pose ensuite le pied le plus bas sur le sol
+      const fk = {}, ciblesPieds = aCibles(a) ? appliquerCibles(a, pose, t, evaluer, 'jambes', fk, etatsIK[k]) : 0;
       if (articule[k] || plie || incline) {
         // appui : le corps s'ajuste pour que le pied le plus bas repose sur le sol (modele.js, compensationAppui). Poids 1 au sol,
         // decroissant jusqu'a 0 quand l'acteur s'eleve de 2 a 12 cm (saut, chute) : en l'air les pieds ne sont plus attires par le sol.
@@ -214,6 +231,8 @@ export function animer(scene, terrain = {}) {
           if (d) pose.dy = (pose.dy ?? 0) + d;
         }
       }
+      // cibles des mains (apres l'appui : le corps a sa hauteur definitive) ; les pieds sont repris si l'appui a deplace le corps
+      if (aCibles(a)) { if (ciblesPieds && pose.dy) appliquerCibles(a, pose, t, evaluer, 'jambes', fk, etatsIK[k]); appliquerCibles(a, pose, t, evaluer, 'bras', fk, etatsIK[k]); }
       // apparence (pistes facultatives : rien n'est ajoute si elles manquent)
       const sk = skinEn(a, t);
       if (sk) pose.skin = sk;
@@ -226,7 +245,7 @@ export function animer(scene, terrain = {}) {
   // ---- passe 2 : camera (on connait tout le film : planification sur tout le plan, voir camera.js)
   const c = scene.camera;
   const yeux = (p) => {
-    if (!p.bascule && !p.roulis && !p.hauteur) return [p.x, p.y + 1.62 - 0.35 * p.accroupi, p.z];   // corps droit : la formule d'avant, au bit pres
+    if (!p.bascule && !p.roulis && !p.hauteur && !p.troncComplet) return [p.x, p.y + 1.62 - 0.35 * p.accroupi, p.z];   // corps droit : la formule d'avant, au bit pres
     const [ox, oy, oz] = decalageYeux(p);
     return [p.x + ox, p.y + oy, p.z + oz];
   };

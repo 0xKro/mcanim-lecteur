@@ -21,12 +21,15 @@ export const courbeLumiere = (niveau, gamma = 0.5) => {
 
 // Tampon de quads qui grandit tout seul
 class Tampon {
-  constructor() { this.n = 0; this.cap = 4096; this.pos = new Float32Array(this.cap * 12); this.uv = new Float32Array(this.cap * 8); this.col = new Uint32Array(this.cap * 4); this.spr = new Int32Array(this.cap); this.sec = new Int32Array(this.cap); this.flip = new Uint8Array(this.cap); this.aob = new Uint8Array(this.cap * 4); this.eti = new Uint8Array(this.cap * 4); }
+  constructor(gpu = false) {
+    this.gpu = gpu;
+    if (gpu) { this.lvl = new Float32Array(4096 * 4); this.tint = new Uint8Array(4096 * 3); this.blk = new Uint16Array(4096); this.ctr = new Float32Array(4096 * 3); } this.n = 0; this.cap = 4096; this.pos = new Float32Array(this.cap * 12); this.uv = new Float32Array(this.cap * 8); this.col = new Uint32Array(this.cap * 4); this.spr = new Int32Array(this.cap); this.sec = new Int32Array(this.cap); this.flip = new Uint8Array(this.cap); this.aob = new Uint8Array(this.cap * 4); this.eti = new Uint8Array(this.cap * 4); }
   garantir() {
     if (this.n < this.cap) return;
     const c = this.cap * 2;
     const g = (a, k) => { const b = new a.constructor(c * k); b.set(a); return b; };
     this.pos = g(this.pos, 12); this.uv = g(this.uv, 8); this.col = g(this.col, 4); this.spr = g(this.spr, 1); this.sec = g(this.sec, 1); this.flip = g(this.flip, 1); this.aob = g(this.aob, 4); this.eti = g(this.eti, 4);
+    if (this.gpu) { this.lvl = g(this.lvl, 4); this.tint = g(this.tint, 3); this.blk = g(this.blk, 1); this.ctr = g(this.ctr, 3); }
     this.cap = c;
   }
 }
@@ -148,7 +151,8 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
   for (let i = 2; i < NP; i++) teintesPal[i] = etats[i].type === 1 ? sourcesTeinte(etats[i].nom, etats[i].props) : null;
 
   // ---------- emission ----------
-  const tampons = [new Tampon(), new Tampon(), new Tampon(), new Tampon()];   // opaque, decoupe, melange, decoupe interne
+  const gpu = !!options.exportGPU;
+  const tampons = [new Tampon(gpu), new Tampon(gpu), new Tampon(gpu), new Tampon(gpu)];   // opaque, decoupe, melange, decoupe interne
   const TS = options.tailleSection ?? 16;
   const nsx = Math.ceil(sx / TS), nsy = Math.ceil(sy / TS), nsz = Math.ceil(sz / TS);
   const secDe = (x, y, z) => ((y / TS | 0) * nsz + (z / TS | 0)) * nsx + (x / TS | 0);
@@ -164,6 +168,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
   const aoBord = new Float32Array(4);
   const luBord = new Float32Array(4);
   const br = new Float32Array(4);
+  const lv = new Float32Array(4);   // niveau de lumiere du ciel 0..15 aux 4 coins (export GPU)
   const aoc = new Float32Array(4);
 
   function emettreQuad(couche, tex, q, i, lx, ly, lz, dx, dy, dz, colonne, vertCol) {
@@ -184,6 +189,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
     if (flat) {
       const brt = lumiere(q.emission || kind[pal[i]] === 3 ? 15 : Lc);
       br[0] = br[1] = br[2] = br[3] = brt;
+      lv[0] = lv[1] = lv[2] = lv[3] = q.emission || kind[pal[i]] === 3 ? 15 : Lc;
       aoc[0] = aoc[1] = aoc[2] = aoc[3] = 1;
     } else {
       const sCentre = aoSh[pc];
@@ -197,7 +203,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
         const lb = opac[pb] >= 15 ? Lc : lum[base + ob];
         const lk = opac[pk] >= 15 ? Lc : lum[nk];
         const l = q.emission || kind[pal[i]] === 3 ? 15 : (la + lb + lk + Lc) * 0.25;
-        br[c] = ao * lumiere(l); aoc[c] = ao;
+        br[c] = ao * lumiere(l); aoc[c] = ao; lv[c] = l;
       }
     }
     const ombre = OMBRE_DIR[q.dirOmbre];
@@ -212,6 +218,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
     T.garantir();
     const n = T.n++;
     const po = n * 12, uo = n * 8, co = n * 4;
+    if (gpu) { T.tint[n * 3] = r; T.tint[n * 3 + 1] = g; T.tint[n * 3 + 2] = bl; T.blk[n] = pal[i]; T.ctr[n * 3] = zone.x0 + lx + 0.5; T.ctr[n * 3 + 1] = zone.y0 + ly + 0.5; T.ctr[n * 3 + 2] = zone.z0 + lz + 0.5; }
     let jaune = 0;
     const vb = [0, 0, 0, 0];
     for (let k = 0; k < 4; k++) {
@@ -224,6 +231,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
       const w1 = Math.min(1, Math.max(0, p[ax1])), w2 = Math.min(1, Math.max(0, p[ax2]));
       const v = (1 - w1) * (1 - w2) * br[0] + w1 * (1 - w2) * br[1] + (1 - w1) * w2 * br[2] + w1 * w2 * br[3];
       vb[k] = v;
+      if (gpu) T.lvl[n * 4 + k] = (1 - w1) * (1 - w2) * lv[0] + w1 * (1 - w2) * lv[1] + (1 - w1) * w2 * lv[2] + w1 * w2 * lv[3];
       T.aob[n * 4 + k] = Math.min(255, Math.round(((1 - w1) * (1 - w2) * aoc[0] + w1 * (1 - w2) * aoc[1] + (1 - w1) * w2 * aoc[2] + w1 * w2 * aoc[3]) * 255));
       T.eti[n * 4 + k] = etiCourant === ETI_PLANTE ? ETI_PLANTE | (Math.min(31, Math.round(31 * Math.min(1, Math.max(0, (p[1] + (etiHalf === 2 ? 1 : 0)) / (etiHalf ? 2 : 1))))) << 3) : etiCourant;
       const f = v * ombre;
@@ -239,7 +247,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
   }
 
   // Un quad de fluide (positions locales a la cellule en blocs) avec couleur uniforme
-  function quadFluide(couche, sprite, pts, uvs, rgbF, f, secteur, tag = 0) {
+  function quadFluide(couche, sprite, pts, uvs, rgbF, f, secteur, tag = 0, niveau = 15, bloc = 0) {
     const T = tampons[couche];
     T.garantir();
     const n = T.n++;
@@ -250,6 +258,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
       T.col[n * 4 + k] = (255 << 24) | (B << 16) | (G << 8) | R;
     }
     T.flip[n] = 0; T.spr[n] = sprite.id; T.sec[n] = secteur;
+    if (gpu) { for (let k = 0; k < 4; k++) T.lvl[n * 4 + k] = niveau; T.tint[n * 3] = rgbF[0]; T.tint[n * 3 + 1] = rgbF[1]; T.tint[n * 3 + 2] = rgbF[2]; T.blk[n] = bloc; T.ctr[n * 3] = pts[0][0]; T.ctr[n * 3 + 1] = pts[0][1]; T.ctr[n * 3 + 2] = pts[0][2]; }
     for (let k = 0; k < 4; k++) { T.aob[n * 4 + k] = 255; T.eti[n * 4 + k] = tag; }
     stat.quads++;
   }
@@ -273,7 +282,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
     // haut
     if (!(opaque[dessus]) && !(dessusEau)) {
       const f = FLU_OMBRE[1] * lumiere(niveauLum(i));
-      quadFluide(couche, sTop, [[X, Y + h, Z], [X, Y + h, Z + 1], [X + 1, Y + h, Z + 1], [X + 1, Y + h, Z]], [[0, 0], [0, 1], [1, 1], [1, 0]], coul, f, secteur, lave ? 0 : ETI_EAU);
+      quadFluide(couche, sTop, [[X, Y + h, Z], [X, Y + h, Z + 1], [X + 1, Y + h, Z + 1], [X + 1, Y + h, Z]], [[0, 0], [0, 1], [1, 1], [1, 0]], coul, f, secteur, lave ? 0 : ETI_EAU, niveauLum(i), pal[i]);
     }
     // cotes
     const faces = [[2, OFFDIR[2]], [3, OFFDIR[3]], [4, OFFDIR[4]], [5, OFFDIR[5]]];
@@ -286,13 +295,13 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
       else if (d === 3) pts = [[X, Y + h, Z + 1], [X, Y, Z + 1], [X + 1, Y, Z + 1], [X + 1, Y + h, Z + 1]];
       else if (d === 4) pts = [[X, Y + h, Z], [X, Y, Z], [X, Y, Z + 1], [X, Y + h, Z + 1]];
       else pts = [[X + 1, Y + h, Z + 1], [X + 1, Y, Z + 1], [X + 1, Y, Z], [X + 1, Y + h, Z]];
-      quadFluide(couche, sSide, pts, [[0, 0], [0, h * 0.5], [0.5, h * 0.5], [0.5, 0]].map((u, k) => [[0, 0], [0, h / 2], [0.5, h / 2], [0.5, 0]][k]), coul, f, secteur);
+      quadFluide(couche, sSide, pts, [[0, 0], [0, h * 0.5], [0.5, h * 0.5], [0.5, 0]].map((u, k) => [[0, 0], [0, h / 2], [0.5, h / 2], [0.5, 0]][k]), coul, f, secteur, 0, niveauLum(i + off), pal[i]);
     }
     // bas
     const dessous = pal[i - OY];
     if (!opaque[dessous] && !memeFluide(dessous)) {
       const f = FLU_OMBRE[0] * lumiere(niveauLum(i - OY));
-      quadFluide(couche, sTop, [[X, Y, Z + 1], [X, Y, Z], [X + 1, Y, Z], [X + 1, Y, Z + 1]], [[0, 1], [0, 0], [1, 0], [1, 1]], coul, f, secteur);
+      quadFluide(couche, sTop, [[X, Y, Z + 1], [X, Y, Z], [X + 1, Y, Z], [X + 1, Y, Z + 1]], [[0, 1], [0, 0], [1, 0], [1, 1]], coul, f, secteur, 0, niveauLum(i - OY), pal[i]);
     }
   }
 
@@ -364,6 +373,7 @@ function assembler(T, textures, atlas, nbSec) {
   for (let s = 0; s < nbSec; s++) { bbox[s * 6] = bbox[s * 6 + 1] = bbox[s * 6 + 2] = Infinity; bbox[s * 6 + 3] = bbox[s * 6 + 4] = bbox[s * 6 + 5] = -Infinity; }
   const AW = atlas.largeur, AH = atlas.hauteur;
   const eps = 0.02;
+  const mid = T.gpu ? new Float32Array(n * 2) : null;
   for (let i = 0; i < n; i++) {
     const s = T.sec[i];
     const o = suivant[s]++;
@@ -371,6 +381,7 @@ function assembler(T, textures, atlas, nbSec) {
     couleurs.set(T.col.subarray(i * 4, i * 4 + 4), o * 4);
     ao.set(T.aob.subarray(i * 4, i * 4 + 4), o * 4); etiq.set(T.eti.subarray(i * 4, i * 4 + 4), o * 4);
     const sp = textures.sprites[T.spr[i]];
+    if (mid) { mid[o * 2] = (sp.ax + sp.w / 2) / AW; mid[o * 2 + 1] = (sp.ay + sp.h / 2) / AH; }
     for (let k = 0; k < 4; k++) {
       const u = Math.min(sp.w - eps, Math.max(eps, T.uv[i * 8 + k * 2] * sp.w));
       const v = Math.min(sp.h - eps, Math.max(eps, T.uv[i * 8 + k * 2 + 1] * sp.h));
@@ -389,7 +400,17 @@ function assembler(T, textures, atlas, nbSec) {
   for (let s = 0; s < nbSec; s++) {
     if (compte[s + 1] > compte[s]) sections.push({ debut: compte[s] * 6, nb: (compte[s + 1] - compte[s]) * 6, bbox: Array.from(bbox.subarray(s * 6, s * 6 + 6)) });
   }
-  return { positions, uvs, couleurs, indices, sections, nbQuads: n, ao, etiq };
+  let gpu = null;
+  if (T.gpu) {
+    const lvl = new Float32Array(n * 4), tint = new Uint8Array(n * 3), blk = new Uint16Array(n), ctr = new Float32Array(n * 3);
+    const suivant2 = compte.slice(0, nbSec);
+    for (let i = 0; i < n; i++) {
+      const o = suivant2[T.sec[i]]++;
+      lvl.set(T.lvl.subarray(i * 4, i * 4 + 4), o * 4); tint.set(T.tint.subarray(i * 3, i * 3 + 3), o * 3); blk[o] = T.blk[i]; ctr.set(T.ctr.subarray(i * 3, i * 3 + 3), o * 3);
+    }
+    gpu = { lvl, tint, blk, ctr, mid };
+  }
+  return { positions, uvs, couleurs, indices, sections, nbQuads: n, ao, etiq, gpu };
 }
 
 export { COUCHE_OPAQUE, COUCHE_DECOUPE, COUCHE_MELANGE, COUCHE_INTERNE };

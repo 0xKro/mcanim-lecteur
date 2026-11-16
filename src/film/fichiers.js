@@ -13,5 +13,6 @@ export function verifierFichiers(scene, baseDir = process.cwd(), surcharges = {}
     (a.skins?.cles ?? []).forEach((k, j) => { if (local(k.ref) && !existe(k.ref)) manque(`acteurs[${i}].skins[${j}][1]`, k.ref); });
   });
   if (scene.shader && !existe(scene.shader)) manque('shader', scene.shader);
+  if (scene.packShader && !existe(scene.packShader)) manque('packShader', scene.packShader);
   for (const [nom, f] of Object.entries(scene.textures ?? {})) if (!existe(f)) manque(`textures["${nom}"]`, f);
 }

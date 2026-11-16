@@ -55,6 +55,8 @@ function rotZYX(rx, ry, rz) { // Rz * Ry * Rx
   ];
 }
 const rotX = (a) => { const c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, 0, c, -s, 0, s, c]; };
+const rotY = (a) => { const c = Math.cos(a), s = Math.sin(a); return [c, 0, s, 0, 1, 0, -s, 0, c]; };
+const rotZ = (a) => { const c = Math.cos(a), s = Math.sin(a); return [c, -s, 0, s, c, 0, 0, 0, 1]; };
 function mult3(A, B) {
   const M = new Array(9);
   for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) M[i * 3 + j] = A[i * 3] * B[j] + A[i * 3 + 1] * B[3 + j] + A[i * 3 + 2] * B[6 + j];
@@ -256,8 +258,9 @@ export class Personnage {
   //            brasD/brasG/jambeD/jambeG: [avant, cote] (degres), accroupi (0..1), age (ticks, bras au repos),
   //            coudeD/coudeG/genouD/genouG (degres, 0..150 : flexion), dy (blocs : appui des pieds, voir compensationAppui) }
   //   lumiere : 0..1, multiplie les couleurs (lumiere du ciel a l'endroit du personnage).
+  //   brut : true = pas d'ombrage ni de lumiere dans les couleurs (1,1,1) et `normales` en plus (pour un vrai pack de shaders).
   // Les tableaux positions/couleurs sont NOUVEAUX a chaque appel (le rendu garde des references).
-  maillage(pose, lumiere = 1) {
+  maillage(pose, lumiere = 1, brut = false) {
     const mats = this.matricesParties(pose);
     let masque = 0;
     LIMBES.forEach((L, j) => { if (flexion(pose, L) > 1e-4) masque |= 1 << j; });
@@ -269,6 +272,7 @@ export class Personnage {
     const inc = inclinaison(pose.bascule, pose.roulis);   // null : corps droit, rendu d'avant inchange
     const nS = cfg.partie.length;
     const positions = new Float32Array(nS * 3), couleurs = new Float32Array(nS * 3);
+    const normales = brut ? new Float32Array(nS * 3) : null;
     for (let s = 0; s < nS; s++) {
       const m = mats[cfg.partie[s]];
       const lx = cfg.local[s * 3], ly = cfg.local[s * 3 + 1], lz = cfg.local[s * 3 + 2];
@@ -281,10 +285,12 @@ export class Personnage {
       const nx = cfg.normales[s * 3], ny = cfg.normales[s * 3 + 1], nz = cfg.normales[s * 3 + 2];
       const rx = m.R[0] * nx + m.R[1] * ny + m.R[2] * nz, ry = m.R[3] * nx + m.R[4] * ny + m.R[5] * nz, rz = m.R[6] * nx + m.R[7] * ny + m.R[8] * nz;
       const [vx, vy, vz] = versMondeDir(rx, ry, rz, ct, st, inc);
+      if (brut) { couleurs[s * 3] = 1; couleurs[s * 3 + 1] = 1; couleurs[s * 3 + 2] = 1; normales[s * 3] = vx; normales[s * 3 + 1] = vy; normales[s * 3 + 2] = vz; continue; }
       const o = ombre(vx, vy, vz) * lumiere;
       couleurs[s * 3] = o; couleurs[s * 3 + 1] = o; couleurs[s * 3 + 2] = o;
     }
     const m = { positions, uvs: cfg.uvs, couleurs, indices: cfg.indices, texture: this.texture, mode: 'decoupe' };
+    if (brut) m.normales = normales;   // vrai pack de shaders : couleurs a 1 (c'est le pack qui eclaire) et normales en repere monde
     // couleur selective : `lueur` (0..1) absent = le masque protege (force 1) mais n'eclaire pas ; present = il multiplie la force
     // ET rend les pixels du masque lumineux (non assombris par la lumiere ni l'ombrage). `horsImage` = tout le corps est exempte.
     if (this.masque) { m.masque = this.masque; m.forceMasque = pose.lueur ?? 1; m.lueur = pose.lueur ?? 0; }
@@ -297,28 +303,27 @@ export class Personnage {
   matricesParties(pose) { return calculerMatrices(this.parties, pose); }
 }
 
+// Rotation d'un membre : R = Rz(cote) . Rx(-avant) . Ry(torsion), voir docs/CONCEPTION.md "Articulations libres".
+// Sans torsion on garde exactement la matrice d'avant (rotZYX). cote > 0 = le membre s'ecarte du corps (< 0 : il se croise devant ou derriere) ;
+// torsion > 0 = rotation interne (le bas du membre plie va vers l'axe du corps) : Ry(-torsion) a droite, Ry(+torsion) a gauche.
+const LATERAL = { brasD: 1, brasG: -1, jambeD: 1, jambeG: -1 };
+function rotationMembre(nom, v, balX = 0, balZ = 0) {
+  const lat = LATERAL[nom];
+  const R = rotZYX(-(v?.[0] ?? 0) * RAD + balX, 0, lat * (v?.[1] ?? 0) * RAD + balZ);
+  const tors = v?.[2] ?? 0;
+  return tors ? mult3(R, rotY(-lat * tors * RAD)) : R;
+}
+
 function calculerMatrices(parties, pose) {
   const crouch = pose.accroupi ?? 0;
   const age = pose.age ?? 0;
-  const mem = (v) => v ?? [0, 0];
   const tete = pose.tete ?? [0, 0];
-  const angles = {
-    // [rx, ry, rz] en radians ; avant > 0 = vers l'avant = rotation X negative
-    tete: [clamp(tete[1], -90, 90) * RAD, clamp(tete[0], -85, 85) * RAD, 0], // lacet > 0 = vers la droite du joueur (-X)
-    corps: [(pose.penche ?? 0) * RAD, 0, 0],
-    brasD: [-mem(pose.brasD)[0] * RAD, 0, mem(pose.brasD)[1] * RAD],
-    brasG: [-mem(pose.brasG)[0] * RAD, 0, -mem(pose.brasG)[1] * RAD],
-    jambeD: [-mem(pose.jambeD)[0] * RAD, 0, mem(pose.jambeD)[1] * RAD],
-    jambeG: [-mem(pose.jambeG)[0] * RAD, 0, -mem(pose.jambeG)[1] * RAD],
-  };
-  // bras au repos : leger balancement du jeu (AnimationUtils.bobModelPart)
-  if (pose.balancement !== false) {
-    const s = 1;
-    angles.brasD[2] += s * (Math.cos(age * 0.09) * 0.05 + 0.05); angles.brasD[0] += s * Math.sin(age * 0.067) * 0.05;
-    angles.brasG[2] -= s * (Math.cos(age * 0.09) * 0.05 + 0.05); angles.brasG[0] -= s * Math.sin(age * 0.067) * 0.05;
-  }
+  const complet = !!pose.troncComplet;   // haut du corps entier autour des hanches (corps [t, penche, cote, torsion]) ; sinon le dos du jeu
+  // bras au repos : leger balancement du jeu (AnimationUtils.bobModelPart) ; balD / balG (0..1) l'attenuent quand une cible tient la main
+  const sD = pose.balancement !== false ? (pose.balD ?? 1) : 0, sG = pose.balancement !== false ? (pose.balG ?? 1) : 0;
+  const bal = (s) => [s * Math.sin(age * 0.067) * 0.05, s * (Math.cos(age * 0.09) * 0.05 + 0.05)];   // [rx, rz]
+  const bD = bal(sD), bG = bal(sG);
   const mats = parties.map((p) => {
-    const a = angles[p.nom];
     const piv = [...p.pivot];
     if (crouch) {  // pose accroupie du jeu : decalages des pivots (px)
       if (p.nom === 'tete') piv[1] += 4.2 * crouch;
@@ -326,8 +331,32 @@ function calculerMatrices(parties, pose) {
       if (p.nom === 'brasD' || p.nom === 'brasG') piv[1] += 3.2 * crouch;
       if (p.nom === 'jambeD' || p.nom === 'jambeG') piv[2] += 4 * crouch;
     }
-    return { R: rotZYX(a[0], a[1], a[2]), t: piv.map((c) => c / 16) };
+    let R;
+    switch (p.nom) {
+      case 'tete':   // lacet > 0 = vers la droite du joueur (-X) ; roulis > 0 = l'oreille droite vers l'epaule droite, autour de l'axe du nez (apres lacet et tangage)
+        R = rotZYX(tete[1] * RAD, tete[0] * RAD, 0);
+        if (tete[2]) R = mult3(R, rotZ(-tete[2] * RAD));
+        break;
+      case 'corps': R = rotZYX(complet ? 0 : (pose.penche ?? 0) * RAD, 0, 0); break;
+      case 'brasD': R = rotationMembre('brasD', pose.brasD, bD[0], bD[1]); break;   // avant > 0 = rotation X negative
+      case 'brasG': R = rotationMembre('brasG', pose.brasG, -bG[0], -bG[1]); break;
+      case 'jambeD': R = rotationMembre('jambeD', pose.jambeD); break;
+      default: R = rotationMembre('jambeG', pose.jambeG); break;
+    }
+    return { R, t: piv.map((c) => c / 16) };
   });
+  // haut du corps entier : penche, cote, torsion autour des hanches (le bas du tronc) ; tete, tronc et bras suivent, les jambes restent.
+  // Ru = Rz(-cote) . Rx(penche) . Ry(torsion) : la torsion tourne autour de l'axe du dos (deja penche), la penche autour de l'axe des epaules,
+  // le cote autour de l'axe avant-arriere du corps. Rien de tout cela sans troncComplet : le dos du jeu (tronc seul autour du cou) est inchange.
+  if (complet) {
+    const Ru = mult3(mult3(rotZ(-(pose.troncCote ?? 0) * RAD), rotX((pose.penche ?? 0) * RAD)), rotY((pose.troncTorsion ?? 0) * RAD));
+    const H = [0, 12 + 3.2 * crouch, 0];
+    for (const nom of ['tete', 'corps', 'brasD', 'brasG']) {
+      const i = parties.findIndex((p) => p.nom === nom), m = mats[i];
+      const d = m.t.map((c, k) => c * 16 - H[k]), r = appliquer3(Ru, d);
+      mats[i] = { R: mult3(Ru, m.R), t: r.map((c, k) => (c + H[k]) / 16) };
+    }
+  }
   // articulations : la charniere K est a mi-longueur du membre, dans son repere ; le pas k tourne de k/N_ARC de la flexion
   LIMBES.forEach((L, j) => {
     const p = parties[L.ip], m = mats[L.ip];
@@ -427,13 +456,112 @@ export function descenteBascule(bascule = 0, roulis = 0) {
 export function decalageYeux(pose) {
   const h = 1.62 - 0.35 * (pose.accroupi ?? 0);
   const inc = inclinaison(pose.bascule, pose.roulis);
-  if (!inc) return [0, h + (pose.hauteur ?? 0), 0];
+  let base;
+  if (!inc) base = [0, h + (pose.hauteur ?? 0), 0];
+  else {
+    const th = (180 - (pose.lacet ?? 0)) * RAD, ct = Math.cos(th), st = Math.sin(th);
+    const [x, y, z] = inc.point(0, h, 0);
+    base = [x * ct + z * st, y + (pose.hauteur ?? 0), -x * st + z * ct];
+  }
+  if (!pose.troncComplet || !(pose.penche || pose.troncCote || pose.troncTorsion)) return base;
+  // haut du corps penche ou tourne : la tete suit (ecart entre la tete de la pose et la tete du corps droit)
+  const oeil = [0, -3.632, 0];
+  const pos = (po) => { const m = calculerMatrices(PARTIES_REF, { ...po, balancement: false })[0]; return appliquer3(m.R, oeil).map((c, i) => c + m.t[i] * 16); };
+  const a = pos(pose), b = pos({ ...pose, penche: 0, troncCote: 0, troncTorsion: 0 });
   const th = (180 - (pose.lacet ?? 0)) * RAD, ct = Math.cos(th), st = Math.sin(th);
-  const [x, y, z] = inc.point(0, h, 0);
-  return [x * ct + z * st, y + (pose.hauteur ?? 0), -x * st + z * ct];
+  const d = [-(a[0] - b[0]) / 16 * ECHELLE, -(a[1] - b[1]) / 16 * ECHELLE, (a[2] - b[2]) / 16 * ECHELLE];
+  const e = inc ? inc.dir(d[0], d[1], d[2]) : d;
+  return [base[0] + e[0] * ct + e[2] * st, base[1] + e[1], base[2] - e[0] * st + e[2] * ct];
 }
 // Ombrage doux : vaut 1,0 / 0,5 / 0,8 / 0,6 pour les normales alignees aux axes.
 export function ombre(nx, ny, nz) {
   const sy = ny >= 0 ? OMBRE_HAUT : OMBRE_BAS;
   return ny * ny * sy + nz * nz * OMBRE_NS + nx * nx * OMBRE_OE;
 }
+
+// ---------------------------------------------------------------- articulations libres : reperes, points d'ancrage, geometrie des membres
+// Utilise par film/cibles.js (cinematique inverse) et film/limites.js (notes). Tout est en pixels de modele, repere du modele (Y vers le bas).
+const PARTIES_SLIM = definirParties(true);
+export const partiesDe = (slim) => (slim ? PARTIES_SLIM : PARTIES_REF);
+
+// Geometrie d'un membre : pivot (px), charniere K = (0, ym, 0) a mi-longueur, extremite = centre de la face du bout du segment bas
+// (couche externe comprise) de coordonnees (hOff, long, 0) dans le repere de la charniere. signe : sens de la flexion autour d'X.
+export function geometrieMembre(nom, slim = false) {
+  const j = LIMBES.findIndex((L) => L.nom === nom);
+  const L = LIMBES[j], p = partiesDe(slim)[L.ip];
+  const ym = p.orig[1] + p.taille[1] / 2;
+  return { nom, j, ip: L.ip, signe: L.signe, lat: LATERAL[nom], ym, hOff: p.orig[0] + p.taille[0] / 2, long: p.orig[1] + p.taille[1] + p.ext.g - ym, pivot: p.pivot };
+}
+
+// Repere du parent d'un membre : rotation R et position S (px) de son pivot, membre a plat (sa propre rotation nulle). Suit le tronc complet.
+export function repereParent(pose, nom, slim = false) {
+  const g = geometrieMembre(nom, slim);
+  const m = calculerMatrices(partiesDe(slim), { ...pose, balancement: false, [nom]: [0, 0, 0] })[g.ip];
+  return { R: m.R, S: m.t.map((c) => c * 16) };
+}
+
+// Position (px, repere du modele) de la charniere et de l'extremite d'un membre dans une pose.
+export function pointsMembre(pose, nom, slim = false) {
+  const g = geometrieMembre(nom, slim);
+  const mats = calculerMatrices(partiesDe(slim), pose);
+  const m = mats[g.ip], th = flexion(pose, LIMBES[g.j]);
+  const K = m.t.map((c, i) => c * 16 + appliquer3(m.R, [0, g.ym, 0])[i]);
+  const Rb = mult3(m.R, rotX(g.signe * th));
+  const bout = appliquer3(Rb, [g.hOff, g.long, 0]).map((c, i) => c + K[i]);
+  const milieu = appliquer3(Rb, [g.hOff, g.long - 2, 0]).map((c, i) => c + K[i]);   // le centre de la "main" (les 4 derniers px du segment)
+  return { K, bout, milieu };
+}
+
+// Points d'ancrage sur le corps : [partie, x, y, z] en px dans le repere de la partie (pivot en 0,0,0 ; la surface porte la couche externe).
+// Tete : x droite = -X, face avant z = -4 (chapeau -4,5), dessous y = 0 (0,5). Tronc : x +-4, y 0 (cou) a 12 (hanches), z +-2 (+0,25).
+export const ANCRES = {
+  menton: ['tete', 0, 0.5, -3], joue_d: ['tete', -4.5, -3, -2.5], joue_g: ['tete', 4.5, -3, -2.5], front: ['tete', 0, -5, -4.5],
+  dessus_tete: ['tete', 0, -8.5, 0], nuque: ['tete', 0, -2.5, 4.5], oreille_d: ['tete', -4.5, -4, 0], oreille_g: ['tete', 4.5, -4, 0], bouche: ['tete', 0, -2, -4.5],
+  poitrine: ['corps', 0, 3.5, -2.25], ventre: ['corps', 0, 8, -2.25], dos: ['corps', 0, 8, 2.25],
+  hanche_d: ['corps', -4.25, 10, -0.5], hanche_g: ['corps', 4.25, 10, -0.5], poche_d: ['corps', -3.2, 10.5, -2.25], poche_g: ['corps', 3.2, 10.5, -2.25],
+  epaule_d: ['corps', -3.5, -0.3, -0.3], epaule_g: ['corps', 3.5, -0.3, -0.3],
+  genou_d: ['jambeD', 0, 6, -2.25], genou_g: ['jambeG', 0, 6, -2.25],
+};
+export const NOMS_ANCRES = Object.keys(ANCRES);
+const IP = { tete: 0, corps: 1, brasD: 2, brasG: 3, jambeD: 4, jambeG: 5 };
+export function pointAncre(nom, mats) {
+  const [partie, x, y, z] = ANCRES[nom], m = mats[IP[partie]];
+  return appliquer3(m.R, [x, y, z]).map((c, i) => c + m.t[i] * 16);
+}
+
+// Repere de l'acteur (blocs, relatif aux pieds ; avant du corps a lacet 0 = +Z, droite = -X, haut = +Y) -> repere du modele (px).
+// C'est l'inverse de `maillage` (dy, hauteur, accroupi, lacet, bascule/roulis). dir : seulement une direction (pas de translation ni d'echelle).
+export function versModele(pose, rel, dir = false) {
+  let [x, y, z] = rel;
+  if (!dir) y = y + BAISSE_ACCROUPI * (pose.accroupi ?? 0) - ((pose.dy ?? 0) + (pose.hauteur ?? 0));
+  const th = (180 - (pose.lacet ?? 0)) * RAD, ct = Math.cos(th), st = Math.sin(th);
+  [x, z] = [x * ct - z * st, x * st + z * ct];                     // annule le lacet
+  const b = (pose.bascule ?? 0) * RAD, r = (pose.roulis ?? 0) * RAD;
+  if (b || r) {                                                    // annule bascule et roulis (autour des hanches)
+    if (!dir) y -= PIVOT_HANCHE;
+    const cb = Math.cos(b), sb = Math.sin(b), cr = Math.cos(r), sr = Math.sin(r);
+    const xr = x * cr - y * sr, y1 = x * sr + y * cr;
+    [x, y, z] = [xr, y1 * cb - z * sb, y1 * sb + z * cb];
+    if (!dir) y += PIVOT_HANCHE;
+  }
+  if (dir) return [-x, -y, z];
+  return [-x / ECHELLE * 16, (-y / ECHELLE - DECALAGE_Y) * 16, z / ECHELLE * 16];
+}
+
+// Les mains sont-elles dans la tete ou le tronc ? (centre de la main dans la boite, retrecie de 0,5 px). Retourne [{ membre, dans }].
+export function mainsDansCorps(pose, slim = false) {
+  const mats = calculerMatrices(partiesDe(slim), pose), res = [];
+  const dans = (p, m, [x0, x1, y0, y1, z0, z1]) => {
+    const l = [0, 1, 2].map((i) => p[i] - m.t[i] * 16);
+    const q = [m.R[0] * l[0] + m.R[3] * l[1] + m.R[6] * l[2], m.R[1] * l[0] + m.R[4] * l[1] + m.R[7] * l[2], m.R[2] * l[0] + m.R[5] * l[1] + m.R[8] * l[2]];
+    return q[0] > x0 && q[0] < x1 && q[1] > y0 && q[1] < y1 && q[2] > z0 && q[2] < z1;
+  };
+  for (const nom of ['brasD', 'brasG']) {
+    const { milieu } = pointsMembre(pose, nom, slim);
+    if (dans(milieu, mats[0], [-3.5, 3.5, -7.5, -0.5, -3.5, 3.5])) res.push({ membre: nom, dans: 'tete' });
+    else if (dans(milieu, mats[1], [-3.5, 3.5, 0.5, 11.5, -1.5, 1.5])) res.push({ membre: nom, dans: 'corps' });
+  }
+  return res;
+}
+export const matricesPose = (pose, slim = false) => calculerMatrices(partiesDe(slim), pose);
+export const matriceMembre = (nom, v) => rotationMembre(nom, v);   // rotation de l'epaule ou de la hanche pour [avant, cote, torsion], sans balancement

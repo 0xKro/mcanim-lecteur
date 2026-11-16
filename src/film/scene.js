@@ -7,6 +7,7 @@ export const FORMATS = { '1920x1080': [1920, 1080], '1080x1920': [1080, 1920] };
 const LISSAGES = new Set(['d', 's', 'x']);
 const MEMBRES = ['brasD', 'brasG', 'jambeD', 'jambeG'];
 const PISTES_BOUCLE = [...MEMBRES, 'tete', 'corps', 'lacet'];
+export const MAX_CLES_SKINS = 16, MAX_GELS = 8, MAX_TEXTURES = 32;
 
 export class ErreurScene extends Error {
   constructor(chemin, message) {
@@ -139,8 +140,7 @@ export function validerScene(s) {
     if (typeof a.nom !== 'string' || !a.nom) err(`${ch}.nom`, 'nom attendu (texte non vide)');
     if (noms.has(a.nom)) err(`${ch}.nom`, `le nom "${a.nom}" est deja pris`);
     noms.add(a.nom);
-    if (a.skin !== undefined && (typeof a.skin !== 'string' || !a.skin)) err(`${ch}.skin`, 'texte attendu (pseudo, skin par defaut, "@identifiant" ou fichier PNG)');
-    if (typeof a.skin === 'string' && a.skin.startsWith('@') && !/^@[A-Za-z0-9_-]{22}$/.test(a.skin)) err(`${ch}.skin`, '"@" doit etre suivi de l\'identifiant de 22 caracteres (lettres, chiffres, - et _) donne par lister_avatars');
+    if (a.skin !== undefined) verifierSkin(a.skin, `${ch}.skin`);
     if (a.modele !== undefined && a.modele !== 'wide' && a.modele !== 'slim') err(`${ch}.modele`, '"wide" ou "slim" attendu');
     if (a.pos === undefined) err(`${ch}.pos`, 'piste de position obligatoire : [[t, x, z], ...] ou [[t, x, y, z], ...]');
     const pos = lirePiste(a.pos, `${ch}.pos`, { minArite: 2, maxArite: 3 });
@@ -153,6 +153,11 @@ export function validerScene(s) {
       nom: a.nom, skin: a.skin ?? 'steve', modele: a.modele ?? null,
       pos: { cles }, objet: typeof a.objet === 'string' ? a.objet : null, boucles: [],
     };
+    // apparence : changements de skin, exemption de l'image, masque de couleur selective, lueur
+    if (a.skins !== undefined) o.skins = lireSkins(a.skins, `${ch}.skins`);
+    if (a.horsImage !== undefined) o.horsImage = borner(lirePiste(a.horsImage, `${ch}.horsImage`, { minArite: 1, maxArite: 1 }), `${ch}.horsImage`, 0, 1);
+    if (a.lueur !== undefined) o.lueur = borner(lirePiste(a.lueur, `${ch}.lueur`, { minArite: 1, maxArite: 1 }), `${ch}.lueur`, 0, 1);
+    if (a.masque !== undefined) o.masque = verifierPng(a.masque, `${ch}.masque`);
     if (a.lacet !== undefined) o.lacet = lirePiste(a.lacet, `${ch}.lacet`, { minArite: 1, maxArite: 1 });
     if (a.tete !== undefined) o.tete = lirePiste(a.tete, `${ch}.tete`, { minArite: 2, maxArite: 2 });
     if (a.corps !== undefined) o.corps = lirePiste(a.corps, `${ch}.corps`, { minArite: 1, maxArite: 1 });
@@ -182,7 +187,98 @@ export function validerScene(s) {
   return {
     v: 1, format: s.format, largeur, hauteur, duree: s.duree, zone: s.zone,
     images: Math.round(s.duree * IMAGES_PAR_SECONDE), acteurs, camera, sons,
+    image: s.image !== undefined ? lireTable(s.image, 'image', LEVIERS_IMAGE) : null,
+    ciel: s.ciel !== undefined ? lireTable(s.ciel, 'ciel', LEVIERS_CIEL) : null,
+    gel: s.gel !== undefined ? lireGel(s.gel, s.duree) : [],
+    textures: s.textures !== undefined ? lireTextures(s.textures) : {},
   };
+}
+
+// ---------------------------------------------------------------- apparence, image, ciel, gel, textures
+// Skin d'un acteur : pseudo, nom par defaut, "@identifiant" ou fichier PNG (le fichier est cherche au rendu, relatif a la scene).
+function verifierSkin(v, ch) {
+  if (typeof v !== 'string' || !v) err(ch, 'texte attendu (pseudo, skin par defaut, "@identifiant" ou fichier PNG)');
+  if (v.startsWith('@') && !/^@[A-Za-z0-9_-]{22}$/.test(v)) err(ch, '"@" doit etre suivi de l\'identifiant de 22 caracteres (lettres, chiffres, - et _) donne par lister_avatars');
+  return v;
+}
+
+function verifierPng(v, ch) {
+  if (typeof v !== 'string' || !/\.png$/i.test(v) || v.length > 200) err(ch, 'chemin d\'un fichier .png attendu (relatif au fichier de scene), par exemple "masque.png"');
+  return v;
+}
+
+// Piste de changements de skin : [[t, "ref"], ...] (changement d'un coup au temps t ; avant la premiere cle : le champ `skin`).
+function lireSkins(brut, ch) {
+  if (!Array.isArray(brut) || brut.length === 0) err(ch, 'liste [[t, "skin"], ...] attendue, par exemple [[3, "rouge.png"]]');
+  if (brut.length > MAX_CLES_SKINS) err(ch, `${MAX_CLES_SKINS} changements de skin au maximum`);
+  const cles = brut.map((k, i) => {
+    const c = `${ch}[${i}]`;
+    if (!Array.isArray(k) || k.length !== 2 || !estNombre(k[0]) || k[0] < 0) err(c, 'forme attendue : [temps, "skin"] (temps >= 0)');
+    if (i > 0 && k[0] < brut[i - 1][0]) err(`${c}[0]`, 'les cles doivent etre classees par temps croissant');
+    return { t: k[0], ref: verifierSkin(k[1], `${c}[1]`) };
+  });
+  return { cles };
+}
+
+// Controle que toutes les valeurs de la piste sont dans [min, max] (par colonne si min/max sont des listes).
+function borner(piste, ch, min, max) {
+  piste.cles.forEach((k, i) => k.v.forEach((x, j) => {
+    const lo = Array.isArray(min) ? min[j] : min, hi = Array.isArray(max) ? max[j] : max;
+    if (x < lo || x > hi) err(`${ch}[${i}][${j + 1}]`, `valeur entre ${lo} et ${hi} attendue, pas ${x}`);
+  }));
+  return piste;
+}
+
+// Leviers de l'image et du ciel : nom -> { arite, min, max }
+const LEVIERS_IMAGE = {
+  saturation: { arite: 1, min: 0, max: 2 }, contraste: { arite: 1, min: 0, max: 3 }, luminosite: { arite: 1, min: 0, max: 3 },
+  teinte: { arite: 3, min: 0, max: 2 }, vignette: { arite: 1, min: 0, max: 1 }, flou: { arite: 1, min: 0, max: 32 },
+  fondu: { arite: 4, min: 0, max: 1 },
+};
+const LEVIERS_CIEL = {
+  heure: { arite: 1, min: 0, max: 24 }, lumiere: { arite: 1, min: 0, max: 2 }, couleurCiel: { arite: 3, min: 0, max: 1 }, brume: { arite: 1, min: 0, max: 300 },
+};
+
+function lireTable(brut, ch, leviers) {
+  if (!estObjet(brut)) err(ch, `un objet est attendu, par exemple {"${Object.keys(leviers)[0]}": [[0, 1]]}`);
+  const o = {};
+  for (const [nom, v] of Object.entries(brut)) {
+    const L = leviers[nom];
+    if (!L) err(`${ch}.${nom}`, `levier inconnu (permis : ${Object.keys(leviers).join(', ')})`);
+    o[nom] = borner(lirePiste(v, `${ch}.${nom}`, { minArite: L.arite, maxArite: L.arite }), `${ch}.${nom}`, L.min, L.max);
+  }
+  return o;
+}
+
+// Gel du monde : liste d'intervalles [debut, fin] en secondes, triee et sans chevauchement.
+function lireGel(brut, duree) {
+  if (!Array.isArray(brut)) err('gel', 'liste d\'intervalles attendue, par exemple [[3, 7]]');
+  if (brut.length > MAX_GELS) err('gel', `${MAX_GELS} intervalles au maximum`);
+  let fin = 0;
+  return brut.map((g, i) => {
+    const c = `gel[${i}]`;
+    if (!Array.isArray(g) || g.length !== 2 || !estNombre(g[0]) || !estNombre(g[1])) err(c, 'forme attendue : [debut, fin] (secondes)');
+    if (g[0] < 0 || g[1] <= g[0]) err(c, 'il faut 0 <= debut < fin');
+    if (g[1] > duree) err(`${c}[1]`, `la fin (${g[1]}) depasse la duree de la scene (${duree})`);
+    if (g[0] < fin) err(`${c}[0]`, 'les intervalles doivent etre classes et ne pas se chevaucher');
+    fin = g[1];
+    return [g[0], g[1]];
+  });
+}
+
+// Textures du kit remplacees pour cette scene : { "block/oak_leaves": "feuilles.png", ... }
+function lireTextures(brut) {
+  if (!estObjet(brut)) err('textures', 'un objet est attendu, par exemple {"block/oak_leaves": "feuilles.png"}');
+  const noms = Object.keys(brut);
+  if (noms.length > MAX_TEXTURES) err('textures', `${MAX_TEXTURES} textures au maximum`);
+  const o = {};
+  for (const nom of noms) {
+    const ch = `textures["${nom}"]`;
+    const n = nom.replace(/^minecraft:/, '');
+    if (!/^[a-z0-9_-]+(\/[a-z0-9_-]+)+$/.test(n)) err(ch, 'nom de texture du jeu attendu, comme "block/oak_leaves" ou "entity/player/wide/steve" (voir mcanim texture)');
+    o[n] = verifierPng(brut[nom], ch);
+  }
+  return o;
 }
 
 function lireBoucle(b, ch, duree) {

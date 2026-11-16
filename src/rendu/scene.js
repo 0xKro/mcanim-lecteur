@@ -11,6 +11,7 @@ import { CouleursBiomes } from './teinte.js';
 import { mailler, courbeLumiere } from './maillage.js';
 import { trouverChemins, trouverClairieres, trouverEau, evaluerSegment, verifierChemin } from './chemins.js';
 import { Rasteriseur, MODE_OPAQUE, MODE_DECOUPE, MODE_MELANGE } from './raster.js';
+import { PostTraitement, imageActive, aFlou } from './post.js';
 
 const ICI = path.dirname(fileURLToPath(import.meta.url));
 const MODES = { opaque: MODE_OPAQUE, decoupe: MODE_DECOUPE, melange: MODE_MELANGE };
@@ -58,6 +59,8 @@ class Scene {
     this.idImage = 0;
     this.pixels = null; this.W = 0; this.H = 0;
     this.texIds = new WeakMap(); this.prochainTexId = 1;
+    this.masqueIds = new WeakMap(); this.prochainMasque = 1; this._masquesNouveaux = []; this._masquesLocaux = new Map();
+    this.force = null; this.post = new PostTraitement();
     this.persistants = new Map(); this.prochainMaillage = 1;
     this.local = null;
     this._preparerAcces();
@@ -105,23 +108,40 @@ class Scene {
     }
     const mode = MODES[m.mode || 'opaque'];
     if (mode === undefined) throw new Error("mode inconnu (opaque, decoupe, melange) : " + m.mode);
-    return { positions: pos, uvs, couleurs: col, indices: ind, sections: [{ debut: 0, nb: ind.length, bbox: [...mn, ...mx] }], texId: tex, mode, deuxFaces: !!m.deuxFaces, partage: true };
+    // couleur selective : masque (un octet par texel de la texture), force, lueur, exemption totale
+    let masqueId = 0;
+    const mk = m.masque;
+    if (mk) {
+      if (!t || !t.rgba || mk.largeur !== t.largeur || mk.hauteur !== t.hauteur || mk.valeurs.length !== t.largeur * t.hauteur) throw new Error('maillage : le masque doit avoir la meme taille que la texture');
+      masqueId = this.masqueIds.get(mk.valeurs) || 0;
+      if (!masqueId) { masqueId = this.prochainMasque++; this.masqueIds.set(mk.valeurs, masqueId); this._masquesNouveaux.push({ id: masqueId, data: Uint8Array.from(mk.valeurs) }); }
+    }
+    const kM = Math.max(0, Math.min(256, Math.round((m.forceMasque ?? 1) * 256))), kE = Math.max(0, Math.min(256, Math.round((m.lueur ?? 0) * 256)));
+    return { positions: pos, uvs, couleurs: col, indices: ind, sections: [{ debut: 0, nb: ind.length, bbox: [...mn, ...mx] }], texId: tex, mode, deuxFaces: !!m.deuxFaces, partage: true, masqueId, kM, kE, exempt: !!m.exempt };
   }
 
   ajouterMaillage(m) { const id = this.prochainMaillage++; this.persistants.set(id, m); return id; }
   retirerMaillage(id) { this.persistants.delete(id); }
 
   // ---- rendu ----
-  async rendre({ camera, largeur = 1920, hauteur = 1080, temps = 0, maillagesDynamiques = [], brume, ciel, soleil, loin, mip = true, ssaa = 1, copie = true } = {}) {
+  async rendre({ camera, largeur = 1920, hauteur = 1080, temps = 0, maillagesDynamiques = [], brume, ciel, soleil, loin, mip = true, ssaa = 1, copie = true, lumiere, image } = {}) {
     const sortieW = largeur, sortieH = hauteur;
     largeur *= ssaa; hauteur *= ssaa;
     const cam = { x: camera.x, y: camera.y, z: camera.z, lacet: camera.lacet ?? 0, tangage: camera.tangage ?? 0, fov: camera.fov ?? 70 };
     if (!this.pixels || this.W !== largeur || this.H !== hauteur) {
       this.pixels = new Uint32Array(new SharedArrayBuffer(largeur * hauteur * 4)); this.W = largeur; this.H = hauteur;
+      this.force = null;
     }
     this.textures.mettreAJour(temps);
-    this._nouvelles = [];
+    this._nouvelles = []; this._masquesNouveaux = [];
     const dyn = [...this.persistants.values(), ...maillagesDynamiques].map((m) => this._preparer(m));
+    // couleur selective : le tampon de force n'existe (et ne coute) que si l'image est etalonnee ET qu'un maillage est exempte
+    const postActif = imageActive(image);
+    const veutForce = postActif && dyn.some((d) => d.masqueId || d.exempt);
+    if (veutForce && !this.force) this.force = new Uint8Array(new SharedArrayBuffer(largeur * hauteur));
+    const force = veutForce ? this.force : null;
+    // le post-traitement se fait par les workers (chacun ses bandes) quand il n'y a ni flou ni surechantillonnage ; sinon thread principal
+    const postParWorkers = postActif && ssaa === 1 && !aFlou(image) && !this.local && this.travailleursListe.length > 0;
     const R = this.distanceVue;
     const params = {
       proche: 0.05, loin: loin ?? (brume?.fin ?? R) + 8, mip,
@@ -129,6 +149,8 @@ class Scene {
       cielZenith: ciel?.zenith ?? [120, 167, 255], cielHorizon: ciel?.horizon ?? [192, 216, 255], cielBas: ciel?.bas ?? [170, 195, 235],
       soleil: soleil === false ? null : (soleil ?? normaliser([0.35, 0.8, -0.45])),
     };
+    if (brume?.debut !== undefined && brume.fin === undefined && params.brumeFin <= params.brumeDebut) params.brumeFin = params.brumeDebut + 8;
+    if (lumiere && (lumiere[0] !== 1 || lumiere[1] !== 1 || lumiere[2] !== 1)) params.lumiere = lumiere.map((v) => Math.max(0, v));
     // camera sous l'eau : brouillard bleu court, comme dans le jeu
     if (this.estDansEau(cam.x, cam.y, cam.z)) {
       const c = [24, 56, 150];
@@ -140,25 +162,31 @@ class Scene {
       const r = this.local || (this.local = new Rasteriseur());
       const textures = new Map(this._nouvelles.map((t) => [t.id, { niveaux: [{ w: t.w, h: t.h, data: t.data }] }]));
       this._texLocales = new Map([...(this._texLocales || []), ...textures]);
-      const draws = this.draws.concat(dyn.map((d) => ({ ...d, tex: this._texLocales.get(d.texId) })));
-      this.dernieresStats = r.rendre({ pixels: this.pixels, W: largeur, H: hauteur, cam, draws, rangeeDe: 0, nW: 1, params });
+      for (const k of this._masquesNouveaux) this._masquesLocaux.set(k.id, k.data);
+      const draws = this.draws.concat(dyn.map((d) => ({ ...d, tex: this._texLocales.get(d.texId), masque: d.masqueId ? this._masquesLocaux.get(d.masqueId) : null })));
+      this.dernieresStats = r.rendre({ pixels: this.pixels, W: largeur, H: hauteur, cam, draws, rangeeDe: 0, nW: 1, params, force });
     } else {
       const promesses = this.travailleursListe.map((w, i) => new Promise((ok, ko) => {
         const cle = id * 100 + i;
         const h = (m) => { if (m.type === 'fini' && m.id === cle) { w.off('message', h); w.off('error', ko); ok(m); } };
         w.on('message', h);
         w.once('error', ko);
-        w.postMessage({ type: 'image', id: cle, pixels: this.pixels, W: largeur, H: hauteur, cam, dynamiques: dyn, texturesNouvelles: this._nouvelles, params });
+        // les masques sont envoyes a tous les workers la premiere fois (liste cumulee tant que l'image n'a pas ete rendue)
+        w.postMessage({ type: 'image', id: cle, pixels: this.pixels, W: largeur, H: hauteur, cam, dynamiques: dyn, texturesNouvelles: this._nouvelles, masquesNouveaux: this._masquesNouveaux, params, force, post: postParWorkers ? image : null });
       }));
       const res = await Promise.all(promesses);
       this.dernieresStats = { workers: res.map((r) => r.stats) };
     }
-    if (ssaa > 1) { // reduction : moyenne des ssaa x ssaa pixels
-      if (!this.sortie || this.sortie.length !== sortieW * sortieH) this.sortie = new Uint32Array(sortieW * sortieH);
+    if (ssaa > 1) { // reduction : moyenne des ssaa x ssaa pixels (la force d'exemption aussi)
+      if (!this.sortie || this.sortie.length !== sortieW * sortieH) { this.sortie = new Uint32Array(sortieW * sortieH); this.forceRed = null; }
       reduire(this.pixels, largeur, this.sortie, sortieW, sortieH, ssaa);
+      let fr = null;
+      if (force) { if (!this.forceRed) this.forceRed = new Uint8Array(sortieW * sortieH); reduireForce(force, largeur, this.forceRed, sortieW, sortieH, ssaa); fr = this.forceRed; }
+      if (postActif) this.post.appliquer(this.sortie, sortieW, sortieH, image, fr);
       const o = new Uint8Array(this.sortie.buffer, 0, sortieW * sortieH * 4);
       return copie ? Uint8Array.from(o) : o;
     }
+    if (postActif && !postParWorkers) this.post.appliquer(this.pixels, largeur, hauteur, image, force);
     const out = new Uint8Array(this.pixels.buffer, 0, largeur * hauteur * 4);
     return copie ? Uint8Array.from(out) : out;
   }
@@ -385,6 +413,18 @@ function reduire(src, wSrc, dst, w, h, k) {
         for (let i = 0; i < k; i++) { const p = src[o + i]; r += p & 255; g += (p >> 8) & 255; b += (p >> 16) & 255; }
       }
       dst[y * w + x] = (0xff000000 | (((b / n) | 0) << 16) | (((g / n) | 0) << 8) | ((r / n) | 0)) >>> 0;
+    }
+  }
+}
+
+// Meme chose pour la force d'exemption (un octet par pixel)
+function reduireForce(src, wSrc, dst, w, h, k) {
+  const n = k * k;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      for (let j = 0; j < k; j++) { const o = (y * k + j) * wSrc + x * k; for (let i = 0; i < k; i++) s += src[o + i]; }
+      dst[y * w + x] = (s / n) | 0;
     }
   }
 }

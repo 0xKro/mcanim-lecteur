@@ -83,14 +83,20 @@ export class Rasteriseur {
 
   // ---- une image : dessine uniquement les rangees (bloc de 16) dont (bloc % nW) === rangeeDe ----
   // scene : { draws: [...] }, dyn : draws dynamiques de cette image
-  rendre({ pixels, W, H, cam, draws, rangeeDe = 0, nW = 1, params }) {
+  // `force` (facultatif) : Uint8Array W*H partage. Le rasteriseur y ecrit, pour chaque pixel dessine, la force d'exemption
+  // (0 = pixel normal, 255 = exempte de l'etalonnage de `image`). Effacee a 0 sur mes rangees au debut de l'image.
+  rendre({ pixels, W, H, cam, draws, rangeeDe = 0, nW = 1, params, force = null }) {
     const t0 = performance.now();
     if (!this.zbuf || this.zW !== W || this.zH !== H) { this.zbuf = new Float32Array(W * H); this.zW = W; this.zH = H; }
     const zb = this.zbuf;
     // effacement de la profondeur + ciel pour mes rangees
-    for (let y = 0; y < H; y++) if (((y >> 4) % nW) === rangeeDe) zb.fill(0, y * W, y * W + W);
+    for (let y = 0; y < H; y++) {
+      if (((y >> 4) % nW) !== rangeeDe) continue;
+      zb.fill(0, y * W, y * W + W);
+      if (force) force.fill(0, y * W, y * W + W);
+    }
     this.ciel(pixels, W, H, cam, rangeeDe, nW, params);
-    const cadre = { pixels, W, H, zb, rangeeDe, nW, params };
+    const cadre = { pixels, W, H, zb, rangeeDe, nW, params, fb: force };
     // camera
     const B = this.base(cam);
     const f = (H / 2) / Math.tan((cam.fov * Math.PI) / 360);
@@ -163,6 +169,8 @@ export class Rasteriseur {
     const mips = tex.niveaux;
     // etat du dessin pour tri()
     this.mode = mode; this.c = c; this.tex = tex;
+    // masque de couleur selective (maillages dynamiques seulement) : voir rendu/LISEZMOI.md
+    this.msk = d.masque ?? null; this.kM = d.kM ?? 256; this.kE = d.kE ?? 0; this.exFlag = d.exempt ? 255 : 0;
     const fin = sec.debut + sec.nb;
     let nTri = 0;
     for (let t = sec.debut; t < fin; t += 3) {
@@ -281,11 +289,15 @@ export class Rasteriseur {
     const duwx = (uw1 * dy2 - uw2 * dy1) * inv, duwy = (uw2 * dx1 - uw1 * dx2) * inv;
     const vw0 = VW[a] * TH, vw1 = VW[b] * TH - vw0, vw2 = VW[c] * TH - vw0;
     const dvwx = (vw1 * dy2 - vw2 * dy1) * inv, dvwy = (vw2 * dx1 - vw1 * dx2) * inv;
-    const r0 = R[a], r1 = R[b] - r0, r2 = R[c] - r0;
+    // lumiere globale (facteur par canal, 1 = inchange) : multiplie la couleur de sommet, donc tout le terrain et les acteurs
+    const LP = cx.params.lumiere;
+    const LR = LP ? LP[0] : 1, LG = LP ? LP[1] : 1, LB = LP ? LP[2] : 1;
+    const sat = LR > 1 || LG > 1 || LB > 1;     // la couleur peut depasser 255 : on la rabat
+    const r0 = R[a] * LR, r1 = R[b] * LR - r0, r2 = R[c] * LR - r0;
     const drx = (r1 * dy2 - r2 * dy1) * inv, dry = (r2 * dx1 - r1 * dx2) * inv;
-    const g0 = G[a], g1 = G[b] - g0, g2 = G[c] - g0;
+    const g0 = G[a] * LG, g1 = G[b] * LG - g0, g2 = G[c] * LG - g0;
     const dgx = (g1 * dy2 - g2 * dy1) * inv, dgy = (g2 * dx1 - g1 * dx2) * inv;
-    const b0 = B[a], b1 = B[b] - b0, b2 = B[c] - b0;
+    const b0 = B[a] * LB, b1 = B[b] * LB - b0, b2 = B[c] * LB - b0;
     const dbx = (b1 * dy2 - b2 * dy1) * inv, dby = (b2 * dx1 - b1 * dx2) * inv;
 
     // sommets tries par y : t (haut), m (milieu), l (bas)
@@ -301,6 +313,7 @@ export class Rasteriseur {
 
     const mode = this.mode;
     const params = cx.params;
+    const fb = cx.fb ?? null, msk = this.msk, kM = this.kM, kE = this.kE, exFlag = this.exFlag;
     const fogDeb = params.brumeDebut, ifog = 1 / Math.max(1e-6, params.brumeFin - params.brumeDebut);
     const fogR = params.brume[0], fogG = params.brume[1], fogB = params.brume[2];
     let nPix = 0;
@@ -340,6 +353,7 @@ export class Rasteriseur {
             const al = t >>> 24;
             if (al < 4) continue;
             let sr = ((t & 255) * r) >> 8, sg = (((t >> 8) & 255) * g) >> 8, sb = (((t >> 16) & 255) * bl) >> 8;
+            if (sat) { if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255; }
             if (w > fogDeb) { let ff = (w - fogDeb) * ifog; if (ff > 1) ff = 1; sr += (fogR - sr) * ff; sg += (fogG - sg) * ff; sb += (fogB - sb) * ff; }
             const dst = pixels[o];
             const a = al * (1 / 255);
@@ -353,12 +367,24 @@ export class Rasteriseur {
             let tu = (uw * w) | 0, tv = (vw * w) | 0;
             if (tu < 0) tu = 0; else if (tu >= TW) tu = TW - 1;
             if (tv < 0) tv = 0; else if (tv >= TH) tv = TH - 1;
-            const t = texd[tv * TW + tu];
+            const ti = tv * TW + tu;
+            const t = texd[ti];
             if ((t >>> 24) < 96) continue;
-            let sr = ((t & 255) * r) >> 8, sg = (((t >> 8) & 255) * g) >> 8, sb = (((t >> 16) & 255) * bl) >> 8;
+            let rr = r, gg = g, bb = bl, fo = exFlag;
+            if (msk !== null) {   // couleur selective : force d'exemption et lueur (pas d'ombrage) de ce texel
+              const mm = msk[ti];
+              if (mm !== 0) {
+                const f2 = ((mm * kM) / 255) | 0; if (f2 > fo) fo = f2 > 255 ? 255 : f2;
+                const e = ((mm * kE) / 255) | 0;
+                if (e !== 0) { const k = e * (1 / 256); rr += (256 - rr) * k; gg += (256 - gg) * k; bb += (256 - bb) * k; }
+              }
+            }
+            let sr = ((t & 255) * rr) >> 8, sg = (((t >> 8) & 255) * gg) >> 8, sb = (((t >> 16) & 255) * bb) >> 8;
+            if (sat) { if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255; }
             if (w > fogDeb) { let ff = (w - fogDeb) * ifog; if (ff > 1) ff = 1; sr += (fogR - sr) * ff; sg += (fogG - sg) * ff; sb += (fogB - sb) * ff; }
             zb[o] = iw;
             pixels[o] = (0xff000000 | ((sb | 0) << 16) | ((sg | 0) << 8) | (sr | 0)) >>> 0;
+            if (fb !== null) fb[o] = fo;
           }
         } else {
           for (; o < oe; o++, iw += diwx, uw += duwx, vw += dvwx, r += drx, g += dgx, bl += dbx) {
@@ -367,11 +393,23 @@ export class Rasteriseur {
             let tu = (uw * w) | 0, tv = (vw * w) | 0;
             if (tu < 0) tu = 0; else if (tu >= TW) tu = TW - 1;
             if (tv < 0) tv = 0; else if (tv >= TH) tv = TH - 1;
-            const t = texd[tv * TW + tu];
-            let sr = ((t & 255) * r) >> 8, sg = (((t >> 8) & 255) * g) >> 8, sb = (((t >> 16) & 255) * bl) >> 8;
+            const ti = tv * TW + tu;
+            const t = texd[ti];
+            let rr = r, gg = g, bb = bl, fo = exFlag;
+            if (msk !== null) {
+              const mm = msk[ti];
+              if (mm !== 0) {
+                const f2 = ((mm * kM) / 255) | 0; if (f2 > fo) fo = f2 > 255 ? 255 : f2;
+                const e = ((mm * kE) / 255) | 0;
+                if (e !== 0) { const k = e * (1 / 256); rr += (256 - rr) * k; gg += (256 - gg) * k; bb += (256 - bb) * k; }
+              }
+            }
+            let sr = ((t & 255) * rr) >> 8, sg = (((t >> 8) & 255) * gg) >> 8, sb = (((t >> 16) & 255) * bb) >> 8;
+            if (sat) { if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255; }
             if (w > fogDeb) { let ff = (w - fogDeb) * ifog; if (ff > 1) ff = 1; sr += (fogR - sr) * ff; sg += (fogG - sg) * ff; sb += (fogB - sb) * ff; }
             zb[o] = iw;
             pixels[o] = (0xff000000 | ((sb | 0) << 16) | ((sg | 0) << 8) | (sr | 0)) >>> 0;
+            if (fb !== null) fb[o] = fo;
           }
         }
       }

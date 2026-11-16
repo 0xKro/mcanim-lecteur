@@ -58,10 +58,13 @@ function rotZYX(rx, ry, rz) { // Rz * Ry * Rx
 // ---------------------------------------------------------------- le personnage
 export class Personnage {
   // skinRgba : 64x64x4 (Uint8Array), modele : 'wide' | 'slim'.
-  constructor({ rgba, modele = 'wide' }) {
+  // masque (facultatif) : { largeur: 64, hauteur: 64, valeurs: Uint8Array(4096) } ; meme disposition que le skin, force d'exemption 0..255
+  // par texel (couleur selective, voir rendu/LISEZMOI.md).
+  constructor({ rgba, modele = 'wide', masque = null }) {
     this.modele = modele;
     this.parties = definirParties(modele === 'slim');
     this.texture = { largeur: 64, hauteur: 64, rgba };
+    this.masque = masque;
     this._construire();
   }
 
@@ -137,7 +140,12 @@ export class Personnage {
       const o = ombre(vx, vy, vz) * lumiere;
       couleurs[s * 3] = o; couleurs[s * 3 + 1] = o; couleurs[s * 3 + 2] = o;
     }
-    return { positions, uvs: this.uvs, couleurs, indices: this.indices, texture: this.texture, mode: 'decoupe' };
+    const m = { positions, uvs: this.uvs, couleurs, indices: this.indices, texture: this.texture, mode: 'decoupe' };
+    // couleur selective : `lueur` (0..1) absent = le masque protege (force 1) mais n'eclaire pas ; present = il multiplie la force
+    // ET rend les pixels du masque lumineux (non assombris par la lumiere ni l'ombrage). `horsImage` = tout le corps est exempte.
+    if (this.masque) { m.masque = this.masque; m.forceMasque = pose.lueur ?? 1; m.lueur = pose.lueur ?? 0; }
+    if (pose.horsImage) m.exempt = true;
+    return m;
   }
 
   // Rotation (R) et position du pivot (t, en blocs, repere du modele) de chaque partie.

@@ -8,6 +8,7 @@ import { ensureKit } from '../index.js';
 import { FileSource, readCentralDirectory, extractWanted } from '../zip.js';
 import { sha256Base64url } from './empreinte.js';
 import { dossierKit } from '../rendu/scene.js';
+import { decoderPNG } from '../rendu/png.js';
 
 export const BASE_ZONES = 'https://raw.githubusercontent.com/0xKro/mcanim-zones/main';
 
@@ -150,4 +151,57 @@ export async function appliquerPack(kitDir, packChemin, { env = process.env } = 
   }
   fs.writeFileSync(path.join(cible, '.pret'), '');
   return cible;
+}
+
+// ---------------------------------------------------------------- textures de la scene (champ `textures`)
+export const TEXTURE_MAX_COTE = 1024;
+const estPuissance2 = (n) => n > 0 && (n & (n - 1)) === 0;
+
+// Verifie un PNG de remplacement par rapport a la texture d'origine du kit : taille multiple de l'originale, ou puissance de 2.
+export function verifierTailleTexture(nom, l, h, lo, ho) {
+  if (l > TEXTURE_MAX_COTE || h > TEXTURE_MAX_COTE) throw new Error(`texture "${nom}" : ${l}x${h} est trop grand (maximum ${TEXTURE_MAX_COTE}x${TEXTURE_MAX_COTE})`);
+  const multiple = l % lo === 0 && h % ho === 0;
+  if (!multiple && !(estPuissance2(l) && estPuissance2(h))) throw new Error(`texture "${nom}" : ${l}x${h} refuse ; l'original fait ${lo}x${ho} : prends la meme taille, un multiple (${lo * 2}x${ho * 2}...) ou une puissance de 2`);
+}
+
+// Fabrique (ou reutilise) un kit "fusionne" ou les textures de `textures` ({ "block/oak_leaves": "feuilles.png" }) remplacent celles
+// de `kitDir` (qui peut deja etre un kit fusionne avec un pack : les textures de la scene passent par-dessus). Les chemins des PNG
+// sont relatifs a `baseDir` (le dossier de la scene). Retourne le dossier du kit fusionne ; le kit de base n'est jamais modifie.
+export function appliquerTextures(kitDir, textures, baseDir, { env = process.env } = {}) {
+  const noms = Object.keys(textures).sort();
+  const h = crypto.createHash('sha256');
+  const prets = noms.map((nom) => {
+    const fichier = path.resolve(baseDir, textures[nom]);
+    if (!fs.existsSync(fichier)) throw new Error(`textures["${nom}"] : fichier introuvable : ${textures[nom]}`);
+    const octets = fs.readFileSync(fichier);
+    const original = path.join(kitDir, 'assets', 'minecraft', 'textures', ...nom.split('/')) + '.png';
+    if (!fs.existsSync(original)) throw new Error(`textures["${nom}"] : texture inconnue du jeu (mcanim texture ${nom} dit si elle existe)`);
+    let im, io;
+    try { im = decoderPNG(octets); } catch (e) { throw new Error(`textures["${nom}"] : PNG illisible (${e.message})`); }
+    io = decoderPNG(fs.readFileSync(original));
+    verifierTailleTexture(nom, im.largeur, im.hauteur, io.largeur, io.hauteur);
+    h.update(nom).update(octets);
+    return { nom, octets };
+  });
+  const cible = path.join(dossierCache(env), 'kits-pack', `${path.basename(path.dirname(kitDir))}-${path.basename(kitDir)}-tex-${h.digest('base64url').slice(0, 16)}`);
+  if (fs.existsSync(path.join(cible, '.pret'))) return cible;
+  fs.rmSync(cible, { recursive: true, force: true });
+  copierKit(kitDir, cible);
+  for (const { nom, octets } of prets) {
+    const f = path.join(cible, 'assets', 'minecraft', 'textures', ...nom.split('/')) + '.png';
+    fs.rmSync(f, { force: true });          // d'abord le lien dur : ne jamais ecrire dans le kit de base
+    fs.writeFileSync(f, octets);
+  }
+  fs.writeFileSync(path.join(cible, '.pret'), '');
+  return cible;
+}
+
+// Copie d'un kit (liens durs quand c'est possible : presque pas de place prise)
+function copierKit(src, dst) {
+  fs.mkdirSync(dst, { recursive: true });
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, e.name), d = path.join(dst, e.name);
+    if (e.isDirectory()) copierKit(s, d);
+    else { try { fs.linkSync(s, d); } catch { fs.copyFileSync(s, d); } }
+  }
 }

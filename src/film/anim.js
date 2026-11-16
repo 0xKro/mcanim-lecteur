@@ -19,24 +19,45 @@ const normaliser180 = (a) => { a = (a + 180) % 360; if (a < 0) a += 360; return 
 // ---------------------------------------------------------------- pose d'un acteur au temps t (sans position)
 function valeurPiste(piste, t, defaut) { return piste ? evaluer(piste, t) : defaut; }
 
+// Temps du monde avec gel (voir docs/CONCEPTION.md, "Gel") : `gel` = intervalles [debut, fin] tries.
+//   monde(x) : temps "ecoule dans le monde" = x moins les secondes gelees avant x (il ne bouge pas pendant un gel).
+//   etat(t)  : { tw, fige } ; tw = t, ou le debut du gel quand t est dans un gel. Les boucles sont jugees (fenetre, fondu) a tw
+//              et leur phase avance avec monde(tw) : pendant un gel la pose des boucles ne change plus du tout.
+export function horlogeMonde(gel = []) {
+  const monde = (x) => { let g = 0; for (const [a, b] of gel) { if (x > a) g += Math.min(x, b) - a; } return x - g; };
+  const etat = (t) => { for (const [a, b] of gel) if (t >= a && t < b) return { tw: a, fige: true }; return { tw: t, fige: false }; };
+  return { monde, etat };
+}
+
 // Somme des boucles actives pour une piste donnee. Retourne un tableau de `n` valeurs.
-function sommeBoucles(a, nom, t, n) {
+// `h` (facultatif) : { tw, monde } voir horlogeMonde ; sans lui, le temps normal.
+function sommeBoucles(a, nom, t, n, h = null) {
   const s = new Array(n).fill(0);
+  const tw = h ? h.tw : t;
   for (const b of a.boucles) {
     const piste = b.pistes[nom];
     if (!piste) continue;
-    const w = poidsBoucle(b, t);
+    const w = poidsBoucle(b, tw);
     if (w <= 0) continue;
-    const v = evaluerPhase(piste, (t - b.de) / b.periode);
+    const phase = h ? (h.monde(tw) - h.monde(b.de)) / b.periode : (t - b.de) / b.periode;
+    const v = evaluerPhase(piste, phase);
     for (let i = 0; i < n; i++) s[i] += w * (v[i] ?? 0);
   }
   return s;
 }
 
-function membre(a, nom, t) {
+function membre(a, nom, t, h) {
   const base = a[nom] ? evaluer(a[nom], t) : ZERO2;
-  const b = sommeBoucles(a, nom, t, 2);
+  const b = sommeBoucles(a, nom, t, 2, h);
   return [(base[0] ?? 0) + b[0], (base[1] ?? 0) + b[1]];
+}
+
+// Skin actif au temps t : la reference de la derniere cle `skins` atteinte, ou null (= le champ `skin` de l'acteur).
+function skinEn(a, t) {
+  if (!a.skins) return null;
+  let ref = null;
+  for (const k of a.skins.cles) { if (k.t <= t) ref = k.ref; else break; }
+  return ref;
 }
 
 // ---------------------------------------------------------------- animation complete
@@ -79,9 +100,15 @@ export function animer(scene, terrain = {}) {
   });
 
   // ---- passe 1 : acteurs, image par image (l'etat avance avec le temps)
-  const parImage = [];
+  const parImage = [], infosImage = [];
+  const gel = scene.gel ?? [];
+  const horloge = horlogeMonde(gel);
   for (let i = 0; i < n; i++) {
     const t = i * DT;
+    const { tw, fige } = horloge.etat(t);
+    // sans gel on garde exactement le calcul d'avant (h = null)
+    const h = gel.length ? { tw, monde: horloge.monde } : null;
+    infosImage.push({ fige, tm: gel.length ? horloge.monde(t) : t });
     parImage.push(acteurs.map((a, k) => {
       const e = etat[k];
       const p = evaluer(e.pistePos, t);
@@ -93,6 +120,8 @@ export function animer(scene, terrain = {}) {
       if (Number.isFinite(p[1])) {
         e.y = p[1]; e.vy = 0;
         auSol = e.y <= solY + 0.05;
+      } else if (fige && i > 0) {         // monde gele : ni chute, ni montee automatique
+        auSol = Math.abs(e.y - solY) < 0.05;
       } else if (i === 0) {
         e.y = solY; e.vy = 0; auSol = true;
       } else if (solY > e.y) {            // marche a monter : on monte vite mais pas d'un coup
@@ -109,24 +138,30 @@ export function animer(scene, terrain = {}) {
       // --- direction du corps
       let lacet;
       const dx = x - e.xPrec, dz = z - e.zPrec;
-      if (i > 0 && Math.hypot(dx, dz) / DT > VITESSE_MARCHE_MINI && !a.lacet) {
+      if (!fige && i > 0 && Math.hypot(dx, dz) / DT > VITESSE_MARCHE_MINI && !a.lacet) {   // gel : le corps ne se retourne plus tout seul
         const cible = Math.atan2(-dx, dz) / RAD;
         e.lacet += normaliser180(cible - e.lacet) * (1 - Math.pow(0.7, 20 * DT)); // 0,3 par tick de 1/20 s, comme le jeu
       }
       e.xPrec = x; e.zPrec = z;
-      if (a.lacet) lacet = evaluer(a.lacet, t)[0] + sommeBoucles(a, 'lacet', t, 1)[0];
-      else lacet = e.lacet + sommeBoucles(a, 'lacet', t, 1)[0];
+      if (a.lacet) lacet = evaluer(a.lacet, t)[0] + sommeBoucles(a, 'lacet', t, 1, h)[0];
+      else lacet = e.lacet + sommeBoucles(a, 'lacet', t, 1, h)[0];
 
       // --- membres, tete, buste
       const th = valeurPiste(a.tete, t, ZERO2);
-      const tb = sommeBoucles(a, 'tete', t, 2);
-      const corps = (a.corps ? evaluer(a.corps, t)[0] : 0) + sommeBoucles(a, 'corps', t, 1)[0];
+      const tb = sommeBoucles(a, 'tete', t, 2, h);
+      const corps = (a.corps ? evaluer(a.corps, t)[0] : 0) + sommeBoucles(a, 'corps', t, 1, h)[0];
       const accroupi = a.accroupi ? Math.min(1, Math.max(0, evaluer(a.accroupi, t)[0])) : 0;
-      return {
+      const pose = {
         nom: a.nom, x, y: e.y, z, sol: solY, auSol, lacet,
         tete: [th[0] + tb[0], th[1] + tb[1]], penche: corps, accroupi,
-        brasD: membre(a, 'brasD', t), brasG: membre(a, 'brasG', t), jambeD: membre(a, 'jambeD', t), jambeG: membre(a, 'jambeG', t),
+        brasD: membre(a, 'brasD', t, h), brasG: membre(a, 'brasG', t, h), jambeD: membre(a, 'jambeD', t, h), jambeG: membre(a, 'jambeG', t, h),
       };
+      // apparence (pistes facultatives : rien n'est ajoute si elles manquent)
+      const sk = skinEn(a, t);
+      if (sk) pose.skin = sk;
+      if (a.horsImage) pose.horsImage = evaluer(a.horsImage, t)[0] >= 0.5;
+      if (a.lueur) pose.lueur = evaluer(a.lueur, t)[0];
+      return pose;
     }));
   }
 
@@ -175,7 +210,7 @@ export function animer(scene, terrain = {}) {
       tangageCam = Math.atan2(-dy, h) / RAD;
     }
     if (corrigee[i]) corrections++;
-    images.push({ t, acteurs: parImage[i], camera: { x: pos[i][0], y: pos[i][1], z: pos[i][2], lacet: lacetCam, tangage: tangageCam, fov: evaluer(c.fov, t)[0] }, corrigee: corrigee[i] });
+    images.push({ t, fige: infosImage[i].fige, tm: infosImage[i].tm, acteurs: parImage[i], camera: { x: pos[i][0], y: pos[i][1], z: pos[i][2], lacet: lacetCam, tangage: tangageCam, fov: evaluer(c.fov, t)[0] }, corrigee: corrigee[i] });
   }
   return { images, corrections, notes, camera: statCamera };
 }

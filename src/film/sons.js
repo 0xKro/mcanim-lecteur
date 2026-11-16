@@ -100,6 +100,7 @@ export function planifierSons({ scene, images, zone, sons }) {
       for (let i = 1; i < images.length; i++) {
         const p = images[i].acteurs[k], q = images[i - 1].acteurs[k];
         if (!p.auSol || !q.auSol) continue;
+        if (images[i].fige) continue;      // monde gele (champ `gel`) : plus de pas automatiques
         const d = Math.hypot(p.x - q.x, p.z - q.z);
         const avant = mouvement;
         mouvement += d * 0.6;

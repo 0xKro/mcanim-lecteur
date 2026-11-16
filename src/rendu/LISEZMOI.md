@@ -27,10 +27,13 @@ await scene.fermer();   // arrete les workers (sinon le programme ne se termine 
 - `options` : `rayonMelange` (flou des teintes de biome, defaut 2), `aoActif` (defaut vrai), `gamma` (reglage de luminosite du jeu, 0,5 par defaut ; 0 = courbe pure).
 - `scene.temps` : `{ lectureMs, maillageMs, totalMs }`. `scene.maillage.stats` : nombre de quads. `scene.modeles.manquants` : etats sans modele/texture (Map etat -> raison) ; `scene.modeles.speciaux` : coffres, lits... dessines par du code dans le jeu (boite de remplacement ou rien) ; `scene.textures.manquantes`.
 
-### `await scene.rendre({ camera, largeur, hauteur, temps, maillagesDynamiques, ssaa, mip, brume, ciel, soleil, copie }) -> Uint8Array`
+### `await scene.rendre({ camera, largeur, hauteur, temps, maillagesDynamiques, ssaa, mip, brume, ciel, soleil, lumiere, image, copie }) -> Uint8Array`
 - `temps` : secondes ; choisit l'image des textures animees (eau, lave...), 20 ticks par seconde, sans interpolation.
 - `ssaa` : 1 (defaut) ou 2 = rendu en 2x2 puis reduction (coute environ 3 fois plus). `mip: false` supprime les petits niveaux de texture (plus lent et plus de scintillement a distance).
 - `brume: { debut, fin, couleur:[r,g,b] }` : brouillard de distance (defaut : de 55 % a 100 % de la distance de vue = 1,15 x demi-zone). `ciel: { zenith, horizon, bas }` couleurs [r,g,b] 0..255. `soleil: [dx,dy,dz]` direction du soleil, ou `false`.
+- `lumiere: [r,g,b]` : facteur de lumiere GLOBAL par canal (1,1,1 = inchange, c'est le defaut). Il multiplie la couleur de chaque sommet au dessin (terrain ET maillages dynamiques) : le maillage n'est pas refait. Au-dessus de 1, la couleur est ecretee a 255. Ne touche pas le ciel.
+- `brume: { debut, fin, couleur }` : chaque champ est facultatif ; si `debut` est donne sans `fin`, `fin` vaut au moins `debut + 8`.
+- `image: { saturation, contraste, luminosite, teinte:[r,g,b], vignette, flou, fondu:[a,r,g,b] }` : post-traitement applique a l'image finale (voir « Post-traitement » plus bas). Tout est facultatif ; neutre = rien, cout nul.
 - Sous l'eau (camera dans une cellule d'eau) : brouillard bleu court automatique.
 - `copie: false` renvoie la memoire partagee interne (valable jusqu'au prochain `rendre`) : plus rapide si on encode tout de suite.
 - Les images `rendre` ne doivent pas se chevaucher : attendre la fin de l'une avant la suivante.
@@ -45,6 +48,11 @@ mesh = {
   texture: { largeur, hauteur, rgba: Uint8Array },  // RGBA 8 bits, ligne du haut d'abord, non pre-multiplie ; filtrage "plus proche"
   mode: 'opaque' | 'decoupe' | 'melange',
   deuxFaces: false,          // facultatif : true = dessine aussi les faces arriere (plans fins, capes)
+  // couleur selective (facultatif, voir plus bas) :
+  masque: { largeur, hauteur, valeurs: Uint8Array },  // un octet (0..255) par texel de `texture`, meme taille qu'elle ; la force d'exemption
+  forceMasque: 1,            // 0..1, multiplie la force du masque (defaut 1)
+  lueur: 0,                  // 0..1 : part "lumineuse" des texels du masque (non assombris par les couleurs de sommet) (defaut 0)
+  exempt: false,             // true : tous les pixels du maillage sont exemptes (force 255), sans masque
 }
 ```
 - Meme nombre de sommets partout : `positions.length/3 === uvs.length/2 === couleurs.length/3`.
@@ -53,6 +61,16 @@ mesh = {
 - Cache des textures : une texture est envoyee aux workers la premiere fois qu'on voit son tableau `rgba` (identite de l'objet). Pour changer les pixels, donner un NOUVEAU tableau.
 - Cout : les tableaux sont copies a chaque image ; viser quelques dizaines de milliers de triangles par image.
 - Test z : les maillages dynamiques se cachent correctement avec le terrain.
+
+### Couleur selective et post-traitement `image`
+- But : un film peut griser (ou teinter) toute l'image tout en gardant la couleur de certains pixels (cheveux, yeux...).
+- Le rasteriseur ecrit pour chaque pixel dessine par un maillage `opaque` ou `decoupe` une **force d'exemption** (Uint8, 0..255) dans un tampon `W x H` partage entre workers (une SharedArrayBuffer ; chaque worker n'ecrit que ses rangees ; efface a 0 au debut de chaque image). Le terrain l'ecrit a 0 (un bloc devant un personnage l'efface). Un maillage `melange` ne l'ecrit pas.
+- Force d'un pixel = `max(exempt ? 255 : 0, texel_du_masque x forceMasque)`. Lueur : la couleur de sommet (ombrage x lumiere) est poussee vers 1 dans la proportion `texel x lueur / 255` ; le pixel n'est donc pas assombri (les yeux brillent a l'ombre). Le brouillard de distance s'applique encore.
+- Le tampon n'est alloue et rempli que si `image` est active ET qu'un maillage porte `masque` ou `exempt` : sinon aucun cout supplementaire (un test par pixel dans le dessin du terrain, mesure sans effet visible sur le temps de rendu).
+- Avec `ssaa: 2`, la force est reduite (moyenne) comme les couleurs, puis le post-traitement s'applique a l'image reduite.
+- Les masques sont envoyes aux workers comme les textures : la premiere fois qu'on voit le tableau `valeurs` (identite de l'objet). Un nouveau masque = un NOUVEAU tableau.
+
+**Post-traitement** (`post.js`), ordre fixe : 1. flou en boite (rayon 0..32 px, deux passes, bords repetes) ; 2. saturation (0..2 ; gris = 0,30 R + 0,59 V + 0,11 B) ; 3. teinte (x r,g,b, 0..2) ; 4. contraste (0..3, autour de 127,5) ; 5. luminosite (x l, 0..3) ; [les pixels exemptes retrouvent leur couleur d'avant l'etalonnage 2 a 5, melangee selon la force] ; 6. vignette (0..1) ; 7. fondu (vers la couleur r,g,b a la part a). Calcul entier + tables, sans allocation par pixel. Le flou travaille sur l'image entiere dans le thread principal ; tout le reste se fait par bandes de 16 rangees, dans les workers (chacun les siennes) quand `ssaa` vaut 1 et qu'il n'y a pas de flou, sinon dans le thread principal. Mesure (1920x1080, 1 thread) : saturation 14 ms, vignette ou fondu 8 ms, flou 35 ms.
 
 ### Aides pour l'IA et les collisions
 - `scene.resumeTerrain({ pas }) -> objet JSON` (moins de 1,8 Ko pour une zone de rayon 48) : `zone` (bornes, biomes), `sol` (`min`, `max`, `mediane` : Y du dessus du sol), `eau` (3 plus grandes etendues : boite x/z, niveau y), `nbArbres`, `chemins` (3-4 couloirs droits praticables pour un acteur ET une camera de suivi : `{de:[x,z], a:[x,z], longueur, denivele, degagement}`, entiers, meilleur d'abord ; `degagement` = % du trajet ou la camera, 4 blocs derriere / 2 au-dessus, a la place et voit la tete), `clairieres` (1-2 endroits ouverts : `{centre:[x,z], rayon}`), `grille` (sol grossier ; retiree si le texte depasse 1,8 Ko).
@@ -73,7 +91,8 @@ mesh = {
 | `textures.js` | textures du kit, couches (opaque / decoupe / melange), animations `.mcmeta`, atlas a 4 niveaux de mip |
 | `teinte.js` | couleurs de biome (herbe, feuillage, feuillage sec, eau) |
 | `maillage.js` | mailleur : culling, lumiere du ciel, AO, teintes, eau/lave |
-| `raster.js` | rasteriseur (coeur, utilise par les workers et en direct) |
+| `raster.js` | rasteriseur (coeur, utilise par les workers et en direct ; lumiere globale, force d'exemption) |
+| `post.js` | post-traitement de l'image finale (`image`) |
 | `travailleur.js` | worker de rendu |
 | `chemins.js` | couloirs praticables, clairieres, eau, verification d'un segment (pour `resumeTerrain`) |
 | `scene.js` | l'API ci-dessus |
@@ -85,7 +104,7 @@ mesh = {
 - Les textures animees sont reecrites dans l'atlas partage avant chaque image (quelques sprites de 16x16).
 
 ## Defauts connus
-- Pas de lumiere de blocs (sauf blocs emissifs traites comme pleine lumiere), pas de nuit, pas d'ombre portee, pas de nuages.
+- Pas de lumiere de blocs (sauf blocs emissifs traites comme pleine lumiere), pas d'ombre portee, pas de nuages. La nuit n'existe que comme facteur global (`lumiere`, voir `film/look.js`), sans lune, etoiles ni torches allumees.
 - Eau : plan plat a 14/16, pas de lissage des coins, pas de courant, tri des surfaces translucides par section seulement.
 - Les blocs dessines par code dans le jeu (coffres, lits, panneaux, banniere, tetes) sont une boite de remplacement ou absents.
 - Aux bords de la zone, le terrain s'arrete net : on voit le ciel en dessous de l'horizon (le brouillard le cache en partie).

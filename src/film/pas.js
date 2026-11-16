@@ -48,7 +48,7 @@ function pieds(p) {
 export function instantsDePas(images, k) {
   const n = images.length;
   const P = images.map((im) => pieds(im.acteurs[k]));
-  const libre = images.map((im) => im.acteurs[k].auSol && !im.fige);   // au sol et monde non gele
+  const libre = images.map((im) => im.acteurs[k].auSol && !im.fige && !im.acteurs[k].eau && Math.abs(im.acteurs[k].bascule ?? 0) < 30);   // au sol et monde non gele
   // seuils : mesures sur les images utilisables
   let lo = Infinity, hi = -Infinity;
   for (let i = 0; i < n; i++) if (libre[i]) for (const f of PIEDS) { lo = Math.min(lo, P[i][f].h); hi = Math.max(hi, P[i][f].h); }

@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { chargerScene } from '../rendu/scene.js';
 import { encoderPNG } from '../rendu/png.js';
 import { animer } from './anim.js';
+import { terrainDepuis } from './physique.js';
 import { imageEn, cielEn } from './look.js';
 import { Personnage } from '../perso/modele.js';
 import { resoudreSkin } from '../perso/skin.js';
@@ -57,7 +58,7 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
     rs.definirShader(sh);
     const notes = sh ? sh.notes : [];
     const { personnages, parRef, infos } = await preparerPersonnages(scene, { kitDir: kit, surcharges, baseDir });
-    const terrain = { solEn: (x, z) => rs.solEn(x, z), estLibre: (x, y, z) => rs.estLibre(x, y, z), solide: (x, y, z) => rs.estSolidePourCamera(x, y, z) };
+    const terrain = terrainDepuis(rs);
     const anim = animer(scene, terrain);
     const lumiere = personnages.map(() => null);
     // une image : personnages (skin du moment, lumiere du lieu), ciel, lumiere globale, puis post-traitement `image`
@@ -100,7 +101,7 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
 
     // --- son
     const sons = new Sons(film.kit, ffmpeg);
-    const plan = planifierSons({ scene, images, zone: rs.zone, sons });
+    const plan = planifierSons({ scene, images, zone: rs.zone, sons, sims: anim.sims });
     const pcm = mixer({ evenements: plan.evenements, duree: scene.duree, sons });
     tmpAudio = path.join(os.tmpdir(), `mcanim-audio-${process.pid}-${Date.now()}.raw`);
     fs.writeFileSync(tmpAudio, pcm);

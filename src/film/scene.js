@@ -9,7 +9,9 @@ const MEMBRES = ['brasD', 'brasG', 'jambeD', 'jambeG'];
 // Articulations : une valeur par cle, en degres (0 = membre droit, 0 a 150 ; dans une boucle -150 a 150, la somme est ramenee a 0..150).
 export const ARTICULATIONS = ['coudeD', 'coudeG', 'genouD', 'genouG'];
 export const FLEXION_MAX = 150;
-const PISTES_BOUCLE = [...MEMBRES, ...ARTICULATIONS, 'tete', 'corps', 'lacet'];
+// Orientation du corps entier : bascule et roulis en degres (voir perso/modele.js, inclinaison), hauteur : decalage vertical en blocs.
+export const BASCULE_MAX = 180, HAUTEUR_MAX = 10;
+const PISTES_BOUCLE = [...MEMBRES, ...ARTICULATIONS, 'tete', 'corps', 'lacet', 'bascule', 'roulis', 'hauteur'];
 export const MAX_CLES_SKINS = 16, MAX_GELS = 8, MAX_TEXTURES = 32;
 
 export class ErreurScene extends Error {
@@ -165,6 +167,11 @@ export function validerScene(s) {
     if (a.lacet !== undefined) o.lacet = lirePiste(a.lacet, `${ch}.lacet`, { minArite: 1, maxArite: 1 });
     if (a.tete !== undefined) o.tete = lirePiste(a.tete, `${ch}.tete`, { minArite: 2, maxArite: 2 });
     if (a.corps !== undefined) o.corps = lirePiste(a.corps, `${ch}.corps`, { minArite: 1, maxArite: 1 });
+    if (a.bascule !== undefined) o.bascule = borner(lirePiste(a.bascule, `${ch}.bascule`, { minArite: 1, maxArite: 1 }), `${ch}.bascule`, -BASCULE_MAX, BASCULE_MAX);
+    if (a.roulis !== undefined) o.roulis = borner(lirePiste(a.roulis, `${ch}.roulis`, { minArite: 1, maxArite: 1 }), `${ch}.roulis`, -BASCULE_MAX, BASCULE_MAX);
+    if (a.hauteur !== undefined) o.hauteur = borner(lirePiste(a.hauteur, `${ch}.hauteur`, { minArite: 1, maxArite: 1 }), `${ch}.hauteur`, -HAUTEUR_MAX, HAUTEUR_MAX);
+    if (a.reactions !== undefined && typeof a.reactions !== 'boolean') err(`${ch}.reactions`, 'true ou false attendu (false : coupe les reactions automatiques du corps au saut, a la chute et a l atterrissage)');
+    o.reactions = a.reactions !== false;
     if (a.accroupi !== undefined) o.accroupi = lirePiste(a.accroupi, `${ch}.accroupi`, { minArite: 1, maxArite: 1 });
     for (const m of MEMBRES) if (a[m] !== undefined) o[m] = lirePiste(a[m], `${ch}.${m}`, { minArite: 1, maxArite: 2 });
     for (const m of ARTICULATIONS) if (a[m] !== undefined) o[m] = borner(lirePiste(a[m], `${ch}.${m}`, { minArite: 1, maxArite: 1 }), `${ch}.${m}`, 0, FLEXION_MAX);
@@ -305,9 +312,11 @@ function lireBoucle(b, ch, duree) {
   const o = { de: b.de, a: b.a, periode: b.periode, fondu: b.fondu ?? 0.2, pistes: {} };
   for (const nom of PISTES_BOUCLE) {
     if (b[nom] === undefined) continue;
-    const a = nom === 'tete' ? { minArite: 2, maxArite: 2 } : nom === 'corps' || nom === 'lacet' || ARTICULATIONS.includes(nom) ? { minArite: 1, maxArite: 1 } : { minArite: 1, maxArite: 2 };
+    const a = nom === 'tete' ? { minArite: 2, maxArite: 2 } : ['corps', 'lacet', 'bascule', 'roulis', 'hauteur'].includes(nom) || ARTICULATIONS.includes(nom) ? { minArite: 1, maxArite: 1 } : { minArite: 1, maxArite: 2 };
     o.pistes[nom] = lirePiste(b[nom], `${ch}.${nom}`, { ...a, temps: [0, 1] });
     if (ARTICULATIONS.includes(nom)) borner(o.pistes[nom], `${ch}.${nom}`, -FLEXION_MAX, FLEXION_MAX);
+    if (nom === 'bascule' || nom === 'roulis') borner(o.pistes[nom], `${ch}.${nom}`, -BASCULE_MAX, BASCULE_MAX);
+    if (nom === 'hauteur') borner(o.pistes[nom], `${ch}.${nom}`, -HAUTEUR_MAX, HAUTEUR_MAX);
   }
   return o;
 }

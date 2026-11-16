@@ -265,7 +265,8 @@ export class Personnage {
     const th = (180 - (pose.lacet ?? 0)) * RAD;
     const ct = Math.cos(th), st = Math.sin(th);
     const crouch = pose.accroupi ?? 0;
-    const dy = pose.dy ?? 0;
+    const dy = (pose.dy ?? 0) + (pose.hauteur ?? 0);
+    const inc = inclinaison(pose.bascule, pose.roulis);   // null : corps droit, rendu d'avant inchange
     const nS = cfg.partie.length;
     const positions = new Float32Array(nS * 3), couleurs = new Float32Array(nS * 3);
     for (let s = 0; s < nS; s++) {
@@ -274,12 +275,12 @@ export class Personnage {
       // repere du modele (blocs), puis chaine vers le monde
       let px = m.R[0] * lx + m.R[1] * ly + m.R[2] * lz, py = m.R[3] * lx + m.R[4] * ly + m.R[5] * lz, pz = m.R[6] * lx + m.R[7] * ly + m.R[8] * lz;
       px = px / 16 + m.t[0]; py = py / 16 + m.t[1]; pz = pz / 16 + m.t[2];
-      const [wx, wy, wz] = versMonde(px, py, pz, ct, st);
+      const [wx, wy, wz] = versMonde(px, py, pz, ct, st, inc);
       positions[s * 3] = pose.x + wx; positions[s * 3 + 1] = pose.y + wy - BAISSE_ACCROUPI * crouch + dy; positions[s * 3 + 2] = pose.z + wz;
       // ombrage : normale tournee, puis mise au carre pour un passage doux entre les faces
       const nx = cfg.normales[s * 3], ny = cfg.normales[s * 3 + 1], nz = cfg.normales[s * 3 + 2];
       const rx = m.R[0] * nx + m.R[1] * ny + m.R[2] * nz, ry = m.R[3] * nx + m.R[4] * ny + m.R[5] * nz, rz = m.R[6] * nx + m.R[7] * ny + m.R[8] * nz;
-      const [vx, vy, vz] = versMondeDir(rx, ry, rz, ct, st);
+      const [vx, vy, vz] = versMondeDir(rx, ry, rz, ct, st, inc);
       const o = ombre(vx, vy, vz) * lumiere;
       couleurs[s * 3] = o; couleurs[s * 3 + 1] = o; couleurs[s * 3 + 2] = o;
     }
@@ -373,20 +374,63 @@ const basDesPieds = (pose) => Math.min(...coinsPieds(pose).map((c) => c.haut));
 // Zero exactement sans flexion de genou ET jambes a la verticale. (anim.js l'attenue quand l'acteur quitte le sol.)
 const SOL = basDesPieds({});
 export const DESCENTE_MAX = 0.12;   // blocs : amplitude maximale de l'appui (bob d'une marche : 0,02 a 0,08)
-export function compensationAppui(pose) {
+export function compensationAppui(pose, descenteMax = DESCENTE_MAX) {
   const dy = SOL - basDesPieds(pose);
-  return Math.max(-DESCENTE_MAX, Math.min(0.04, dy));
+  return Math.max(-descenteMax, Math.min(0.04, dy));
 }
 
 // Repere du modele (blocs, Y bas) -> monde relatif aux pieds (blocs, Y haut).
-function versMonde(px, py, pz, ct, st) {
+function versMonde(px, py, pz, ct, st, inc = null) {
   // decalage, echelle, symetrie (-1,-1,1)
-  const x = -px * ECHELLE, y = -(py + DECALAGE_Y) * ECHELLE, z = pz * ECHELLE;
+  let x = -px * ECHELLE, y = -(py + DECALAGE_Y) * ECHELLE, z = pz * ECHELLE;
+  if (inc) [x, y, z] = inc.point(x, y, z);
   return [x * ct + z * st, y, -x * st + z * ct];
 }
-function versMondeDir(px, py, pz, ct, st) {
-  const x = -px, y = -py, z = pz;
+function versMondeDir(px, py, pz, ct, st, inc = null) {
+  let x = -px, y = -py, z = pz;
+  if (inc) [x, y, z] = inc.dir(x, y, z);
   return [x * ct + z * st, y, -x * st + z * ct];
+}
+
+// ---------------------------------------------------------------- orientation du corps entier (bascule, roulis)
+// Pivot : les hanches (haut des jambes), a 12 px de hauteur du modele = 0,704 bloc au-dessus des pieds. Repere avant le lacet :
+// l'avant du joueur est -Z, sa droite +X, le haut +Y. bascule > 0 : le haut du corps part vers l'avant (90 = a plat, face au sol) ;
+// roulis > 0 : le haut part vers la droite du joueur. Le roulis tourne autour de l'axe avant du monde APRES la bascule : couche sur
+// le ventre (bascule 90), roulis 90 = couche sur le cote droit.
+export const PIVOT_HANCHE = -(12 / 16 + DECALAGE_Y) * ECHELLE;
+export function inclinaison(bascule = 0, roulis = 0) {
+  if (!bascule && !roulis) return null;
+  const b = (bascule || 0) * RAD, r = (roulis || 0) * RAD;
+  const cb = Math.cos(b), sb = Math.sin(b), cr = Math.cos(r), sr = Math.sin(r);
+  const dir = (x, y, z) => {
+    const y1 = y * cb + z * sb, z1 = -y * sb + z * cb;     // bascule autour de l'axe X
+    return [x * cr + y1 * sr, -x * sr + y1 * cr, z1];       // roulis autour de l'axe avant
+  };
+  return { dir, point: (x, y, z) => { const v = dir(x, y - PIVOT_HANCHE, z); return [v[0], v[1] + PIVOT_HANCHE, v[2]]; } };
+}
+// Decalage vertical (blocs) pour que le point le plus bas du corps incline touche le sol (hauteur 0 = pieds sur le sol, corps droit).
+// 0 sans inclinaison. Les boites des six parties, membres tendus.
+export function descenteBascule(bascule = 0, roulis = 0) {
+  const inc = inclinaison(bascule, roulis);
+  if (!inc) return 0;
+  let bas = Infinity;
+  for (const p of PARTIES_REF) {
+    const g = p.ext.g;
+    for (const x of [p.orig[0] - g, p.orig[0] + p.taille[0] + g]) for (const y of [p.orig[1] - g, p.orig[1] + p.taille[1] + g]) for (const z of [p.orig[2] - g, p.orig[2] + p.taille[2] + g]) {
+      const [wx, wy, wz] = inc.point(-(x + p.pivot[0]) / 16 * ECHELLE, -((y + p.pivot[1]) / 16 + DECALAGE_Y) * ECHELLE, (z + p.pivot[2]) / 16 * ECHELLE);
+      bas = Math.min(bas, wy); void wx; void wz;
+    }
+  }
+  return -bas;
+}
+// Position des yeux (blocs, par rapport aux pieds de la pose) : 1,62 de haut (1,27 accroupi), emporte par la bascule et le roulis.
+export function decalageYeux(pose) {
+  const h = 1.62 - 0.35 * (pose.accroupi ?? 0);
+  const inc = inclinaison(pose.bascule, pose.roulis);
+  if (!inc) return [0, h + (pose.hauteur ?? 0), 0];
+  const th = (180 - (pose.lacet ?? 0)) * RAD, ct = Math.cos(th), st = Math.sin(th);
+  const [x, y, z] = inc.point(0, h, 0);
+  return [x * ct + z * st, y + (pose.hauteur ?? 0), -x * st + z * ct];
 }
 // Ombrage doux : vaut 1,0 / 0,5 / 0,8 / 0,6 pour les normales alignees aux axes.
 export function ombre(nx, ny, nz) {

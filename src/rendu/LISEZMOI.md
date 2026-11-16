@@ -80,7 +80,8 @@ mesh = {
 - `scene.eauEn(x, z) -> Y | null` : surface de l'eau au-dessus du sol (14/16 du bloc), sinon `null`.
 - `scene.estLibre(x, y, z) -> bool` : le point est-il dans une cellule sans bloc a collision, sans feuilles et non cachee (pour la camera et les personnages). L'eau est "libre". Hors zone : libre seulement au-dessus de la surface.
 - `scene.distanceLibre(x,y,z,dx,dy,dz,max)` : distance avant le premier obstacle (pas de 0,5). `scene.vueParDefaut()` : point de vue au sol qui regarde vers les arbres. `scene.niveauLumiere(x,y,z)` 0..15, `scene.luminositeEn(x,y,z)` 0..1, `scene.estDansEau(x,y,z)`.
-- Limites : les hauteurs sont des hauteurs de blocs entiers (une dalle ou un escalier compte comme un bloc plein pour `solEn`).
+- Aucune aide ajoutee pour la physique des acteurs (`film/physique.js`) : elle lit `scene.zone.bloc(x,y,z)` (dalles, escaliers, echelles, lianes), `solEn` et `eauEn` ; la hauteur fine d'une dalle ou d'un escalier est calculee dans `film/physique.js` (`hauteurDuBloc`).
+- Limites : les hauteurs de `solEn` sont des hauteurs de blocs entiers (une dalle ou un escalier compte comme un bloc plein pour `solEn`).
 
 ## Fichiers
 | Fichier | Role |

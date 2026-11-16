@@ -80,7 +80,7 @@ function choisir(liste, graine) {
 // ---------------------------------------------------------------- planification
 // images : sortie de animer(). zone : objet Zone (bloc(x,y,z)). Retourne { evenements, notes, nbPas }.
 // evenement : { t, fichier, gain, pan (-1 gauche .. +1 droite) }
-export function planifierSons({ scene, images, zone, sons }) {
+export function planifierSons({ scene, images, zone, sons, sims = null }) {
   const evenements = [], notes = [];
   let nbPas = 0;
   const DT = 1 / 30;
@@ -137,6 +137,7 @@ export function planifierSons({ scene, images, zone, sons }) {
         }
       }
     });
+    if (sims) { const absents = new Set(); sonsDeTrajet({ scene, images, zone, sons, sims, evenements, gainPan, manquantes: absents }); if (absents.size) notes.push(`sons de la physique absents du kit, ignores : ${[...absents].join(', ')}`); }
     if (manquantes.size) notes.push(`sons de pas absents du kit : ${[...manquantes].join(', ')} (herbe utilisee)`);
   }
   for (const s of scene.sons.liste) {
@@ -168,4 +169,45 @@ export function mixer({ evenements, duree, sons, volume = 2.5 }) {
   const out = Buffer.alloc(n * 4);
   for (let i = 0; i < n * 2; i++) out.writeInt16LE(Math.round(Math.tanh(mix[i]) * 32767), i * 2); // limiteur doux
   return out;
+}
+
+// Sons de la physique (aucun pas en l'air : pas.js). Atterrissage : le pas du bloc touche, plus fort avec la vitesse d'arrivee ; le jeu n'a
+// pas de son de chute sans degats (living_fall.rs : sons seulement si degats > 0, "small_fall" jusqu'a 4, "big_fall" au dela) ; eau :
+// "splash" a l'entree, "swim" tous les 1,67 bloc nage (movement_emission.rs:116-146) ; echelle : "block.ladder.step" tous les 1,67 bloc monte.
+// Un son absent du kit est ignore.
+function sonsDeTrajet({ scene, images, zone, sons, sims, evenements, gainPan, manquantes }) {
+  const DT = 1 / 30, TICK = 1 / 20;
+  const ajouter = (evt, t, pos, gain, graine) => {
+    const liste = sons.fichiers(evt);
+    if (!liste.length) { manquantes.add(evt); return; }
+    const im = images[Math.min(images.length - 1, Math.max(0, Math.round(t / DT)))];
+    evenements.push({ t, fichier: choisir(liste, graine), ...gainPan(pos, im.camera), gain: Math.min(1, gainPan(pos, im.camera).gain * gain) });
+  };
+  const bloc = (x, y, z) => (zone ? zone.bloc(Math.floor(x), Math.floor(y), Math.floor(z)) : null);
+  sims.forEach((sim, k) => {
+    sim.atterrissages.forEach((a, n) => {
+      if (a.impact < 0.15) return;
+      const fam = familleDeBloc(bloc(a.x, a.y - 0.2, a.z));
+      ajouter(evenementPas(fam), a.t, [a.x, a.y + 0.3, a.z], 0.5 + 0.5 * Math.min(1, a.impact / 0.7), `atterrit|${k}|${n}`);
+      if (a.chute > 3) ajouter(a.chute > 7 ? 'entity.player.big_fall' : 'entity.player.small_fall', a.t, [a.x, a.y + 0.3, a.z], 1, `chute|${k}|${n}`);
+    });
+    sim.brut.filter((b) => b.type === 'eau' && b.vitesse > 0.1).forEach((b, n) => ajouter('entity.player.splash', sim.reel(b.k * TICK), [b.x, b.y, b.z], 0.6 + Math.min(0.4, b.vitesse), `plouf|${k}|${n}`));
+    let cumulEau = 0, cumulEch = 0, nEau = 0, nEch = 0;
+    for (let i = 1; i <= sim.ticks; i++) {
+      const t = sim.reel(i * TICK);
+      if (sim.eau[i]) {
+        const d = Math.hypot(sim.x[i] - sim.x[i - 1], sim.z[i] - sim.z[i - 1]) * 0.6, avant = cumulEau;
+        cumulEau += d;
+        if (Math.floor(cumulEau) > Math.floor(avant)) ajouter('entity.player.swim', t, [sim.x[i], sim.y[i] + 0.8, sim.z[i]], 0.8, `nage|${k}|${nEau++}`);
+      }
+      if (sim.surEchelle[i] && !sim.imp[i]) {
+        const d = Math.abs(sim.y[i] - sim.y[i - 1]) * 0.6, avant = cumulEch;
+        cumulEch += d;
+        if (Math.floor(cumulEch) > Math.floor(avant)) {
+          const e = bloc(sim.x[i], sim.y[i] + 0.1, sim.z[i]);
+          ajouter(/vine/.test(String(e)) ? 'block.vine.step' : 'block.ladder.step', t, [sim.x[i], sim.y[i] + 0.5, sim.z[i]], 0.8, `echelle|${k}|${nEch++}`);
+        }
+      }
+    }
+  });
 }

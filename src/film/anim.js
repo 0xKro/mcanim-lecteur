@@ -1,19 +1,19 @@
 // Animation d'une scene : pour chaque image (30 par seconde) calcule la pose de chaque acteur
 // (position posee sur le sol, direction du corps, membres, tete) et la camera (avec anti-collision).
+// La hauteur vient de la physique du jeu (physique.js : saut, marche d'escalier, chute, eau, echelle) ; les reactions automatiques
+// du corps (reactions.js) s'ajoutent aux pistes et boucles de l'acteur.
 import { evaluer, evaluerPhase, poidsBoucle } from './scene.js';
 import { planifierCameraSuivi, planifierCameraLibre } from './camera.js';
-import { compensationAppui } from '../perso/modele.js';
+import { compensationAppui, descenteBascule, decalageYeux } from '../perso/modele.js';
+import { simulerActeur, creerSol, lisser01 } from './physique.js';
+import { reactionsA } from './reactions.js';
 
 const RAD = Math.PI / 180;
 const DT = 1 / 30; // 30 images par seconde (IMAGES_PAR_SECONDE de scene.js)
-const HAUTEUR_YEUX = 1.62;
-const BAISSE_YEUX_ACCROUPI = 0.35;   // yeux a 1,27 accroupi
-const RAYON_PIED = 0.3;              // demi-largeur du joueur (0,6)
-const GRAVITE = 32;                  // blocs/s^2 (0,08 par tick^2)
-const VITESSE_MONTEE = 10;           // blocs/s au plus quand on monte sur une marche
 const VITESSE_MARCHE_MINI = 1.0;     // en dessous : l'acteur est immobile (0,05 bloc par tick dans le jeu)
 const ZERO2 = [0, 0];
 const TEMPS_CAP = 0.2;               // secondes : la camera de suivi tourne un peu moins vite que le corps
+const TEMPS_HAUTEUR_CAMERA = 0.3;    // secondes : la camera de suivi monte et descend un peu moins vite que l'acteur (sauts, chutes)
 
 const normaliser180 = (a) => { a = (a + 180) % 360; if (a < 0) a += 360; return a - 180; };
 
@@ -47,16 +47,39 @@ function sommeBoucles(a, nom, t, n, h = null) {
   return s;
 }
 
-function membre(a, nom, t, h) {
+// f : facteur applique aux boucles (reactions : le balancement des jambes s'attenue en l'air)
+function membre(a, nom, t, h, f = 1) {
   const base = a[nom] ? evaluer(a[nom], t) : ZERO2;
   const b = sommeBoucles(a, nom, t, 2, h);
-  return [(base[0] ?? 0) + b[0], (base[1] ?? 0) + b[1]];
+  return [(base[0] ?? 0) + b[0] * f, (base[1] ?? 0) + b[1] * f];
 }
 
-// Flexion d'une articulation (coude, genou) en degres : piste + boucles, ramenee a 0..150.
-function flexion(a, nom, t, h) {
-  const v = (a[nom] ? evaluer(a[nom], t)[0] : 0) + sommeBoucles(a, nom, t, 1, h)[0];
+// Flexion d'une articulation (coude, genou) en degres : piste + boucles (x f) + reaction, ramenee a 0..150.
+function flexion(a, nom, t, h, f = 1, plus = 0) {
+  const v = (a[nom] ? evaluer(a[nom], t)[0] : 0) + sommeBoucles(a, nom, t, 1, h)[0] * f + plus;
   return Math.min(150, Math.max(0, v));
+}
+
+// Piste + boucles d'une valeur seule (bascule, roulis, hauteur) ; 0 sans piste.
+const aPiste = (a, nom) => !!a[nom] || a.boucles.some((b) => b.pistes[nom]);
+const valeurSeule = (a, nom, t, h) => (a[nom] ? evaluer(a[nom], t)[0] : 0) + sommeBoucles(a, nom, t, 1, h)[0];
+
+// Filtre d'ordre 1, avant puis arriere (phase nulle) : la hauteur lissee de la camera de suivi.
+function lisserHauteur(suite, tau) {
+  const a = 1 - Math.exp(-DT / tau);
+  let cur = suite.slice();
+  for (const sens of [1, -1]) {
+    let v = cur[sens === 1 ? 0 : cur.length - 1];
+    const sortie = cur.slice();
+    for (let j = 0; j < cur.length; j++) { const i = sens === 1 ? j : cur.length - 1 - j; v += (cur[i] - v) * a; sortie[i] = v; }
+    cur = sortie;
+  }
+  // loin de tout changement de hauteur (1,5 s), la valeur brute : la queue du filtre ne bouge plus la camera d'un micron
+  const demi = Math.ceil(1.5 / DT);
+  return cur.map((v, i) => {
+    for (let j = Math.max(0, i - demi); j <= Math.min(suite.length - 1, i + demi); j++) if (suite[j] !== suite[i]) return v;
+    return suite[i];
+  });
 }
 
 // Skin actif au temps t : la reference de la derniere cle `skins` atteinte, ou null (= le champ `skin` de l'acteur).
@@ -68,28 +91,22 @@ function skinEn(a, t) {
 }
 
 // ---------------------------------------------------------------- animation complete
-// scene : sortie de validerScene. terrain : { solEn(x,z), estLibre(x,y,z) } (facultatif : sans terrain, sol a y=0 et pas de collision).
-// Retourne { images: [...], corrections (nombre d'images ou la camera a ete corrigee), notes, camera (stat des corrections) }.
+// scene : sortie de validerScene. terrain : { solEn(x,z), estLibre(x,y,z), bloc?(x,y,z), eauEn?(x,z) } (facultatif : sans terrain, sol a y=0
+// et pas de collision). bloc et eauEn servent aux dalles, escaliers, echelles et a l'eau (physique.js).
+// Retourne { images: [...], corrections (nombre d'images ou la camera a ete corrigee), notes, camera (stat des corrections), trajets }.
 export function animer(scene, terrain = {}) {
-  const solEn = terrain.solEn ?? (() => 0);
   const estLibre = terrain.estLibre ?? (() => true);
   // solide pour la camera : seulement les blocs pleins (voir rendu/scene.js, estSolidePourCamera) ; a defaut, tout ce qui n'est pas libre
   const solide = terrain.solide ?? ((x, y, z) => !estLibre(x, y, z));
+  const solFin = creerSol(terrain);
   const n = scene.images;
   const acteurs = scene.acteurs;
   const parNom = new Map(acteurs.map((a, i) => [a.nom, i]));
   const notes = [];
   const articule = acteurs.map((a) => ['coudeD', 'coudeG', 'genouD', 'genouG'].some((n) => a[n] || a.boucles.some((b) => b.pistes[n])));
 
-  // Pied du joueur : plus haut sol sous les 4 coins et le centre (comme la boite du jeu).
-  const solSous = (x, z) => {
-    let m = null;
-    for (const [dx, dz] of [[0, 0], [-RAYON_PIED, -RAYON_PIED], [RAYON_PIED, -RAYON_PIED], [-RAYON_PIED, RAYON_PIED], [RAYON_PIED, RAYON_PIED]]) {
-      const y = solEn(x + dx, z + dz);
-      if (y !== null && y !== undefined && (m === null || y > m)) m = y;
-    }
-    return m;
-  };
+  // Pied du joueur : plus haut sol sous les 4 coins et le centre (comme la boite du jeu), dalles et escaliers a leur vraie hauteur.
+  const solSous = (x, z) => { const m = solFin.sous(x, z); return m ? m.y : null; };
 
   // Etat de chaque acteur, avance image par image.
   const etat = acteurs.map((a) => {
@@ -111,6 +128,8 @@ export function animer(scene, terrain = {}) {
   const parImage = [], infosImage = [];
   const gel = scene.gel ?? [];
   const horloge = horlogeMonde(gel);
+  // physique verticale de chaque acteur (physique.js) : saut, marche d'escalier, chute, eau, echelle ; la piste pos donne l'horizontale
+  const sims = acteurs.map((a) => simulerActeur({ piste: pistePos(a), terrain, duree: scene.duree, gel }));
   for (let i = 0; i < n; i++) {
     const t = i * DT;
     const { tw, fige } = horloge.etat(t);
@@ -120,28 +139,19 @@ export function animer(scene, terrain = {}) {
     parImage.push(acteurs.map((a, k) => {
       const e = etat[k];
       const p = evaluer(e.pistePos, t);
-      const x = p[0], z = p[2];
-      // --- hauteur : imposee (cle a 3 valeurs) ou posee sur le sol avec lissage
+      const sim = sims[k];
+      const tmA = infosImage[i].tm;                 // temps du monde (il ne passe pas pendant un gel)
+      const st = sim.etatA(tmA);
+      // le chemin horizontal est celui de pos, sauf quand un mur l'arrete (physique.js : obstacle)
+      const x = sim.horizModifie ? st.x : p[0], z = sim.horizModifie ? st.z : p[2];
+      // --- hauteur : imposee (cle a 3 valeurs), sinon physique du jeu (gravite 0,08, saut 0,42, pas de 0,6 : physique.js)
       const sol = solSous(x, z);
       const solY = sol ?? e.y;
-      let auSol;
+      let auSol, imposee = false;
       if (Number.isFinite(p[1])) {
-        e.y = p[1]; e.vy = 0;
+        e.y = p[1]; e.vy = 0; imposee = true;
         auSol = e.y <= solY + 0.05;
-      } else if (fige && i > 0) {         // monde gele : ni chute, ni montee automatique
-        auSol = Math.abs(e.y - solY) < 0.05;
-      } else if (i === 0) {
-        e.y = solY; e.vy = 0; auSol = true;
-      } else if (solY > e.y) {            // marche a monter : on monte vite mais pas d'un coup
-        const diff = solY - e.y;
-        e.y += Math.min(diff, Math.max(diff * (1 - Math.exp(-DT * 25)), 0), VITESSE_MONTEE * DT);
-        e.vy = 0; auSol = solY - e.y < 0.05;
-      } else if (solY < e.y - 1e-6) {     // vide : on tombe avec la gravite
-        e.vy -= GRAVITE * DT;
-        e.y = Math.max(solY, e.y + e.vy * DT);
-        if (e.y === solY) e.vy = 0;
-        auSol = e.y - solY < 0.05;
-      } else { e.y = solY; e.vy = 0; auSol = true; }
+      } else { e.y = st.y; e.vy = st.vy; auSol = st.auSol; }
 
       // --- direction du corps
       let lacet;
@@ -154,28 +164,54 @@ export function animer(scene, terrain = {}) {
       if (a.lacet) lacet = evaluer(a.lacet, t)[0] + sommeBoucles(a, 'lacet', t, 1, h)[0];
       else lacet = e.lacet + sommeBoucles(a, 'lacet', t, 1, h)[0];
 
-      // --- membres, tete, buste
+      // --- reactions automatiques (additives), membres, tete, buste
+      const R = a.reactions && !imposee ? reactionsA(sim, tmA) : null;
+      const fJ = R ? R.amortiJambes : 1, fB = R ? R.amortiBras : 1;
       const th = valeurPiste(a.tete, t, ZERO2);
       const tb = sommeBoucles(a, 'tete', t, 2, h);
-      const corps = (a.corps ? evaluer(a.corps, t)[0] : 0) + sommeBoucles(a, 'corps', t, 1, h)[0];
+      const corps = (a.corps ? evaluer(a.corps, t)[0] : 0) + sommeBoucles(a, 'corps', t, 1, h)[0] + (R ? R.corps : 0);
       const accroupi = a.accroupi ? Math.min(1, Math.max(0, evaluer(a.accroupi, t)[0])) : 0;
       const pose = {
         nom: a.nom, x, y: e.y, z, sol: solY, auSol, lacet,
         tete: [th[0] + tb[0], th[1] + tb[1]], penche: corps, accroupi,
-        brasD: membre(a, 'brasD', t, h), brasG: membre(a, 'brasG', t, h), jambeD: membre(a, 'jambeD', t, h), jambeG: membre(a, 'jambeG', t, h),
+        brasD: membre(a, 'brasD', t, h, fB), brasG: membre(a, 'brasG', t, h, fB), jambeD: membre(a, 'jambeD', t, h, fJ), jambeG: membre(a, 'jambeG', t, h, fJ),
       };
+      if (R) { pose.brasD[0] += R.bras; pose.brasG[0] += R.bras; pose.jambeD[0] += R.jambe; pose.jambeG[0] += R.jambe; }
+      if (st.eau && !imposee) pose.eau = true;
+      if (st.echelle && !imposee) pose.echelle = true;
+      // orientation du corps entier et decalage vertical (pistes facultatives : rien n'est ajoute sans elles)
+      const clamp180 = (v) => Math.max(-180, Math.min(180, v));
+      const bascule = aPiste(a, 'bascule') ? clamp180(valeurSeule(a, 'bascule', t, h)) : 0;
+      const roulis = aPiste(a, 'roulis') ? clamp180(valeurSeule(a, 'roulis', t, h)) : 0;
+      let hauteur = aPiste(a, 'hauteur') ? valeurSeule(a, 'hauteur', t, h) : 0;
+      const incline = Math.max(Math.abs(bascule), Math.abs(roulis));
+      // dans l'eau le corps couche flotte plus haut (les hanches a la surface)
+      if (pose.eau && incline) hauteur += 0.35 * Math.sin(Math.min(90, incline) * RAD);
+      if (bascule) pose.bascule = bascule;
+      if (roulis) pose.roulis = roulis;
+      if (hauteur) pose.hauteur = hauteur;
       // articulations : champs ajoutes seulement s'il y en a (sans elles la pose est celle d'avant)
-      if (articule[k]) {
-        pose.coudeD = flexion(a, 'coudeD', t, h); pose.coudeG = flexion(a, 'coudeG', t, h);
-        pose.genouD = flexion(a, 'genouD', t, h); pose.genouG = flexion(a, 'genouG', t, h);
+      const plie = R && (R.genou > 0.01 || R.coude > 0.01);
+      if (articule[k] || plie) {
+        const g = R ? R.genou : 0, c = R ? R.coude : 0;
+        pose.coudeD = flexion(a, 'coudeD', t, h, fB, c); pose.coudeG = flexion(a, 'coudeG', t, h, fB, c);
+        pose.genouD = flexion(a, 'genouD', t, h, fJ, g); pose.genouG = flexion(a, 'genouG', t, h, fJ, g);
+      }
+      if (articule[k] || plie || incline) {
         // appui : le corps s'ajuste pour que le pied le plus bas repose sur le sol (modele.js, compensationAppui). Poids 1 au sol,
         // decroissant jusqu'a 0 quand l'acteur s'eleve de 2 a 12 cm (saut, chute) : en l'air les pieds ne sont plus attires par le sol.
-        if (a.appui && (pose.genouD > 0 || pose.genouG > 0)) {
-          const poids = Math.max(0, Math.min(1, 1 - (e.y - solY - 0.02) / 0.10));
+        // Il s'efface quand le corps est couche (de 15 a 45 degres d'inclinaison) : la bascule pose alors le corps sur ses points bas.
+        const poids = Math.max(0, Math.min(1, 1 - (e.y - solY - 0.02) / 0.10));
+        const droit = 1 - lisser01((incline - 15) / 30);
+        if (a.appui && (pose.genouD > 0 || pose.genouG > 0) && droit > 0) {
           // appui numerique (0..1) : seule la descente est reduite (jambes ecartees, pieds au-dessus du sol : le corps reste plus haut
           // et le pied flotte, c'est la phase aerienne d'une course) ; la montee (pointe sous le sol) reste entiere.
-          const dy0 = compensationAppui(pose);
-          pose.dy = poids * (typeof a.appui === 'number' && dy0 < 0 ? dy0 * a.appui : dy0);
+          const dy0 = compensationAppui(pose, 0.12 + (R ? R.descente : 0));
+          pose.dy = poids * droit * (typeof a.appui === 'number' && dy0 < 0 ? dy0 * a.appui : dy0);
+        }
+        if (incline && !pose.eau) {
+          const d = poids * descenteBascule(bascule, roulis);
+          if (d) pose.dy = (pose.dy ?? 0) + d;
         }
       }
       // apparence (pistes facultatives : rien n'est ajoute si elles manquent)
@@ -189,20 +225,27 @@ export function animer(scene, terrain = {}) {
 
   // ---- passe 2 : camera (on connait tout le film : planification sur tout le plan, voir camera.js)
   const c = scene.camera;
-  const yeux = (p) => [p.x, p.y + HAUTEUR_YEUX - BAISSE_YEUX_ACCROUPI * p.accroupi, p.z];
+  const yeux = (p) => {
+    if (!p.bascule && !p.roulis && !p.hauteur) return [p.x, p.y + 1.62 - 0.35 * p.accroupi, p.z];   // corps droit : la formule d'avant, au bit pres
+    const [ox, oy, oz] = decalageYeux(p);
+    return [p.x + ox, p.y + oy, p.z + oz];
+  };
   const pos = new Array(n), cible = new Array(n);
   let corrigee = new Array(n).fill(false);
   let statCamera = null;
   if (c.mode === 'suit') {
     const k = parNom.get(c.suit);
     let cap = parImage[0][k].lacet;   // direction suivie par la camera : celle du corps, un peu adoucie
+    // hauteur de reference de la camera : celle de l'acteur, adoucie (sauts, chutes, marches : la camera ne saute pas avec lui)
+    const ys = parImage.map((poses) => poses[k].y);
+    const ysLisse = lisserHauteur(ys, TEMPS_HAUTEUR_CAMERA);
     const voulues = parImage.map((poses, i) => {
       const A = poses[k];
       cap += normaliser180(A.lacet - cap) * (1 - Math.exp(-DT / TEMPS_CAP));
       const [droite, haut, arriere] = evaluer(c.decalage, i * DT);
       const psi = cap * RAD, fx = -Math.sin(psi), fz = Math.cos(psi);
       cible[i] = yeux(A);
-      return [A.x - fz * droite - fx * arriere, A.y + haut, A.z + fx * droite - fz * arriere];
+      return [A.x - fz * droite - fx * arriere, ysLisse[i] + haut, A.z + fx * droite - fz * arriere];
     });
     const plan = planifierCameraSuivi({ cibles: cible, voulues, solide, dt: DT });
     for (let i = 0; i < n; i++) pos[i] = plan.pos[i];
@@ -234,7 +277,7 @@ export function animer(scene, terrain = {}) {
     if (corrigee[i]) corrections++;
     images.push({ t, fige: infosImage[i].fige, tm: infosImage[i].tm, acteurs: parImage[i], camera: { x: pos[i][0], y: pos[i][1], z: pos[i][2], lacet: lacetCam, tangage: tangageCam, fov: evaluer(c.fov, t)[0] }, corrigee: corrigee[i] });
   }
-  return { images, corrections, notes, camera: statCamera };
+  return { images, corrections, notes, camera: statCamera, sims };
 }
 
 // Piste [x, y, z] d'un acteur ; y vaut NaN quand la cle n'impose pas la hauteur.

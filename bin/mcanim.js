@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // mcanim : lecteur d'animations Minecraft. Commandes (voir docs/CONCEPTION.md, partie 7) :
 //   mcanim terrain <zone> [--pas N] [--chemin x1,z1,x2,z2]
+//   mcanim trajet <scene.json>
 //   mcanim empreinte <scene.json>
 //   mcanim rendre <scene.json> --jeton <jeton> [--sortie f.mp4] [--pack pack.zip] [--skin nom=fichier.png]
 //   mcanim skin <ref> [--sortie skin.png] [--zones] [--modele wide|slim]
@@ -17,16 +18,19 @@ import { empreinte } from '../src/film/empreinte.js';
 import { verifierJeton } from '../src/film/jeton.js';
 import { noteSkinsDeRepli } from '../src/perso/skin.js';
 import { resumeCamera } from '../src/film/camera.js';
-import { obtenirZone, trouverKit, appliquerPack } from '../src/film/cache.js';
+import { obtenirZone, trouverKit, appliquerPack, dossierCache } from '../src/film/cache.js';
 import { verifierFichiers } from '../src/film/fichiers.js';
 import { textZonesSkin } from '../src/perso/zones.js';
 import { encoderPNG, decoderPNG } from '../src/rendu/png.js';
 import { lireShader, ErreurShader } from '../src/shader/format.js';
 import { texteGuide, texteFamille, verifierTexte } from '../src/shader/guide.js';
+import { texteTrajets, trajetsDeScene, compterEvenements, profilSegment } from '../src/film/trajet.js';
+import { terrainDepuis } from '../src/film/physique.js';
 
 const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai terrain)
   mcanim terrain <zone> [--pas 8]     telecharge la zone et le kit, resume du terrain (chemins, clairieres, eau)
   mcanim terrain <zone> --chemin x1,z1,x2,z2   verifie un trajet droit : libre, ou premier obstacle
+  mcanim trajet <scene.json>          ce qui arrive aux acteurs sur leur chemin : saut, chute, eau, echelle, marches, mur, vitesses ; gratuit, court
   mcanim empreinte <scene.json>       controle la scene, affiche empreinte et duree
   mcanim rendre <scene.json> --jeton <jeton> [--sortie f.mp4] [--pack pack.zip] [--skin nom=fichier.png] [--shader shader.json]
   mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360] [--shader shader.json]   UNE image de la scene, petite, filigranee, SANS jeton
@@ -42,7 +46,9 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   (options de rendre : --ssaa 2 pour un rendu plus lisse, 3 fois plus lent)
   --shader shader.json : ombres du soleil, ciel, brume, rayons de lumiere, bloom, eau, feuilles qui bougent... (format : docs/FORMAT-SHADER.md ;
                          exemples : exemples/shader-leger.json, shader-tout.json ; ou le champ de scene "shader": "shader.json", chemin relatif a la scene ; l'option l'emporte)
-  champs de scene facultatifs : image, ciel, gel, textures, shader ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui (fiches du site)`;
+  champs de scene facultatifs : image, ciel, gel, textures, shader ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui (fiches du site)
+  hauteur automatique (physique du jeu : saut 0.42, gravite 0.08, pas de 0.6, chute, eau, echelle) a partir de pos [t,x,z] ; acteur : bascule [t,deg] roulis [t,deg]
+  (corps entier autour des hanches, 90 = a plat) hauteur [t,blocs] (decalage vertical) reactions:false (coupe les reactions automatiques du corps)`;
 
 class Usage extends Error {}
 
@@ -103,7 +109,7 @@ async function commandeTerrain(argv) {
   const { chargerScene } = await import('../src/rendu/scene.js');
   const rs = await chargerScene({ zonePath: chemin, kitDir: kit, travailleurs: 0 });
   try {
-    if (seg) dire(rs.verifierChemin(...seg));
+    if (seg) { dire(rs.verifierChemin(...seg)); const profil = profilSegment(terrainDepuis(rs), ...seg); if (profil) dire(profil); }
     else {
       dire(JSON.stringify(rs.resumeTerrain(pas ? { pas } : undefined)));
       dire("Fais marcher l'acteur le long d'un des chemins ; hors chemin, il traversera des arbres.");
@@ -112,11 +118,41 @@ async function commandeTerrain(argv) {
   } finally { await rs.fermer(); }
 }
 
+// Le terrain de la zone de la scene, pour la simulation du trajet. `telecharger` faux : seulement le cache local (sinon null).
+async function terrainDeScene(scene, { telecharger }) {
+  const cache = path.join(dossierCache(), 'zones', `${scene.zone}.mcz`);
+  if (!telecharger && !fs.existsSync(cache)) return null;
+  const zone = await obtenirZone(scene.zone);
+  const kit = await trouverKit({});
+  const { chargerScene } = await import('../src/rendu/scene.js');
+  const rs = await chargerScene({ zonePath: zone.chemin, kitDir: kit, travailleurs: 0 });
+  return { rs, terrain: terrainDepuis(rs) };
+}
+
+// Ce qui arrive aux acteurs sur leur chemin (gratuit, comme terrain et empreinte).
+async function commandeTrajet(argv) {
+  const { pos } = lireArgs(argv);
+  if (pos.length !== 1) throw new Usage('usage : mcanim trajet <scene.json>');
+  const { scene } = lireScene(lireTexte(pos[0]));
+  const t = await terrainDeScene(scene, { telecharger: true });
+  try { dire(texteTrajets(scene, t.terrain)); } finally { await t.rs.fermer(); }
+}
+
 async function commandeEmpreinte(argv) {
   const { pos } = lireArgs(argv);
   if (pos.length !== 1) throw new Usage('usage : mcanim empreinte <scene.json>');
   const { brut, scene } = lireScene(lireTexte(pos[0]));
   dire(`empreinte ${empreinte(brut)} | duree ${scene.duree} s | ${scene.format} | ${scene.acteurs.length} acteur(s) | ${scene.images} images`);
+  // meme simulation que le rendu : combien d'evenements de trajet (zone deja dans le cache seulement ; jamais d'erreur ici)
+  try {
+    const t = await terrainDeScene(scene, { telecharger: false });
+    if (t) {
+      try {
+        const c = compterEvenements(trajetsDeScene(scene, t.terrain));
+        dire(`trajet : ${c.evenements} evenement(s)${c.vitesses ? `, ${c.vitesses} vitesse(s) a revoir` : ''} (saut, chute, eau, echelle, mur) -> mcanim trajet ${path.basename(pos[0])}`);
+      } finally { await t.rs.fermer(); }
+    }
+  } catch { /* la ligne de trajet est facultative */ }
 }
 
 async function commandeRendre(argv) {
@@ -268,6 +304,7 @@ async function main() {
   const [cmd, ...reste] = process.argv.slice(2);
   switch (cmd) {
     case 'terrain': return commandeTerrain(reste);
+    case 'trajet': return commandeTrajet(reste);
     case 'empreinte': return commandeEmpreinte(reste);
     case 'rendre': return commandeRendre(reste);
     case 'skin': return commandeSkin(reste);

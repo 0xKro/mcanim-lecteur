@@ -172,7 +172,10 @@ export function animer(scene, terrain = {}) {
         // decroissant jusqu'a 0 quand l'acteur s'eleve de 2 a 12 cm (saut, chute) : en l'air les pieds ne sont plus attires par le sol.
         if (a.appui && (pose.genouD > 0 || pose.genouG > 0)) {
           const poids = Math.max(0, Math.min(1, 1 - (e.y - solY - 0.02) / 0.10));
-          pose.dy = poids * compensationAppui(pose);
+          // appui numerique (0..1) : seule la descente est reduite (jambes ecartees, pieds au-dessus du sol : le corps reste plus haut
+          // et le pied flotte, c'est la phase aerienne d'une course) ; la montee (pointe sous le sol) reste entiere.
+          const dy0 = compensationAppui(pose);
+          pose.dy = poids * (typeof a.appui === 'number' && dy0 < 0 ? dy0 * a.appui : dy0);
         }
       }
       // apparence (pistes facultatives : rien n'est ajoute si elles manquent)

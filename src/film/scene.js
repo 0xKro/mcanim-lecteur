@@ -168,8 +168,8 @@ export function validerScene(s) {
     if (a.accroupi !== undefined) o.accroupi = lirePiste(a.accroupi, `${ch}.accroupi`, { minArite: 1, maxArite: 1 });
     for (const m of MEMBRES) if (a[m] !== undefined) o[m] = lirePiste(a[m], `${ch}.${m}`, { minArite: 1, maxArite: 2 });
     for (const m of ARTICULATIONS) if (a[m] !== undefined) o[m] = borner(lirePiste(a[m], `${ch}.${m}`, { minArite: 1, maxArite: 1 }), `${ch}.${m}`, 0, FLEXION_MAX);
-    if (a.appui !== undefined && typeof a.appui !== 'boolean') err(`${ch}.appui`, 'true ou false attendu (false : le corps ne s\'ajuste pas quand les genoux plient)');
-    o.appui = a.appui !== false;
+    if (a.appui !== undefined && typeof a.appui !== 'boolean' && !(typeof a.appui === 'number' && a.appui >= 0 && a.appui <= 1)) err(`${ch}.appui`, 'true, false ou un nombre de 0 a 1 attendu (false : le corps ne s\'ajuste pas quand les genoux plient ; 0.5 : le corps ne descend que de moitie quand les jambes s\'ecartent, le pied flotte un peu : phase aerienne de la course)');
+    o.appui = typeof a.appui === 'number' ? a.appui : a.appui !== false;
     if (a.boucles !== undefined) {
       if (!Array.isArray(a.boucles)) err(`${ch}.boucles`, 'liste de boucles attendue');
       o.boucles = a.boucles.map((b, j) => lireBoucle(b, `${ch}.boucles[${j}]`, s.duree));

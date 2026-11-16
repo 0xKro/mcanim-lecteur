@@ -60,6 +60,7 @@ export async function run(ctx) {
   if (groups.has('worldgen')) missing.push('worldgen');
   return {
     missing,
+    court: `partiel (donnees ${dataVersion}${exact ? '' : ` au lieu de ${version}`}, sans ${missing.join('+')})`,
     notes: {
       npmPackage: `minecraft-assets@${meta.version}`, tarballBytes: Number(r.headers['content-length']) || undefined,
       dataVersion, versionDemandee: version, versionExacte: exact, tarballSha1Ok: true,

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Usage: node bin/kit.js [--route auto|mojang|npm|github|archive] [--cache DIR] [--version 26.3]
+// Usage: node bin/kit.js [--route auto|mojang|git|github|archive|npm] [--cache DIR] [--version 26.3]
 //        [--archive kit.zip] [--groups a,b,c] [--worldgen] [--verbose]
 // Affiche le rapport en JSON sur la sortie standard (une ligne).
 import { ensureKit, DEFAULT_GROUPS } from '../src/index.js';
@@ -12,7 +12,7 @@ if (flag('worldgen')) groups = [...(groups || DEFAULT_GROUPS), 'worldgen'];
 try {
   const { dir, report } = await ensureKit({
     version: opt('version', '26.3'), cacheDir: opt('cache', '.kit-cache'), route: opt('route', 'auto'),
-    archivePath: opt('archive'), dataTag: opt('data-tag'), groups, log: flag('verbose') ? (m) => console.error(m) : undefined,
+    archivePath: opt("archive"), allowPartial: flag("allow-partial"), dataTag: opt('data-tag'), groups, log: flag('verbose') ? (m) => console.error(m) : undefined,
   });
   console.log(JSON.stringify({ dir, ...report }));
 } catch (e) {

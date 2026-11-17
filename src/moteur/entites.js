@@ -9,6 +9,7 @@ import { deplacerBoite } from './collision.js';
 import { exploser } from './explosion.js';
 import { butinDe } from './butin.js';
 import { evenement } from './registre.js';
+import { Projectiles } from './projectiles.js';
 
 const F_TOUS = 3;
 const LARGEUR = 0.98;
@@ -17,6 +18,7 @@ const COTE_OBJET = 0.25;
 export class Entites {
   constructor(sim) {
     this.sim = sim; this.liste = []; this.prochain = 0;
+    this.proj = new Projectiles(this);       // fleches, boules de neige, perles, potions, trident (projectiles.js)
     this.lec = { d: sim.d, etatEn: (x, y, z) => sim.monde.etatEn(x, y, z), dyn: (e, x, y, z) => sim.formeDyn(e, x, y, z) };
   }
   get actives() { return this.liste.length; }
@@ -155,13 +157,14 @@ export class Entites {
     for (const e of [...this.liste]) {
       if (fini.has(e)) continue;
       if (e.debut === s.temps) { this.ecrire(e); continue; }    // creee ce tick : elle ne bouge qu'au suivant (meche exacte)
+      if (e.proj) { this.proj.tick(e); continue; }
       const vivante = e.type === 'tnt' ? this.tickTnt(e) : e.type === 'objet' ? this.tickObjet(e) : this.tickChute(e);
       if (vivante) this.ecrire(e);
     }
     this.liste = this.liste.filter((e) => !fini.has(e));    // les entites creees pendant ce tick (chaine) restent
   }
 
-  ecrire(e) { this.sim.replay.entite(this.sim.temps, e.id, e.type, e.x, e.y, e.z, e.type === 'tnt' ? e.meche : e.type === 'objet' ? e.n : 0, e.type === 'chute' ? e.pal : e.type === 'objet' ? this.sim.replay.nom(e.item) : -1); }
+  ecrire(e) { if (e.proj) { this.proj.ecrire(e); return; } this.sim.replay.entite(this.sim.temps, e.id, e.type, e.x, e.y, e.z, e.type === 'tnt' ? e.meche : e.type === 'objet' ? e.n : 0, e.type === 'chute' ? e.pal : e.type === 'objet' ? this.sim.replay.nom(e.item) : -1); }
 
   bouger(e, g) {
     const s = this.sim;

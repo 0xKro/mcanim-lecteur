@@ -30,6 +30,7 @@ export function creerVivant(replay, nom) {
         x: lerp(2), y: lerp(3), z: lerp(4), lacet: arc(R[a + 5], R[b + 5], f), lacetTete: arc(R[a + 6], R[b + 6], f), tangage: lerp(7),
         accroupi: (dr & 1) !== 0, auSol: (dr & 2) !== 0, course: (dr & 4) !== 0, balance: (dr & 8) !== 0, balancement: lerp(9), cassage: R[(f < 0.5 ? a : b) + 10],
         objet: objet >= 0 ? noms[objet] : null, phase: lerp(12), amplitude: lerp(13),
+        usage: (dr >> 6) & 7, usageTicks: (dr >> 9) & 4095, invisible: (dr & (1 << 21)) !== 0, lueur: (dr & (1 << 22)) !== 0,   // pose d'utilisation (1 manger, 2 boire, 3 arc, 4 arbalete en charge, 5 arbalete chargee), effets visibles
         eau: (dr & 32) !== 0, blessure: R[(f < 0.5 ? a : b) + 14], mort: R[(f < 0.5 ? a : b) + 15], mortT: R[a + 15] > 0 ? R[a + 15] - 1 + f : -1,   // vie : rougeur 10 ticks, mort 1..21 (20 = disparait)
       };
     },
@@ -46,6 +47,13 @@ export function creerVivant(replay, nom) {
         const s = vs.balancement, eased = 1 - Math.pow(1 - s, 4), aa = Math.sin(eased * Math.PI);
         const bb = Math.sin(s * Math.PI) * -((vs.tangage / DEG) - 0.7) * 0.75;
         pose.brasD[0] += (1.2 * aa + bb) * DEG;
+      }
+      const u = vs.usage;
+      if (u === 1 || u === 2) {                                               // manger, boire : le bras monte a la bouche (3e personne), petit va-et-vient toutes les 4 ticks
+        pose.brasD[0] = 84 + Math.sin(vs.usageTicks * Math.PI / 2) * 6; pose.brasD[1] = 0;
+      } else if (u >= 3) {                                                    // ArmPose.BOW_AND_ARROW / CROSSBOW_CHARGE / CROSSBOW_HOLD : les deux bras en avant, a la hauteur de la tete (xRot = -90 + tangage)
+        const a = (u === 4 ? 70 : 90) - vs.tangage;
+        pose.brasD[0] = a; pose.brasG[0] = a;
       }
     },
   };

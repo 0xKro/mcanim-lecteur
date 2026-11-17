@@ -715,7 +715,7 @@ class Rendu(PassesMixin):
         # les acteurs projettent leur ombre (programme `shadow` du pack, entityId du joueur)
         id_joueur = self.pack.entites.id("minecraft:player")
         for g in geos:
-            if g["mode"] == "melange" or g.get("programme") in ("fissure", "particule"):
+            if g["mode"] == "melange" or g.get("programme") in ("fissure", "particule", "meteo"):
                 continue
             gl.Enable(0x0BC0)
             gl.AlphaFunc(0x204, 0.1)

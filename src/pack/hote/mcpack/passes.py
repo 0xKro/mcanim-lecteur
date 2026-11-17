@@ -28,6 +28,7 @@ PROGRAMMES_GEO = [
     ("bloc", ["gbuffers_block", "gbuffers_terrain", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"]),
     ("fissure", ["gbuffers_damagedblock", "gbuffers_terrain", "gbuffers_textured", "gbuffers_basic"]),
     ("particule", ["gbuffers_textured", "gbuffers_textured_lit", "gbuffers_basic"]),
+    ("meteo", ["gbuffers_weather", "gbuffers_textured", "gbuffers_textured_lit", "gbuffers_basic"]),   # pluie, neige, foudre (repli d'Iris : weather -> textured)
 ]
 
 
@@ -164,7 +165,7 @@ class PassesMixin:
         gl.DepthMask(1)
         self._appliquer_blend(nom, "SRC_ALPHA ONE_MINUS_SRC_ALPHA ONE ONE_MINUS_SRC_ALPHA" if translucide else "off", cib)
         id_joueur = self.pack.entites.id("minecraft:player")
-        etape = {"entites": 11, "bloc": 9, "fissure": 12, "particule": 13}.get(genre, 11)
+        etape = {"entites": 11, "bloc": 9, "fissure": 12, "particule": 13, "meteo": 21}.get(genre, 11)   # 21 : MC_RENDER_STAGE_RAIN_SNOW
         for g in liste:
             if g["deuxFaces"]:
                 gl.Disable(0x0B44)

@@ -22,7 +22,7 @@ TABLE = [
     ("frameTimeCounter / frameTime / frameCounter", "fait", "temps de la scene (fige pendant `gel`), 1/30 s, compteur d'images continu (chauffe comprise) : le TAA du pack s'en sert"),
     ("viewWidth / viewHeight / aspectRatio / near / far", "fait", ""),
     ("skyColor / fogColor", "fait", "couleurs du ciel du jeu (ciel-vanille.js) a l'heure donnee"),
-    ("rainStrength / thunderStrength / wetness", "valeur fixe", "0 (pas de meteo) ; M6"),
+    ("rainStrength / thunderStrength / wetness", "fait", "niveaux de la piste `ciel.meteo` de la scene (pluie, orage) ; wetness = pluie moyenne des 10 dernieres secondes ; 0 sans meteo"),
     ("isEyeInWater / eyeAltitude", "fait", "isEyeInWater 0 sauf sous l'eau"),
     ("eyeBrightness / eyeBrightnessSmooth", "fait", "lumiere du bloc et du ciel a la camera x 16"),
     ("blindness / nightVision / darknessFactor / darknessLightFactor", "valeur fixe", "0"),
@@ -122,8 +122,8 @@ def construire(e, r):
     u["skyColor"] = tuple(e.get("ciel", (0.47, 0.65, 1.0)))
     u["fogColor"] = tuple(e.get("brume", (0.75, 0.85, 1.0)))
     u["rainStrength"] = float(e.get("pluie", 0.0))
-    u["thunderStrength"] = 0.0
-    u["wetness"] = 0.0
+    u["thunderStrength"] = float(e.get("orage", 0.0))
+    u["wetness"] = float(e.get("humidite", 0.0))
     u["isEyeInWater"] = int(e.get("sousEau", 0))
     u["eyeAltitude"] = cp[1]
     lb = e.get("luminosite", (0.0, 15.0))

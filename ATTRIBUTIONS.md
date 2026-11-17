@@ -195,3 +195,18 @@ Reecrit en JavaScript, rien n'est copie ; les nombres sont ceux du jeu, verifies
 | Pistons : `checkIfExtend` (quasi-connexion), `isPushable`, `PistonStructureResolver` (ligne, slime, miel, reordonnancement, limite 12), `moveBlocks` (ordre des `HashMap` de Java, drapeaux 18 82 276 324 340), `triggerEvent`, `PistonMovingBlockEntity` (0,5 par tick, `finalTick`), tete de piston | `pistons.rs` (l. 20-794) | `familles/pistons.js` |
 | Rendu d'un bloc en mouvement (`PistonHeadRenderer` : decalage `progres - 1` ou `1 - progres`, tete courte avant 0,5) et sa collision | (formules du jeu) | `familles/pistons.js` (`ecrire`, `collisionDyn`), `film/entites-monde.js` |
 | Entonnoir (8 ticks, pousse puis aspire), dropper et distributeur (4 ticks, case au hasard, seaux), plenitude d'un conteneur pour le comparateur | `client/game/machines.rs`, `dispenser.rs` (lecture seule : comportements) | `familles/contenus.js`, `moteur/contenus.js` |
+
+## Phase 7 : objets, projectiles, conteneurs, croissance, meteo (docs/SIMULATION.md partie 13)
+
+Memes termes : code MIT de Horizon, relu et reecrit en JavaScript (comportements et nombres seulement ; aucun fichier du jeu dans le paquet).
+
+| Ce qui est porte | Fichier d'origine (Horizon) | Ou chez nous |
+|---|---|---|
+| Fleches : deplacement, trainee et gravite, plantage, degats `ceil(vitesse x 2)`, critique, boite de contact, perte du proprietaire ; puissance de l'arc, arbalete | `client/arrows.rs`, `client/game/crossbow.rs` | `moteur/projectiles.js`, `moteur/utilisation.js` |
+| Boule de neige, oeuf, perle d'ender (teleportation, 5 de degats), potion jetee (4 x 2 x 4, force), trident | `client/projectiles.rs` | `moteur/projectiles.js` |
+| Utilisation d'un objet : `startUsingItem`, `updateUsingItem` (mastication tous les 4 ticks), `completeUsingItem`, faim et saturation, effets de potion | `client/game/{hand,potions}.rs`, `world/food.rs` | `moteur/utilisation.js` |
+| Four : `AbstractFurnaceBlockEntity.serverTick` (temps de combustion, cuisson, retour de 2 par tick) | `world/level/furnace.rs` | `moteur/four.js` |
+| Cultures `getGrowthSpeed`, `CropBlock.randomTick`, terre labouree, `SaplingBlock`, herbe, canne, cactus, bambou, lierre, feuilles (distance), farine d'os | `world/level/{tick,growth,bonemeal}.rs` | `moteur/familles/croissance.js` |
+| `TreeFeature`, troncs droit et fourchu, feuillages en boule, sapin, acacia | `worldgen/tree/` | `moteur/arbres.js` |
+| `Level.isRainingAt`, `tickPrecipitation`, neige et gel, foudre (`LightningBolt`), niveaux de pluie et d'orage | `world/level/weather.rs`, `client/game/{weather,lightning}.rs` | `moteur/meteo.js`, `film/meteo.js` |
+| Dessin de la pluie et de la neige (`WeatherEffectRenderer`), de l'eclair (`LightningBoltRenderer`) | `client-render/src/{weather,gfx/weather,gfx/lightning}.rs` | `film/meteo-rendu.js` |

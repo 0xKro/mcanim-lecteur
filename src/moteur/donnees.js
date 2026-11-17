@@ -123,6 +123,13 @@ export class Donnees {
   instrument(id) { return String(this.j.instruments[this.instrumentE[id]]).toLowerCase(); }
   // regles de l'outil `nom` (composant minecraft:tool) : { r: [[selecteurs, butinOk (1/0/-1), vitesse|null]], d, u } ou null
   outil(nom) { return this.j.outils?.[String(nom).replace(/^minecraft:/, '')] ?? null; }
+  // objets du jeu (phase 7) : nourriture [nutrition, saturation, toujours, ticks, 'eat'|'drink', rendu, effets], combustible (ticks), cuisson [resultat, ticks, xp],
+  // arbre (caracteristique de generation simplifiee), biome [temperature, precipitation, gele]
+  aliment(nom) { return this.j.aliments?.[String(nom).replace(/^minecraft:/, '')] ?? null; }
+  combustible(nom) { return this.j.combustibles?.[String(nom).replace(/^minecraft:/, '')] ?? 0; }
+  cuisson(nom) { return this.j.cuisson?.[String(nom).replace(/^minecraft:/, '')] ?? null; }
+  arbre(nom) { return this.j.arbres?.[nom] ?? null; }
+  biome(nom) { return this.j.biomes?.[String(nom || '').replace(/^minecraft:/, '')] ?? null; }
   etatParDefaut(bloc) { return this.debut[bloc] + this.j.defauts[bloc]; }
 
   // ---- proprietes d'un etat

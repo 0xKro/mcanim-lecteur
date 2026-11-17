@@ -225,6 +225,8 @@ export function animer(scene, terrain = {}, monde = null) {
       if (vs) {   // sante : rougeur des degats (10 ticks), mort = le corps tombe sur le cote en 20 ticks (LivingEntityRenderer : sqrt(t / 20 x 1,6) x 90 degres) puis disparait
         if (vs.eau) pose.eau = true;
         if (vs.blessure > 0 || vs.mort > 0) pose.teinte = [1, 0.6, 0.6];
+        else if (vs.lueur) pose.teinte = [1.5, 1.5, 1.1];                       // effet Lueur : le corps luit (le contour du jeu n'est pas dessine)
+        if (vs.invisible) { pose.y -= 1000; pose.absent = true; }               // effet Invisibilite
         if (vs.mortT >= 0) {
           if (vs.mortT >= 20) { pose.y -= 1000; pose.absent = true; } else { const rot = Math.min(1, Math.sqrt(Math.max(0, vs.mortT) / 20 * 1.6)) * 90; pose.roulis = rot; pose.dy = (pose.dy ?? 0) + descenteBascule(0, rot); }
         }

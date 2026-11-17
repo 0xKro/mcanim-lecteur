@@ -13,7 +13,7 @@ import { trouverChemins, trouverClairieres, trouverEau, evaluerSegment, verifier
 import { Rasteriseur, MODE_OPAQUE, MODE_DECOUPE, MODE_MELANGE } from './raster.js';
 import { PostTraitement, imageActive, aFlou } from './post.js';
 import { MoteurShader } from '../shader/moteur.js';
-import { CielVanille, ticksDepuisHeure, construireCiel, tableLumiere } from './ciel-vanille.js';
+import { CielVanille, ticksDepuisHeure, construireCiel, tableLumiere, etatAvecMeteo } from './ciel-vanille.js';
 import { analyser, calculerBloom, calculerRayons, composer, creerTampons } from '../shader/post.js';
 
 const ICI = path.dirname(fileURLToPath(import.meta.url));
@@ -116,9 +116,9 @@ class Scene {
   }
 
   // ---- lumiere du jeu (scenes avec monde)
-  tableLumiere(heure, gamma) {
-    const g = gamma ?? this.options.gamma ?? 0.5, cle = heure + '|' + g;
-    if (this._lmCle !== cle) { this._lm = tableLumiere(ticksDepuisHeure(heure), g); this._lmCle = cle; }
+  tableLumiere(heure, gamma, facteurCiel = 1) {
+    const g = gamma ?? this.options.gamma ?? 0.5, cle = heure + '|' + g + (facteurCiel !== 1 ? '|' + facteurCiel : '');
+    if (this._lmCle !== cle) { this._lm = tableLumiere(ticksDepuisHeure(heure), g, { facteurCiel }); this._lmCle = cle; }
     return this._lm;
   }
 
@@ -324,7 +324,7 @@ class Scene {
   }
 
   // ---- rendu ----
-  async rendre({ camera, largeur = 1920, hauteur = 1080, temps = 0, maillagesDynamiques = [], brume, ciel, soleil, loin, mip = true, ssaa = 1, copie = true, lumiere, image, heure, jour, cielFixe, gamma, profondeur = false } = {}) {
+  async rendre({ camera, largeur = 1920, hauteur = 1080, temps = 0, maillagesDynamiques = [], brume, ciel, soleil, loin, mip = true, ssaa = 1, copie = true, lumiere, image, heure, jour, cielFixe, gamma, profondeur = false, meteo = null } = {}) {
     const tDebut = performance.now();
     const sortieW = largeur, sortieH = hauteur;
     largeur *= ssaa; hauteur *= ssaa;
@@ -349,6 +349,7 @@ class Scene {
     if (vanilleOn) {
       const base = this.cielV.couleursCamera(this.zone, cam.x, cam.z);
       etV = this.cielV.etat(ticksDepuisHeure(heure ?? 12), jour ?? 0, base);
+      if (meteo) etV = etatAvecMeteo(etV, meteo);   // pluie, orage, eclair : ciel terne (rien sans `ciel.meteo`)
     }
     // shader : lumiere, brume, ombres, eau, balancement, modifications du ciel, passes d'image (rien du tout sans fichier de shader)
     let cielV = null, nuage = null;
@@ -356,6 +357,7 @@ class Scene {
       cielV = construireCiel(this.cielV, etV, cam, this.moteur ? this.moteur.modsCiel(heure) : null, temps * 20);
       nuage = cielV.nuage;
       ciel = cielV.couleurs;
+      if (meteo && meteo.pluie > 0) for (const a of cielV.vanille.astres) if (a.mult) a.mult = a.mult.map((v) => v * (1 - 0.9 * meteo.pluie));   // le soleil et la lune s'effacent sous la pluie
     }
     let res = null;
     if (this.moteur) {
@@ -389,7 +391,7 @@ class Scene {
     if (nuage) { params.nuageDebut = 220; params.nuageFin = 576; }   // les nuages ont leur propre brume (loin de la zone) : ils ne suivent pas le bord de zone
     if (lumiere && (lumiere[0] !== 1 || lumiere[1] !== 1 || lumiere[2] !== 1)) params.lumiere = lumiere.map((v) => Math.max(0, v));
     // lumiere du jeu (scenes avec monde) : table (ciel, bloc) -> couleur, de l'heure du jeu ; elle remplace le facteur global jour/nuit
-    if (this.maillage.lightmap) params.lm = this.tableLumiere(heure ?? 12, gamma);
+    if (this.maillage.lightmap) params.lm = this.tableLumiere(heure ?? 12, gamma, meteo ? meteo.facteurCiel ?? 1 : 1);
     // camera sous l'eau : brouillard bleu court, comme dans le jeu
     if (res) Object.assign(params, res.params);
     if (sousEau) {

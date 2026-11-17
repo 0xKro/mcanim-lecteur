@@ -67,7 +67,8 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   mcanim shader --exemples            ou sont shader-leger.json et shader-tout.json
   mcanim objets --cherche <mot>       identifiants d'objets du jeu (20 au plus) pour les champs objet / objetG ; --armures : materiaux du champ armure
   mcanim simuler <scene.json>         simule le jeu (champ monde : blocs poses, regles, mods) AVANT de payer le rendu ; gratuit, resume court (blocs changes, avertissements)
-  (acteur.actes [[t,"verbe",..]] : un joueur SIMULE par le jeu : va x z | regarde | saute | accroupi | tient "objet" | attends s | utilise x y z (porte, bouton, levier, coffre, cloche...) | pose x y z "bloc" | casse x y z ; options {va, ouvrePortes, duree, max} ; portee 4.5 ; mcanim simuler dit les echecs ; fiches actions, blocs_interactifs, casser_poser)
+  (acteur.actes [[t,"verbe",..]] : un joueur SIMULE par le jeu : va x z | regarde | saute | accroupi | tient "objet" | attends s | utilise x y z (porte, bouton, levier, coffre, cloche...) | pose x y z "bloc" | casse x y z | utilise (manger, boire) | lance x y z|"acteur" (boule de neige, oeuf, perle, potion, trident) | tire x y z|"acteur" (arc, arbalete) | jette n | prend|depose x y z "objet" n ; options {va, ouvrePortes, duree, max, effet, niveau, secondes, charge} ; portee 4.5 ; mcanim simuler dit les echecs ; fiches actions, blocs_interactifs, casser_poser, objets_utiliser, arcs_projectiles)
+  (croissance et meteo comme le jeu : cultures (1/(floor(25/v)+1)), pousses -> arbres, farine d'os, feuilles qui meurent, herbe ; ciel.meteo [[t,"pluie"|"orage"|"clair"|"foudre",...]] : pluie, neige, tonnerre, eclair, ciel terne ; regle croissance.vitesse = lapse de temps ; fiches croissance, meteo)
   (redstone et pistons comme le jeu : levier, bouton, plaque, poudre (15, -1 par bloc), torche (2 ticks, grille), repeteur (2 a 8 ticks), comparateur, observateur (2 ticks), lampe, pistons (12 blocs, collant, slime), entonnoir, dropper ; monde.contenus [[x,y,z,"objet",n]] ; monde.cmd [t,"frappe",x,y,z,force] ; regles redstone.* pistons.* contenus.* ; fiches redstone, pistons)
   mcanim regles --liste [famille]     parametres du jeu que monde.regles peut changer (nom = defaut [plage] explication) ; --familles : les familles
   mcanim mods verifier <fichier.js>   charge un mod de monde.mods dans le bac a sable et signale l'erreur en une ligne
@@ -464,7 +465,7 @@ async function commandeSimuler(argv) {
     if (scene.decor) { const { zoneAvecDecor } = await import('../src/decor/index.js'); const r0 = await zoneAvecDecor({ zone: zoneS, scene, baseDir, donnees }); zoneS = r0.zone; r0.notes.forEach(dire); }
     const hp = scene.ciel?.heure;
     const { evaluer } = await import('../src/film/scene.js');
-    const r = simuler({ zone: zoneS, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene), baseDir, duree: scene.duree, options: { heure: hp ? (t) => evaluer(hp, t)[0] : undefined } });
+    const r = simuler({ zone: zoneS, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene), baseDir, duree: scene.duree, options: { heure: hp ? (t) => evaluer(hp, t)[0] : undefined, meteo: scene.ciel?.meteo ?? null } });
     dire(r.rapport);
   } catch (e) { if (e instanceof ErreurMonde) throw new Usage(e.message); throw e; }
 }

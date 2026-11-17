@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { decoderPNG } from './png.js';
+import { ternir } from '../film/meteo.js';
 
 export const PERIODE = 24000;
 export const RAYON_CIEL_CHUNKS = 12;
@@ -243,6 +244,16 @@ void TEX_BLANCHE;
 const borne255 = (v) => (v < 0 ? 0 : v > 255 ? 255 : v);
 // cv : CielVanille ; et : etat(...) ; cam : camera ; mods : modifications du shader (voir shader/ciel.js, modsCiel) ou null ;
 // ticksMonde : temps du monde en ticks (nuages ; fige pendant `gel`). Retourne { vanille (parametre du rasteriseur), nuage (maillage ou null), couleurs: {zenith, horizon, bas} }.
+// Meteo (docs/SIMULATION.md partie 13) : ciel et brume ternes sous la pluie et l'orage, etoiles et lever de soleil effaces, nuages sombres, flash blanc d'un eclair (45 % vers 0,8 0,8 1)
+export function etatAvecMeteo(et, { pluie = 0, orage = 0, eclair = false } = {}) {
+  if (!(pluie > 0 || orage > 0 || eclair)) return et;
+  const niv = { pluie, orage };
+  let sky = ternir(et.sky, niv), fog = ternir(et.fog, niv, true);
+  if (eclair) { sky = sky.map((v, i) => v + ([204, 204, 255][i] - v) * 0.45); fog = fog.map((v, i) => v + ([204, 204, 255][i] - v) * 0.45); }
+  const sombre = 1 - 0.45 * pluie - 0.3 * orage;
+  return { ...et, sky, fog, starBrightness: et.starBrightness * (1 - pluie), sunrise: [et.sunrise[0], et.sunrise[1], et.sunrise[2], et.sunrise[3] * (1 - pluie)], cloud: [et.cloud[0] * sombre, et.cloud[1] * sombre, et.cloud[2] * sombre, et.cloud[3]], pluie };
+}
+
 export function construireCiel(cv, et, cam, mods, ticksMonde) {
   const m = mods || {};
   const teinte = m.teinte || [1, 1, 1], k = m.intensite ?? 1;
@@ -312,8 +323,8 @@ export function lumiereMonde(ticks, gamma = 0.5) {
 // de l'overworld (#0a0a0a), block_light_tint par defaut du jeu (#ffd88c : chaud). Le scintillement n'est pas simule (0).
 // Rend { R, G, B } : trois Float32Array(256), indice ciel * 16 + bloc, valeurs 0..1.
 export const TEINTE_BLOC = [0xff / 255, 0xd8 / 255, 0x8c / 255];
-export function tableLumiere(ticks, gamma = 0.5, { flicker = 0, nightVision = 0 } = {}) {
-  const f = piste(PISTE_LUM_FACTEUR, ticks)[0], sc = piste(PISTE_LUM_COULEUR, ticks);
+export function tableLumiere(ticks, gamma = 0.5, { flicker = 0, nightVision = 0, facteurCiel = 1 } = {}) {
+  const f = piste(PISTE_LUM_FACTEUR, ticks)[0] * facteurCiel, sc = piste(PISTE_LUM_COULEUR, ticks);
   const R = new Float32Array(256), G = new Float32Array(256), B = new Float32Array(256);
   const lum = (v) => v / (4 - 3 * v);
   const amb = Math.max(AMBIANT_OVERWORLD, 0.6 * nightVision);

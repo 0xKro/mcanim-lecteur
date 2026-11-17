@@ -3,6 +3,8 @@
 //     pendant les 10 derniers ticks : echelle 1 + 0,3 x (1 - (meche + 1 - partiel) / 10)^4
 //   - bloc qui tombe (sable, gravier, enclume, beton en poudre) : son vrai modele de bloc (enclume orientee, par exemple), pas un cube
 //   - bloc en mouvement d'un piston (type `piston`) : le modele de l'etat deplace (ou la tete du piston), a la position interpolee entre deux ticks
+//   - projectiles : fleche (modele du jeu : deux plans croises a 45 degres et la plaque de plumes, 16 px x 0,05625), fleche plantee, trident ; objets lances (boule
+//     de neige, oeuf, perle, potion) : le sprite de l'objet, de face a la camera (ThrownItemRenderer)
 //   - objet au sol (ItemEntity) : le modele d'objet du jeu (plat extrude ou bloc) avec l'affichage `ground`, qui tourne (age / 20 + decalage) et flotte
 //     (sin(age / 10 + decalage) x 0,1 + 0,1), 1 a 5 copies selon le nombre ; reutilise le rendu des objets tenus (src/objets)
 import { resoudreObjet } from '../objets/definition.js';
@@ -39,6 +41,24 @@ function transformer(p, aff) {
     x += aff.translation[0]; y += aff.translation[1]; z += aff.translation[2];
   }
   return [x, y, z];
+}
+
+// Texture de la fleche (16 x 10) dessinee ici : le kit n'a pas entity/projectiles/arrow.png. Haut (16 x 5) : vue de cote (plumes, hampe, pointe) ; bas gauche (5 x 5) : plumes vues de face.
+let TEX_FLECHE = null;
+function texFleche() {
+  if (TEX_FLECHE) return TEX_FLECHE;
+  const W = 16, H = 10, rgba = new Uint8Array(W * H * 4);
+  const px = (x, y, c) => { const i = (y * W + x) * 4; rgba[i] = c[0]; rgba[i + 1] = c[1]; rgba[i + 2] = c[2]; rgba[i + 3] = 255; };
+  const bois = [128, 96, 56], boisSombre = [98, 72, 40], plume = [236, 236, 232], plumeOmbre = [190, 190, 186], pointe = [150, 150, 154], pointeSombre = [96, 96, 100];
+  for (let x = 3; x < 13; x++) { px(x, 1, boisSombre); px(x, 2, x % 3 === 0 ? boisSombre : bois); px(x, 3, boisSombre); }
+  for (let x = 0; x < 4; x++) for (let y = 0; y < 5; y++) { if (Math.abs(y - 2) <= (x === 0 ? 2 : x === 1 ? 2 : 1)) px(x, y, (x + y) % 2 ? plume : plumeOmbre); }
+  px(2, 2, bois); px(3, 2, bois);
+  for (let x = 13; x < 16; x++) for (let y = 1; y <= 3; y++) { if (Math.abs(y - 2) <= (x === 15 ? 0 : 1)) px(x, y, (x + y) % 2 ? pointe : pointeSombre); }
+  px(13, 2, pointe);
+  for (let y = 5; y < 10; y++) for (let x = 0; x < 5; x++) { if (Math.abs(x - 2) + Math.abs(y - 7) <= 3 || x === 2 || y === 7) px(x, y, (x + y) % 2 ? plume : plumeOmbre); }
+  px(2, 7, bois);
+  TEX_FLECHE = { largeur: W, hauteur: H, rgba };
+  return TEX_FLECHE;
 }
 
 export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
@@ -99,7 +119,7 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
   };
 
   return {
-    maillages(u) {
+    maillages(u, camera) {
       const tick = Math.floor(u), f = u - tick, parTex = new Map();
       const M = (cle, texture, genre) => { if (!parTex.has(cle)) parTex.set(cle, { texture, genre, m: new Mailleur() }); return parTex.get(cle).m; };
       for (const lignes of parId.values()) {
@@ -132,6 +152,42 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
             if (!tex) continue;
             M('b|' + q.tex, tex, 'chute').quad(q.p.map((p) => [x + p[0] - 0.5, y + p[1], z + p[2] - 0.5]), q.uv, q.ombre * L);
           }
+        } else if (type === 'fleche' || type === 'fleche_plantee' || type === 'trident' || type === 'trident_plantee') {
+          // direction : lacet et tangage du replay (tangage > 0 vers le bas), repere (avant, droite, haut) puis les deux plans a 45 degres et la plaque de plumes
+          const ya = E[a + 6] * RAD, pa = E[a + 7] * RAD, dx = -Math.sin(ya) * Math.cos(pa), dy = -Math.sin(pa), dz = Math.cos(ya) * Math.cos(pa);
+          const L = lum(x, y, z);
+          if (type.startsWith('trident')) {
+            const sp = quadsObjet('trident'), nomTex = sp.quads[0]?.tex;
+            if (!nomTex) continue;
+            const t = textureDe(nomTex, null);
+            if (!t) continue;
+            const cam = camera ?? { x: x, y: y + 5, z: z };
+            const n = [cam.x - x, cam.y - y, cam.z - z], nl = Math.hypot(...n) || 1, nn = n.map((c) => c / nl);
+            let w = [nn[1] * dz - nn[2] * dy, nn[2] * dx - nn[0] * dz, nn[0] * dy - nn[1] * dx];
+            const wl = Math.hypot(...w) || 1; w = w.map((c) => c / wl);
+            const s = 0.55 * 0.7071, R = [(dx - w[0]) * s, (dy - w[1]) * s, (dz - w[2]) * s], U = [(dx + w[0]) * s, (dy + w[1]) * s, (dz + w[2]) * s];
+            M('trident|' + nomTex, t, 'objet').quad([[x - R[0] + U[0], y - R[1] + U[1], z - R[2] + U[2]], [x + R[0] + U[0], y + R[1] + U[1], z + R[2] + U[2]], [x + R[0] - U[0], y + R[1] - U[1], z + R[2] - U[2]], [x - R[0] - U[0], y - R[1] - U[1], z - R[2] - U[2]]], [[0, 0], [1, 0], [1, 1], [0, 1]], L);
+            continue;
+          }
+          let r = Math.abs(dy) > 0.99 ? [1, 0, 0] : [dz, 0, -dx];
+          const rl = Math.hypot(...r) || 1; r = r.map((c) => c / rl);
+          const up = [r[1] * dz - r[2] * dy, r[2] * dx - r[0] * dz, r[0] * dy - r[1] * dx];
+          const K = 0.05625, queue = -11 * K, pointe = 5 * K, h = 2.5 * K;
+          const P = (c, lat, hau) => [x + dx * c + lat[0] * hau, y + dy * c + lat[1] * hau, z + dz * c + lat[2] * hau];
+          const axes = [[(up[0] + r[0]) * 0.7071, (up[1] + r[1]) * 0.7071, (up[2] + r[2]) * 0.7071], [(up[0] - r[0]) * 0.7071, (up[1] - r[1]) * 0.7071, (up[2] - r[2]) * 0.7071]];
+          const T = texFleche();
+          for (const ax of axes) M('fleche', T, 'fleche').quad([P(queue, ax, h), P(pointe, ax, h), P(pointe, ax, -h), P(queue, ax, -h)], [[0, 0], [1, 0], [1, 0.5], [0, 0.5]], L);
+          M('fleche', T, 'fleche').quad([P(queue, up, h), P(queue, r, h), P(queue, up, -h), P(queue, r, -h)], [[0, 0.5], [0.3125, 0.5], [0.3125, 1], [0, 1]], L);
+        } else if (type === 'lance') {
+          // sprite de l'objet lance, de face a la camera (taille 0,5 comme l'affichage ground)
+          const nom = replay.noms[E[a + 7]], modele = quadsObjet(nom), nomTex = modele.quads[0]?.tex;
+          if (!nomTex) continue;
+          const t = textureDe(nomTex, null);
+          if (!t) continue;
+          const cam = camera ?? { lacet: 0, tangage: 0 }, ya = (cam.lacet ?? 0) * RAD, pa = (cam.tangage ?? 0) * RAD;
+          const fw = [-Math.sin(ya) * Math.cos(pa), -Math.sin(pa), Math.cos(ya) * Math.cos(pa)], rr = [-Math.cos(ya), 0, -Math.sin(ya)];
+          const hh = [rr[1] * fw[2] - rr[2] * fw[1], rr[2] * fw[0] - rr[0] * fw[2], rr[0] * fw[1] - rr[1] * fw[0]], s = 0.25, L = lum(x, y, z), cy = y + 0.125;
+          M('lance|' + nomTex, t, 'objet').quad([[x - rr[0] * s + hh[0] * s, cy - rr[1] * s + hh[1] * s, z - rr[2] * s + hh[2] * s], [x + rr[0] * s + hh[0] * s, cy + rr[1] * s + hh[1] * s, z + rr[2] * s + hh[2] * s], [x + rr[0] * s - hh[0] * s, cy + rr[1] * s - hh[1] * s, z + rr[2] * s - hh[2] * s], [x - rr[0] * s - hh[0] * s, cy - rr[1] * s - hh[1] * s, z - rr[2] * s - hh[2] * s]], [[0, 0], [1, 0], [1, 1], [0, 1]], L);
         } else if (type === 'objet') {
           const nom = replay.noms[E[a + 7]], N = E[a + 6], modele = quadsObjet(nom);
           if (!modele.quads.length) continue;

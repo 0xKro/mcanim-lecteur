@@ -21,6 +21,7 @@ import { lireCadre } from '../montage/cadrage.js';   // cadre : plan moyen, rapp
 import { lireZonesSures } from '../montage/zones.js';   // zonesSures : marges de l'interface des applications (profils instagram, tiktok, youtube, toutes, aucune)
 import { lireEntreesFichiers } from '../montage/audio.js';   // sons.fichiers : fichiers audio du montage
 import { lireHabillage } from './objets-scene.js';   // objet, objetG, armure (docs/CONCEPTION.md, tableau de l'acteur)
+import { lireMeteo } from './meteo.js';   // ciel.meteo : pluie, orage, foudre (docs/SIMULATION.md partie 13)
 import { lireActes } from './actes.js';   // actes : intentions d'un acteur simule (va, utilise, pose, casse... docs/SIMULATION.md partie 9)
 const PISTES_BOUCLE = [...MEMBRES, ...ARTICULATIONS, 'tete', 'corps', 'lacet', 'bascule', 'roulis', 'hauteur'];
 export const MAX_CLES_SKINS = 16, MAX_GELS = 8, MAX_TEXTURES = 32;
@@ -183,6 +184,12 @@ export function validerScene(s) {
     }
     // sante et ramassage d'un acteur a intentions (docs/SIMULATION.md partie 11) : vie (20 par defaut), invulnerable, ramasse (objets au sol)
     if (a.vie !== undefined) { if (!estNombre(a.vie) || a.vie <= 0 || a.vie > 1024) err(`${ch}.vie`, 'nombre entre 0 et 1024 attendu (points de vie : 20 = 10 coeurs)'); o.vie = a.vie; }
+    if (a.faim !== undefined) { if (!estNombre(a.faim) || a.faim < 0 || a.faim > 20) err(`${ch}.faim`, 'nombre entre 0 et 20 attendu (niveau de faim de depart : 20 = 10 cuisses)'); o.faim = a.faim; }
+    if (a.sac !== undefined) {   // inventaire de depart d'un acteur a intentions : { "coal": 8 } (prend / depose / jette en tiennent le compte)
+      if (!estObjet(a.sac) || Object.keys(a.sac).length > 36) err(`${ch}.sac`, 'objet { "objet": nombre } attendu (36 objets au plus), par exemple {"coal": 8, "oak_log": 4}');
+      for (const [k, v] of Object.entries(a.sac)) if (!/^[a-z0-9_]{1,60}$/.test(k) || !Number.isInteger(v) || v < 0 || v > 3456) err(`${ch}.sac.${k}`, 'identifiant d objet du jeu et nombre entier de 0 a 3456 attendus');
+      o.sac = a.sac;
+    }
     for (const k of ['invulnerable', 'ramasse']) if (a[k] !== undefined) { if (typeof a[k] !== 'boolean') err(`${ch}.${k}`, 'true ou false attendu'); o[k] = a[k]; }
     if (a.lacet !== undefined) o.lacet = lirePiste(a.lacet, `${ch}.lacet`, { minArite: 1, maxArite: 1 });
     if (a.tete !== undefined) o.tete = borner(lirePiste(a.tete, `${ch}.tete`, { minArite: 2, maxArite: 3 }), `${ch}.tete`, -PLAFOND, PLAFOND);
@@ -265,11 +272,11 @@ export function validerScene(s) {
     v: 1, format: s.format, largeur, hauteur, duree: s.duree, zone: s.zone,
     images: Math.round(s.duree * IMAGES_PAR_SECONDE), acteurs, camera, sons,
     image: s.image !== undefined ? lireTable(s.image, 'image', LEVIERS_IMAGE) : null,
-    ciel: s.ciel !== undefined ? lireTable(s.ciel, 'ciel', LEVIERS_CIEL) : null,
+    ciel: s.ciel !== undefined ? lireCiel(s.ciel, s.duree) : null,
     gel: s.gel !== undefined ? lireGel(s.gel, s.duree) : [],
     textures: s.textures !== undefined ? lireTextures(s.textures) : {},
     shader: s.shader !== undefined ? lireRefShader(s.shader) : null,   // chemin du fichier shader.json (docs/FORMAT-SHADER.md)
-    monde: s.monde !== undefined ? lireMonde(s.monde, s.duree) : (acteurs.some((a) => a.actes) || s.decor !== undefined ? lireMonde({}, s.duree) : null),   // simulation du jeu (docs/SIMULATION.md) ; absent = rendu d'avant, exactement ; un decor cree `monde: {}` (lumiere de blocs, sols et portes du monde vivant)
+    monde: s.monde !== undefined ? lireMonde(s.monde, s.duree) : (acteurs.some((a) => a.actes) || s.decor !== undefined || (estObjet(s.ciel) && s.ciel.meteo !== undefined) ? lireMonde({}, s.duree) : null),   // simulation du jeu (docs/SIMULATION.md) ; absent = rendu d'avant, exactement ; un decor cree `monde: {}` (lumiere de blocs, sols et portes du monde vivant)
     ...(s.decor !== undefined ? { decor: lireListeDecor(s.decor) } : {}),   // decors (docs/FORMAT-DECOR.md) : fichiers .decor.json ou objets en ligne, appliques dans l'ordre
     packShader: s.packShader !== undefined ? lireRefPackShader(s.packShader) : null,   // vrai pack de shaders (.zip) : rendu OpenGL logiciel, docs/SHADERS-REELS.md
     jeu: jeuDeScene(s, !!(montage.plans || montage.textes.length || montage.incrustations.length)),
@@ -406,6 +413,15 @@ const LEVIERS_IMAGE = {
 const LEVIERS_CIEL = {
   heure: { arite: 1, min: 0, max: 24 }, gamma: { arite: 1, min: 0, max: 1 }, jour: { arite: 1, min: 0, max: 100000 }, lumiere: { arite: 1, min: 0, max: 2 }, couleurCiel: { arite: 3, min: 0, max: 1 }, brume: { arite: 1, min: 0, max: 300 },
 };
+
+// `ciel` : les leviers numeriques (heure, gamma...) plus la piste `meteo` (clair, pluie, orage, foudre : film/meteo.js)
+function lireCiel(brut, duree) {
+  if (!estObjet(brut) || brut.meteo === undefined) return lireTable(brut, 'ciel', LEVIERS_CIEL);
+  const { meteo, ...reste } = brut;
+  const o = lireTable(reste, 'ciel', LEVIERS_CIEL);
+  o.meteo = lireMeteo(meteo, 'ciel.meteo', err, duree);
+  return o;
+}
 
 function lireTable(brut, ch, leviers) {
   if (!estObjet(brut)) err(ch, `un objet est attendu, par exemple {"${Object.keys(leviers)[0]}": [[0, 1]]}`);

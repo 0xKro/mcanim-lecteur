@@ -24,6 +24,8 @@ export function installer(mc, regles) {
   mc.bloc('FireBlock').sur('tick', (ev, monde) => {
     if (!monde.regle('feu.actif', true)) return;
     const [x, y, z] = ev.pos, b = monde.bloc(x, y, z), age = Number(b.etat.age);
+    // FireBlock.tick : sous la pluie (ici ou a un bloc), le feu s'eteint avec la chance 0,2 + age x 0,03
+    if ((monde.pleut(x, y, z) || monde.pleut(x + 1, y, z) || monde.pleut(x - 1, y, z) || monde.pleut(x, y, z + 1) || monde.pleut(x, y, z - 1)) && !/netherrack|magma_block/.test(monde.bloc(x, y - 1, z).nom) && monde.hasard.flottant() < 0.2 + age * 0.03) { monde.poser(x, y, z, 'minecraft:air', 3); return; }
     const dessous = monde.bloc(x, y - 1, z), infini = /netherrack|magma_block/.test(dessous.nom);
     const combustible = COTES.some(([a, c, d]) => monde.feu(monde.bloc(x + a, y + c, z + d).nom)[0] > 0);
     const appui = monde.appui(x, y - 1, z, 'haut', 'plein');

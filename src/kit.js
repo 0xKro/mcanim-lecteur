@@ -23,10 +23,15 @@ export const SOUND_EVENTS_MONDE = [
   'item.bucket.empty', 'item.bucket.fill', 'item.bucket.empty_lava', 'item.bucket.fill_lava', 'block.lava.extinguish', 'block.lava.pop', 'block.lava.ambient',
   'entity.player.splash', 'entity.player.splash.high_speed', 'entity.player.hurt', 'entity.player.death', 'entity.player.big_fall', 'entity.player.small_fall',
   'item.firecharge.use', 'entity.generic.extinguish_fire', 'block.candle.extinguish',
+  // objets, projectiles, croissance, meteo (phase 7)
+  'entity.arrow.shoot', 'entity.arrow.hit', 'entity.arrow.hit_player', 'entity.snowball.throw', 'entity.egg.throw', 'entity.ender_pearl.throw', 'entity.player.teleport',
+  'entity.splash_potion.throw', 'entity.splash_potion.break', 'item.trident.throw', 'item.trident.hit_ground', 'item.crossbow.loading_start', 'item.crossbow.loading_middle', 'item.crossbow.loading_end', 'item.crossbow.shoot',
+  'entity.generic.eat', 'entity.generic.drink', 'entity.player.burp', 'item.hoe.till', 'item.bone_meal.use', 'item.crop.plant', 'item.bottle.fill', 'entity.item.break',
+  'weather.rain', 'weather.rain.above', 'entity.lightning_bolt.thunder', 'entity.lightning_bolt.impact', 'block.furnace.fire_crackle', 'item.bucket.fill_powder_snow',
 ];
 export const SOUND_EVENTS = [...new Set([...SOUND_EVENTS_PAS, ...SOUND_EVENTS_MONDE])];
 // Version de chaque groupe du kit : un cache plus ancien (kit.json) est complete la prochaine fois (sons du monde, textures de coffre et de cloche, particules)
-export const GROUP_VERSIONS = { sons: 3, textures: 2 };
+export const GROUP_VERSIONS = { sons: 4, textures: 2 };
 
 // groupe -> prefixes de chemin dans le jar (et dans le cache, qui reprend les memes chemins)
 export const GROUPS = {

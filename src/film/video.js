@@ -10,6 +10,7 @@ import { terrainDepuis } from './physique.js';
 import { descripteursActeurs } from './actes.js';   // acteurs a intentions (champ `actes`) pour la simulation
 import { evaluer } from './scene.js';
 import { imageEn, cielEn } from './look.js';
+import { facteurCielMeteo } from './meteo.js';
 import { Personnage } from '../perso/modele.js';
 import { resoudreSkin } from '../perso/skin.js';
 import { lireMasque } from '../perso/masque.js';
@@ -65,7 +66,7 @@ export async function simulerScene({ scene, zonePath, baseDir, env = process.env
   if (scene.decor) { const r0 = await (await import('../decor/index.js')).zoneAvecDecor({ zone, scene, baseDir, donnees }); zone = r0.zone; notesDecor = r0.notes; }
   const hp = scene.ciel?.heure;   // l'heure du jour de la scene : lue par le detecteur de lumiere du jour
   const heure = hp ? (t) => evaluer(hp, t)[0] : undefined;
-  const r = simuler({ zone, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene), baseDir, duree: scene.duree, options: { heure } });
+  const r = simuler({ zone, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene), baseDir, duree: scene.duree, options: { heure, meteo: scene.ciel?.meteo ?? null } });
   return { zone, donnees, replay: r.replay, rapport: r.rapport, notes: [...notesDecor, ...r.replay.avertissements.map((a) => 'monde : ' + a)], secondes: (performance.now() - t0) / 1000 };
 }
 
@@ -108,7 +109,10 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
       }
       if (sim) await rs.appliquerReplay(sim.replay.tickDe(im.tm));   // les blocs changes jusqu'a cet instant du monde (refait les sections touchees)
       const cielM = sim ? cielEn(scene, im.t, { lightmap: rs.maillage.lightmap }) : null;
-      if (cielM && rs.maillage.lightmap) rs.tableLumiere(cielM.heure ?? 12, cielM.gamma);   // la lumiere des acteurs suit la meme table que le terrain
+      // meteo (ciel.meteo, coup de foudre) : niveaux de pluie et d'orage a cet instant du monde, eclair, facteur de lumiere du ciel du jeu ; null sans meteo
+      const metNiv = effets?.meteo ? effets.meteo.niveaux(im.tm) : null, eclair = effets?.meteo ? effets.meteo.eclair(sim.replay.tickDe(im.tm)) : false;
+      const meteoP = metNiv && (metNiv.pluie > 0 || metNiv.orage > 0 || eclair) ? { ...metNiv, eclair, facteurCiel: eclair ? 1 : facteurCielMeteo(metNiv) } : null;
+      if (cielM && rs.maillage.lightmap) rs.tableLumiere(cielM.heure ?? 12, cielM.gamma, meteoP ? meteoP.facteurCiel : 1);   // la lumiere des acteurs suit la meme table que le terrain
       const imC = carte ? comp.imageCarte(carte, im) : null;   // carte avec acteurs : ils sont sur l'etage, la camera les regarde de face
       const maillages = (carte ? imC.ks : im.acteurs.map((_, k) => k)).map((k) => {
         const p = (carte ? imC : im).acteurs[k];
@@ -127,7 +131,7 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
       const fond = carte ? carte.fond : null;   // carte : ciel et brume de la couleur du fond, terrain hors de portee
       const rgbaRendu = await rs.rendre({
         camera: carte ? imC.camera : im.camera, largeur, hauteur, temps: im.tm, maillagesDynamiques: maillages, ssaa, copie, ...(veutProf ? { profondeur: true } : {}),
-        image: imageEn(scene, im.t), heure: ciel?.heure, jour: ciel?.jour, cielFixe: ciel?.fixe, lumiere: ciel?.lumiere, gamma: ciel?.gamma,
+        image: imageEn(scene, im.t), heure: ciel?.heure, jour: ciel?.jour, cielFixe: ciel?.fixe, lumiere: meteoP && !rs.maillage.lightmap && ciel?.lumiere ? ciel.lumiere.map((v) => v * meteoP.facteurCiel) : ciel?.lumiere, gamma: ciel?.gamma, meteo: meteoP,
         // le ciel est celui du jeu ; couleurs de ciel et de brume imposees seulement par couleurCiel
         ciel: ciel?.fixe ? ciel.ciel : undefined, soleil: ciel?.fixe ? ciel.soleil : undefined,
         brume: ciel?.fixe ? ciel.brume : (ciel?.brume?.debut !== undefined ? { debut: ciel.brume.debut } : undefined),
@@ -207,7 +211,7 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
     // --- son
     const sons = new Sons(film.kit, ffmpeg);
     const plan = planifierSons({ scene, images, zone: rs.zone, sons, sims: anim.sims, remap: anim.remap });
-    if (film.sim) { const { sonsDuReplay } = await import('./sons-monde.js'); plan.notes.push(...sonsDuReplay({ replay: film.sim.replay, images, sons, evenements: plan.evenements, gel: scene.gel, remap: anim.remap })); plan.evenements.sort((a, b) => a.t - b.t); }   // sons du monde simule (portes, coups de pioche, cloche...)
+    if (film.sim) { const { sonsDuReplay, sonsMeteo } = await import('./sons-monde.js'); plan.notes.push(...sonsDuReplay({ replay: film.sim.replay, images, sons, evenements: plan.evenements, gel: scene.gel, remap: anim.remap }), ...sonsMeteo({ scene, sons, evenements: plan.evenements })); plan.evenements.sort((a, b) => a.t - b.t); }   // sons du monde simule (portes, coups de pioche, cloche...)
     let pcm = mixer({ evenements: plan.evenements, duree: scene.duree, sons, volume: VOLUME_MIXAGE * (scene.sons.volume ?? 1) });
     // fichiers audio du montage (voix, musique, effets) : mixes par-dessus les bruits du jeu, ducking et sonie finale (montage/audio.js)
     let notesAudio = [];

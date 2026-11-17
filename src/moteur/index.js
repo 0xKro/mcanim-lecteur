@@ -50,7 +50,7 @@ export function lireFichiersMods(liste, baseDir) {
 // Prepare la simulation (familles, mods, regles, commandes) sans la lancer. Utile aux tests et a `mcanim mods verifier`.
 export function preparer({ zone, donnees, monde = {}, mods = [], acteurs = [], options = {} } = {}) {
   const config = {
-    graine: monde.graine ?? 1, blocs: monde.blocs || [], cmd: monde.cmd || [], regles: monde.regles, plafondMs: options.plafondMs, heure: options.heure, contenus: monde.contenus,
+    graine: monde.graine ?? 1, blocs: monde.blocs || [], cmd: monde.cmd || [], regles: monde.regles, plafondMs: options.plafondMs, heure: options.heure, contenus: monde.contenus, meteo: options.meteo,
   };
   const sim = new Simulation({ zone, donnees, config, monde: options.monde });
   declarerReglesMonde(sim.regles);
@@ -95,7 +95,7 @@ export function creerActeurs(sim, descs) {
   const liste = descs.map((d) => {
     const p = d.pos;
     const x = p[0], z = p.length === 3 ? p[2] : p[1];
-    return { nom: d.nom, x, z, y: p.length === 3 ? p[1] : null, lacet: d.lacet ?? 0, objet: d.objet ?? null, vie: d.vie, invulnerable: d.invulnerable, ramasse: d.ramasse, actes: (d.actes || []).map((a) => ({ ...a, tick: Math.floor(a.t * 20 * ralenti + 1e-9) })) };
+    return { nom: d.nom, x, z, y: p.length === 3 ? p[1] : null, lacet: d.lacet ?? 0, objet: d.objet ?? null, vie: d.vie, invulnerable: d.invulnerable, ramasse: d.ramasse, faim: d.faim, sac: d.sac, actes: (d.actes || []).map((a) => ({ ...a, tick: Math.floor(a.t * 20 * ralenti + 1e-9) })) };
   });
   const lec = { etatEn: (x, y, z) => sim.monde.etatEn(x, y, z), d: sim.d };
   for (const a of liste) {

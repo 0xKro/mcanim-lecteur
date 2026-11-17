@@ -14,8 +14,11 @@ import * as objets from './objets.js';
 import * as redstone from './redstone.js';
 import * as pistons from './pistons.js';
 import * as contenus from './contenus.js';
+import * as projectiles from './projectiles.js';
+import * as croissance from './croissance.js';
+import * as meteo from './meteo.js';
 
-export const FAMILLES = { torches, herbe, portes, boutons, conteneurs, pose, joueur, chute, tnt, feu, fluides, objets, redstone, pistons, contenus };
+export const FAMILLES = { torches, herbe, portes, boutons, conteneurs, pose, joueur, chute, tnt, feu, fluides, objets, redstone, pistons, contenus, projectiles, croissance, meteo };
 
 export function installerFamilles(reg, regles) {
   const mc = { bloc: (s) => reg.bloc(s), entite: (s) => reg.entite(s), get monde() { return reg.monde; }, donnees: reg.d };

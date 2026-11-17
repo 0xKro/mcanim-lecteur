@@ -2,6 +2,7 @@
 // comme les autres sons du film, avec l'affaiblissement du jeu : un son de volume v s'entend jusqu'a 16 x max(1, v) blocs, lineairement.
 // La hauteur (pitch) change la vitesse de lecture (reechantillonnage dans film/sons.js). Un son absent du kit est ignore et signale une fois.
 import { choisir } from './sons.js';
+import { niveauxMeteo } from './meteo.js';
 
 const DT = 1 / 30;
 
@@ -26,4 +27,19 @@ export function sonsDuReplay({ replay, images, sons, evenements, gel = [], remap
     evenements.push({ t, fichier: choisir(liste, `monde|${nom}|${i}`), gain, pan, hauteur });
   }
   return absents.size ? [`sons du monde absents du kit, ignores : ${[...absents].join(', ')}`] : [];
+}
+
+// Bruit de la pluie (weather.rain, weather.rain.above) : un son toutes les 1,2 s, de la camera (la pluie tombe autour d'elle, sans affaiblissement), au volume du niveau de pluie
+// (WeatherEffectRenderer.tickRain : 0,2 sous le ciel, 0,1 couvert). Le tonnerre et l'impact sont des sons du replay (entity.lightning_bolt.*).
+export function sonsMeteo({ scene, sons, evenements }) {
+  const piste = scene.ciel?.meteo;
+  if (!piste || !piste.etats.length) return [];
+  const liste = sons.fichiers('weather.rain');
+  if (!liste.length) return ['sons de pluie (weather.rain) absents du kit, ignores'];
+  for (let i = 0, t = 0; t < scene.duree; i++, t += 1.2) {
+    const n = niveauxMeteo(piste, t).pluie;
+    if (n < 0.05) continue;
+    evenements.push({ t, fichier: choisir(liste, `pluie|${i}`), gain: Math.min(1, 0.55 * n), pan: 0, hauteur: 1 });
+  }
+  return [];
 }

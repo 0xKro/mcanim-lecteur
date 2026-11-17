@@ -10,6 +10,7 @@ import path from 'node:path';
 import { decoderPNG } from '../rendu/png.js';
 import { Aleatoire } from '../moteur/aleatoire.js';
 import { deplacerBoite } from '../moteur/collision.js';
+import { creerMeteoRendu } from './meteo-rendu.js';   // pluie, neige, foudre
 import { creerEntites } from './entites-monde.js';   // TNT amorce, blocs qui tombent (vrai modele), objets au sol
 
 const RAD = Math.PI / 180;
@@ -226,10 +227,11 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain }) {
   // ---------------------------------------------------------------- particules (Particle.tick du jeu)
   const particules = creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes });
   const entites = creerEntites({ rs, replay, kit, texOf, lum, notes });   // TNT amorce, blocs qui tombent, objets au sol
+  const meteoR = creerMeteoRendu({ rs, replay, scene, donnees, terrain, texOf, lum });   // pluie, neige, foudre (null sans meteo ni foudre)
 
   // ---------------------------------------------------------------- une image
   return {
-    notes,
+    notes, meteo: meteoR,
     nbCoffres: instances.filter((i) => i.genre === 'coffre').length, nbCloches: instances.filter((i) => i.genre === 'cloche').length,
     // maillages dynamiques pour l'image de temps `tm` (secondes du monde) ; `camera` : pour les particules (face a la camera)
     maillages(tm, camera) {
@@ -252,8 +254,9 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain }) {
         const [x, y, z] = cle.split(',').map(Number);
         const m = maillageFissure(x, y, z, Math.min(9, e), t0); if (m) out.push(m);
       }
-      out.push(...entites.maillages(u));
+      out.push(...entites.maillages(u, camera));
       out.push(...particules.maillages(u, camera));
+      if (meteoR) out.push(...meteoR.maillages(tm, camera));
       return out;
     },
   };
@@ -325,6 +328,28 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
         else if (nom === 'large_smoke') out.push({ ...base, type: 'anim', pref: 'particle/big_smoke_', n: 12, xd: (r1 - 0.5) * 0.02, yd: 0.03 + r2 * 0.02, zd: (r3 - 0.5) * 0.02, duree: Math.floor(8 / (r2 * 0.8 + 0.2)) + 6, taille: 0.25 + r1 * 0.15, gravite: -0.1, friction: 0.96, couleur: [0.5, 0.5, 0.5] });
         else out.push({ ...base, type: 'tex', tex: 'particle/lava', xd: (r1 - 0.5) * 0.1, yd: 0.15 + r2 * 0.15, zd: (r3 - 0.5) * 0.1, duree: Math.floor(16 / (r2 * 0.8 + 0.2)), taille: 0.07 + r1 * 0.05, gravite: 0.75, friction: 0.999, couleur: [1, 1, 1], plein: true });
       }
+    } else if (nom === 'crit') {   // CritParticle : petites etoiles qui retombent vite (friction 0,7, gravite 0,5)
+      const r1 = alea.flottant(), r2 = alea.flottant(), r3 = alea.flottant();
+      out.push({ type: 'tex', tex: 'particle/critical_hit', debut: tick, x, y, z, xd: P[idx * 9 + 5] * 0.1 + (r1 - r2) * 0.05, yd: P[idx * 9 + 6] * 0.1 + (r2 - r3) * 0.05, zd: P[idx * 9 + 7] * 0.1 + (r3 - r1) * 0.05, age: 0, duree: Math.floor(6 / (r1 * 0.8 + 0.6)), taille: 0.09 + r2 * 0.05, gravite: 0.5, friction: 0.7, sol: false, uo: 0, vo: 0, couleur: [1, 1, 1], plein: true });
+    } else if (nom === 'portal') {   // PortalParticle : des points violets qui s'eloignent
+      const r1 = alea.flottant(), r2 = alea.flottant();
+      out.push({ type: 'tex', tex: 'particle/generic_0', debut: tick, x, y, z, xd: P[idx * 9 + 5] * 0.05 + (r1 - 0.5) * 0.1, yd: (r2 - 0.5) * 0.1, zd: P[idx * 9 + 7] * 0.05 + (r2 - 0.5) * 0.1, age: 0, duree: 20 + Math.floor(r1 * 20), taille: 0.05 + r2 * 0.05, gravite: 0, friction: 0.98, sol: false, uo: 0, vo: 0, couleur: [0.6 + r1 * 0.2, 0.25, 0.95], plein: true });
+    } else if (nom === 'effet') {   // SpellParticle (potion jetee) : spirale d'une couleur (teinte dans le champ nombre)
+      const teinte = N, k = Math.floor(teinte * 6) % 6, f = teinte * 6 - Math.floor(teinte * 6), q = 1 - 0.6 * f, t2 = 1 - 0.6 * (1 - f);
+      const col = [[1, t2, 0.4], [q, 1, 0.4], [0.4, 1, t2], [0.4, q, 1], [t2, 0.4, 1], [1, 0.4, q]][k];
+      const r1 = alea.flottant();
+      out.push({ type: 'anim', pref: 'particle/effect_', n: 8, debut: tick, x, y, z, xd: P[idx * 9 + 5], yd: P[idx * 9 + 6], zd: P[idx * 9 + 7], age: 0, duree: Math.floor(40 / (r1 * 0.8 + 0.2)), taille: 0.12 + r1 * 0.06, gravite: -0.02, friction: 0.9, sol: false, uo: 0, vo: 0, couleur: col, plein: true });
+    } else if (nom === 'happy_villager') {   // HappyVillagerParticle : des etincelles vertes qui montent (farine d'os)
+      const r1 = alea.flottant(), r2 = alea.flottant();
+      out.push({ type: 'anim', pref: 'particle/glitter_', n: 8, debut: tick, x, y, z, xd: (r1 - 0.5) * 0.02, yd: 0.02 + r2 * 0.03, zd: (r2 - 0.5) * 0.02, age: 0, duree: 14 + Math.floor(r1 * 12), taille: 0.1 + r2 * 0.05, gravite: 0, friction: 0.95, sol: false, uo: 0, vo: 0, couleur: [0.35, 1, 0.35], plein: true });
+    } else if (nom === 'flame') {   // FlameParticle
+      const r1 = alea.flottant(), r2 = alea.flottant();
+      out.push({ type: 'tex', tex: 'particle/flame', debut: tick, x, y, z, xd: (r1 - 0.5) * 0.01, yd: 0.005 + r2 * 0.01, zd: (r2 - 0.5) * 0.01, age: 0, duree: Math.floor(8 / (r1 * 0.8 + 0.2)) + 4, taille: 0.06 + r2 * 0.03, gravite: 0, friction: 0.96, sol: false, uo: 0, vo: 0, couleur: [1, 1, 1], plein: true });
+    } else if (nom.startsWith('item|')) {   // miettes d'un objet (nourriture mangee, boule de neige ou oeuf qui se brise) : quarts de la texture de l'objet
+      const objet = nom.slice(5), tex = texPart('item/' + objet) ? 'item/' + objet : null;
+      if (!tex) { jeter(nom, "miettes d'objet : texture item/" + objet + " absente du kit"); return out; }
+      const r1 = alea.flottant(), r2 = alea.flottant(), r3 = alea.flottant();
+      out.push({ type: 'bloc', tex, debut: tick, x, y, z, xd: P[idx * 9 + 5], yd: P[idx * 9 + 6], zd: P[idx * 9 + 7], age: 0, duree: Math.floor(4 / (r1 * 0.9 + 0.1)), taille: 0.1 * (r2 * 0.5 + 0.5), uo: r3 * 3, vo: r2 * 3, gravite: 1, friction: 0.98, sol: false, couleur: [1, 1, 1], plein: true });
     } else if (nom === 'explosion' || nom === 'explosion_emitter') {   // ExplosionParticle : 16 images explosion_0..15
       const grand = nom === 'explosion_emitter', nb = grand ? 10 : Math.max(1, N);
       for (let i = 0; i < nb; i++) {

@@ -22,6 +22,9 @@ export function texteRapport({ sim, replay, duree }) {
   const eauN = (parType.get('water') || 0), laveN = (parType.get('lava') || 0), roche = (parType.get('obsidian') || 0) + (parType.get('cobblestone') || 0) + (parType.get('basalt') || 0);
   if (sim.nbFluides) M.push(`fluides ${sim.nbFluides} pas (eau ${eauN}, lave ${laveN}${roche ? ', roche ' + roche : ''})`);
   if (S.ramasses) M.push(`ramasses ${S.ramasses}`);
+  if (S.tirs || S.lances) M.push(`tirs ${S.tirs || 0}, lancers ${S.lances || 0} (${S.fleches || 0} fleches et ${S.touches || 0} boules au but, ${S.plantees || 0} plantees${S.teleports ? ', ' + S.teleports + ' teleportations' : ''})`);
+  if (S.repas || S.effets || S.jetes || S.transferts || S.cuits) M.push(`objets : repas ${S.repas || 0}, effets ${S.effets || 0}, jetes ${S.jetes || 0}, transferts ${S.transferts || 0}, cuits ${S.cuits || 0}`);
+  if (S.arbres || S.foudres || S.neige || S.gels) M.push(`nature : arbres ${S.arbres || 0}, foudres ${S.foudres || 0}, neige ${S.neige || 0}, gel ${S.gels || 0}`);
   if (S.morts) M.push(`morts ${S.morts} (${(S.mortsListe || []).slice(0, 2).join(', ')})`);
   if (M.length) L.push('monde : ' + M.join(' ; '));
   const ev = (replay.sons.length / 7) | 0, pa = (replay.particules.length / 9) | 0;

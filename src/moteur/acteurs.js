@@ -11,6 +11,7 @@ import { chercherChemin, stationPourCellule, blocsOuvrables } from './navigation
 import { progressionParTick, ticksPourCasser, etapeFissure } from './cassage.js';
 import { dirDeLacet, VEC, OPPOSE, JEU, FR, decale, parseEtat, court } from './familles/_aide.js';
 import { evenement } from './registre.js';
+import { installerUtilisation, BIT } from './utilisation.js';
 
 export const LARGEUR = 0.6, HAUTEUR = 1.8, HAUTEUR_ACCROUPI = 1.5, OEIL = 1.62, OEIL_ACCROUPI = 1.27;
 export const GRAVITE = 0.08, TRAINEE = 0.98, SAUT = 0.42, PAS = 0.6, FRICTION_AIR = 0.91;
@@ -42,8 +43,9 @@ export class Acteur {
     this.xPrec = this.x; this.zPrec = this.z;
     this.entree = { avance: 0, cap: this.lacet, saute: false };
     // sante, chute, fluides (docs/SIMULATION.md partie 11)
-    this.vieMax = d.vie ?? 20; this.vie = this.vieMax; this.invulnerable = !!d.invulnerable; this.ramasse = d.ramasse === true;
-    this.hurtTime = 0; this.invulTemps = 0; this.derniereBlessure = 0; this.mort = -1; this.distanceChute = 0; this.air = 300; this.dansEau = false; this.dansLave = false; this.sac = new Map();
+    this.vieMax = d.vie ?? 20; this.vie = this.vieMax; this.invulnerable = !!d.invulnerable; this.ramasse = d.ramasse === true; this.sac = new Map();
+    this.hurtTime = 0; this.invulTemps = 0; this.derniereBlessure = 0; this.mort = -1; this.distanceChute = 0; this.air = 300; this.dansEau = false; this.dansLave = false;
+    this.initUtilisation(d);
   }
 
   boite(x = this.x, y = this.y, z = this.z) { const h = this.accroupi ? HAUTEUR_ACCROUPI : HAUTEUR; return [x - LARGEUR / 2, y, z - LARGEUR / 2, x + LARGEUR / 2, y + h, z + LARGEUR / 2]; }
@@ -85,7 +87,7 @@ export class Acteur {
 
   finirTache(statut, texte) {
     const T = this.tache; if (!T) return;
-    this.tache = null;
+    this.tache = null; this.usage = null;
     if (this.ouvert) this.fermerConteneur();
     if (T.acte.verbe === 'casse' && this.cassage >= 0) { this.fissure(T, -1); this.cassage = -1; this.sim.api.evenement('acteur.cassageArrete', { acteur: this.nom, pos: T.cible }); }
     if (T.accroupiAvant !== undefined) this.accroupi = T.accroupiAvant;
@@ -269,6 +271,7 @@ export class Acteur {
 
   // ---------------------------------------------------------------- utilise
   debut_utilise(T, a) {
+    if (a.x === undefined) return this.debutObjet(T, a);
     if (a.objet !== undefined && a.objet !== null) this.main = { objet: a.objet, efficacite: 0 };
     const c = [a.x, a.y, a.z];
     if (this.sim.monde.etatEn(...c) < 0) throw new EchecActe('cellule inconnue');
@@ -276,6 +279,7 @@ export class Acteur {
     this.preparerAction(T, a, c, { visible: T.visible });
   }
   tick_utilise(T) {
+    if (T.mode) return this.tickObjet(T);
     const a = T.acte;
     if (T.etat === 'approche') { if (this.tickApproche(T)) { T.etat = 'vise'; T.vise = 0; this.entree.avance = 0; } return; }
     if (T.etat === 'vise') {
@@ -527,7 +531,7 @@ export class Acteur {
       const h = enEau ? fl.hauteurEau : fl.hauteurLave;
       if (enFluide && (!this.auSol || h > 0.4)) this.vy += 0.04;
       else if (this.auSol) {
-        this.vy = SAUT;
+        this.vy = SAUT + this.bonusSaut();
         if (this.course) { this.vx += -Math.sin(this.lacet * RAD) * 0.2; this.vz += Math.cos(this.lacet * RAD) * 0.2; }
         this.auSol = false;
       }
@@ -538,7 +542,7 @@ export class Acteur {
     // on avance seulement quand le corps est a peu pres tourne vers la route
     if (av > 0 && Math.abs(norm180(this.entree.cap - this.lacet)) > 50) av = 0;
     if (this.accroupi) av *= FACTEUR_ACCROUPI;
-    const vit = enFluide ? 0.02 : this.auSol ? (this.course ? VITESSE_COURSE : VITESSE_MARCHE) * (0.21600002 / (friction * friction * friction)) : (this.course ? 0.026 : 0.02);
+    const vit = enFluide ? 0.02 : this.auSol ? (this.course ? VITESSE_COURSE : VITESSE_MARCHE) * this.facteurVitesse() * (0.21600002 / (friction * friction * friction)) : (this.course ? 0.026 : 0.02);
     if (av > 0) {
       const dx = av * vit, a = this.lacet * RAD;     // entree (0, av) tournee de `lacet`
       this.vx += -Math.sin(a) * dx; this.vz += Math.cos(a) * dx;
@@ -671,6 +675,7 @@ export class Acteur {
     if (this.delaiCassage > 0) this.delaiCassage--;
     this.demarrerDues();
     this.entree = { avance: 0, cap: this.lacet, saute: false };
+    this.tickEffets();
     this.tickTache();
     this._regard();
     this.physique();
@@ -699,6 +704,8 @@ export class Acteur {
     this.xPrec = this.x; this.zPrec = this.z;
     let dr = 0;
     if (this.accroupi) dr |= DRAPEAUX.ACCROUPI; if (this.auSol) dr |= DRAPEAUX.AU_SOL; if (this.course) dr |= DRAPEAUX.COURSE; if (this.balance.actif) dr |= DRAPEAUX.BALANCE; if (this.dansEau) dr |= DRAPEAUX.EAU;
+    if (this.usage) dr += this.usage.type * 64 + Math.min(this.usage.ticks, 4095) * 512;       // pose d'utilisation (manger, boire, arc, arbalete) : voir film/acteurs-vivants.js
+    if (this.effets.size) { if (this.niveauEffet('invisibility')) dr += BIT.INVISIBLE; if (this.niveauEffet('glowing')) dr += BIT.LUEUR; }
     sim.replay.acteur(sim.temps, this.id, this.x, this.y, this.z, this.lacet, this.lacetTete, this.tangage, dr, this.balancement, this.cassage, this.main.objet ? sim.replay.nom(this.main.objet) : -1, this.membres.phase, this.membres.amplitude, this.hurtTime, this.mort < 0 ? 0 : this.mort + 1);
   }
 }
@@ -723,4 +730,5 @@ export class Acteurs {
     return solSous(this.lec, x, z, 319, 0.5, 400);
   }
 }
+installerUtilisation(Acteur, EchecActe);
 void VEC; void FR; void FACE_3D; void blocsOuvrables; void ticksPourCasser; void etapeFissure; void dirDeLacet;

@@ -25,6 +25,9 @@ import { exploser } from './explosion.js';
 import { bonOutil } from './cassage.js';
 import { Redstone } from './redstone.js';
 import { Contenus } from './contenus.js';
+import { Fours } from './four.js';
+import { Arbres } from './arbres.js';
+import { Meteo } from './meteo.js';
 
 // Drapeaux de set_block (Block.UPDATE_*)
 export const F = { VOISINS: 1, CLIENTS: 2, INVISIBLE: 4, IMMEDIAT: 8, FORME_CONNUE: 16, SANS_BUTIN: 32, PISTON: 64, SANS_FORME_FIL: 128, SANS_EFFETS_ENTITE: 256, SANS_POSE: 512, TOUS: 3, AUCUN: 260 };
@@ -50,7 +53,10 @@ export class Simulation {
     this.enTick = false;                          // vrai pendant les ticks planifies et aleatoires (Level.isHandlingTick)
     this.enAttente = new Set();                   // ticks collectes pour ce tick et pas encore executes (willTickThisTick)
     this.evBlocs = [];                            // file des evenements de blocs (ServerLevel.blockEvent) : { x, y, z, bloc, a, b }
-    this.contenus = new Contenus(this);          // contenu des conteneurs (coffre, entonnoir, dropper...) : contenus.js
+    this.contenus = new Contenus(this);
+    this.arbres = new Arbres(this);               // pousses -> arbres (arbres.js)
+    this.meteo = config.meteo ? new Meteo(this, config.meteo) : null;   // pluie, neige, orage, foudre (meteo.js) ; absente sans `ciel.meteo`
+    this.fours = new Fours(this);                 // cuisson des fours (four.js)          // contenu des conteneurs (coffre, entonnoir, dropper...) : contenus.js
     this.redstone = new Redstone(this);  // mises a jour de voisins en vol (CollectingNeighborUpdater)
     this.stats = { voisins: 0, ticks: 0, aleatoires: 0, poses: 0, plafondVoisins: 0, evenements: 0 };
     this.avertissements = [];
@@ -475,6 +481,11 @@ export class Simulation {
       deplacerActeur: (nom, dx, dy, dz) => { const a = s.acteurs?.parNom.get(nom); if (a) { a.x += dx; a.y += dy; a.z += dz; } return !!a; },
       evenementBloc: (x, y, z, a, b) => s.evenementBloc(x | 0, y | 0, z | 0, a | 0, b | 0),
       dire: (t) => s.dire(t),
+      arbre: (x, y, z, espece, opt) => s.arbres.pousser(x | 0, y | 0, z | 0, String(espece), opt || {}),
+      pleut: (x, y, z) => (s.meteo ? s.meteo.pleutEn(x | 0, y | 0, z | 0) : false),
+      foudre: (x, y, z, opt) => { if (!s.meteo) return false; s.meteo.foudre(+x, +z, y === undefined ? undefined : +y, opt || {}); return true; },
+      niveauxMeteo: () => (s.meteo ? s.meteo.niveaux() : { pluie: 0, orage: 0 }),
+      precipitation: (x, y, z) => (s.meteo ? s.meteo.precipitation(x | 0, y | 0, z | 0) : null),
     };
     return api;
   }
@@ -515,7 +526,8 @@ export class Simulation {
         this.reg.lancerMonde('fluide.tick', evenement({ pos: [x.x, x.y, x.z], type: f.type }), this.api);
       }
     }
-    // 3. ticks aleatoires dans la region active
+    // 3. meteo (precipitations, foudre : avant les ticks aleatoires, comme tickChunk) puis ticks aleatoires dans la region active
+    if (this.meteo) this.meteo.tick();
     this._aleatoires();
     this.enTick = false;
     // 4. evenements de blocs (pistons, blocs musicaux, cloches) : ceux ajoutes pendant la boucle sont traites dans la meme phase
@@ -523,7 +535,9 @@ export class Simulation {
     // 5. entites : les acteurs (intentions, marche, interactions) ; leurs blocs touches (plaques) sont traites a la fin de leur deplacement
     if (this.acteurs) this.acteurs.tick();
     if (this.entites.liste.length) this.entites.tick();
-    // 6. blocs a entite qui changent des blocs (pistons en mouvement) : apres les entites
+    if (this.meteo) this.meteo.tickEclairs();
+    // 6. blocs a entite qui changent des blocs (pistons en mouvement) : apres les entites ; fours
+    if (this.contenus.m.size) this.fours.tick();
     if (this.reg.aMonde('tickBlocsEntites')) this.reg.lancerMonde('tickBlocsEntites', evenement({ tick: t }), this.api);
     // 8. fin de tick
     if (this.reg.aMonde('finTick')) this.reg.lancerMonde('finTick', evenement({ tick: t }), this.api);
@@ -563,10 +577,14 @@ export class Simulation {
   }
 
   _aleatoires() {
-    const vitesse = this.regles.valeur('monde.ticksAleatoires', 3);
+    let vitesse = this.regles.valeur('monde.ticksAleatoires', 3);
     if (!vitesse || !this.regionSections.length || !this.aTickAleatoire) return;
+    const accel = this.regles.valeur('croissance.vitesse', 1);   // lapse de temps : plus de ticks aleatoires par section (famille croissance)
+    let reste = 0;
+    if (accel !== 1) { vitesse *= accel; reste = vitesse - Math.floor(vitesse); vitesse = Math.floor(vitesse); }
     for (const [sx, sy, sz] of this.regionSections) {
-      for (let i = 0; i < vitesse; i++) {
+      const nb = vitesse + (reste > 0 && this.hasard.reel() < reste ? 1 : 0);
+      for (let i = 0; i < nb; i++) {
         const [dx, dy, dz] = this.tirage.prochain();
         const a = this.monde.ancre, x = a[0] + sx * 16 + dx, y = a[1] + sy * 16 + dy, z = a[2] + sz * 16 + dz;
         const e = this.monde.etatEn(x, y, z);

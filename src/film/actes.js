@@ -7,15 +7,26 @@
 //                                                                                 avec un objet : seau (eau, lave, reprise), briquet et charge de feu ; face impose la face cliquee
 //   pose x y z "bloc" ["face"] [{va, face}]                                       pose un bloc dans la cellule (regles de pose du jeu), contre un bloc voisin
 //   casse x y z [{va, max}]                                                       casse un bloc : duree selon l'outil tenu ; fissures, son, particules
+//   utilise ["objet"] [{effet, niveau, secondes}]                                  sans bloc : manger (32 ticks), boire une potion, lancer devant soi ; avec bone_meal, houe, graines : sur un bloc (utilise x y z)
+//   lance [x y z | "acteur"] [{objet, effet, niveau, secondes, predit}]            boule de neige, oeuf, perle d'ender, potion jetee, trident : vise (angle balistique), lance
+//   tire [x y z | "acteur"] [{charge, objet, predit}]                              arc (tension `charge` secondes : puissance du jeu) ou arbalete (25 ticks) ; la fleche part a 3 x puissance
+//   jette [n] [{objet}]                                                           laisse tomber n objets devant soi (vitesse du jeu, ramassables apres 40 ticks)
+//   prend|depose x y z ["objet"] [n] [{va, fente}]                                  transfert avec un coffre, un tonneau, un entonnoir, un four (fente : entree, combustible, sortie)
 import { voulaisTu } from '../moteur/util.js';
 
-export const VERBES = ['va', 'regarde', 'saute', 'accroupi', 'tient', 'attends', 'utilise', 'pose', 'casse'];
+export const VERBES = ['va', 'regarde', 'saute', 'accroupi', 'tient', 'attends', 'utilise', 'pose', 'casse', 'lance', 'tire', 'jette', 'prend', 'depose'];
+const EFFETS = ['speed', 'slowness', 'jump_boost', 'invisibility', 'glowing', 'regeneration', 'poison', 'strength', 'night_vision', 'absorption'];
 export const MAX_ACTES = 200;
 const VITESSES = ['marche', 'court', 'accroupi'];
 const FACES = ['haut', 'bas', 'nord', 'sud', 'est', 'ouest', 'up', 'down', 'north', 'south', 'east', 'west'];
 const OPTIONS = {
   va: ['ouvrePortes', 'max', 'rayon'],
-  utilise: ['va', 'ouvrePortes', 'duree', 'max', 'face'],
+  utilise: ['va', 'ouvrePortes', 'duree', 'max', 'face', 'effet', 'niveau', 'secondes', 'objet'],
+  lance: ['objet', 'effet', 'niveau', 'secondes', 'predit', 'max'],
+  tire: ['objet', 'charge', 'predit', 'max'],
+  jette: ['objet'],
+  prend: ['va', 'ouvrePortes', 'max', 'strict'],
+  depose: ['va', 'ouvrePortes', 'max', 'fente'],
   pose: ['va', 'ouvrePortes', 'face', 'max'],
   casse: ['va', 'ouvrePortes', 'max'],
   tient: ['eff'],
@@ -44,6 +55,13 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
     for (const [o, v] of Object.entries(opts)) {
       if (['ouvrePortes', 'va'].includes(o) && typeof v !== 'boolean') erreur(`${c}.${o}`, 'true ou false attendu');
       if (['max', 'rayon', 'duree'].includes(o) && !(estNombre(v) && v > 0 && v <= 600)) erreur(`${c}.${o}`, 'nombre de secondes ou de blocs entre 0 et 600 attendu');
+      if (o === 'effet' && !EFFETS.includes(v)) erreur(`${c}.${o}`, `effet inconnu${voulaisTu(String(v), EFFETS)} (permis : ${EFFETS.join(', ')})`);
+      if (o === 'niveau' && !(Number.isInteger(v) && v >= 1 && v <= 10)) erreur(`${c}.${o}`, 'niveau entier de 1 a 10 attendu (1 = Vitesse I)');
+      if (o === 'secondes' && !(estNombre(v) && v > 0 && v <= 3600)) erreur(`${c}.${o}`, 'duree de l effet en secondes (0 a 3600) attendue');
+      if (o === 'charge' && !(estNombre(v) && v >= 0.05 && v <= 10)) erreur(`${c}.${o}`, 'duree de tension en secondes (0,05 a 10) attendue ; 1 s = puissance pleine');
+      if (['predit', 'strict'].includes(o) && typeof v !== 'boolean') erreur(`${c}.${o}`, 'true ou false attendu');
+      if (o === 'fente' && !['entree', 'combustible', 'sortie'].includes(v)) erreur(`${c}.${o}`, '"entree", "combustible" ou "sortie" attendu');
+      if (o === 'objet' && !(typeof v === 'string' && ID_OBJET.test(v))) erreur(`${c}.${o}`, 'identifiant d objet du jeu attendu (mcanim objets --cherche mot)');
       if (o === 'eff' && !(Number.isInteger(v) && v >= 0 && v <= 10)) erreur(`${c}.${o}`, 'niveau d\'efficacite entier de 0 a 10 attendu');
     }
     const nombres = (n, noms2) => {
@@ -91,6 +109,10 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
         a.secondes = args[0]; a.resume = `attends ${a.secondes}`; break;
       }
       case 'utilise': case 'casse': {
+        if (verbe === 'utilise' && (args.length === 0 || (args.length === 1 && typeof args[0] === 'string'))) {   // sans bloc : l'objet en main (manger, boire, lancer)
+          if (args.length) { if (!ID_OBJET.test(args[0])) erreur(`${c}[2]`, 'identifiant d objet du jeu attendu'); a.objet = args[0].replace(/^minecraft:/, ''); }
+          a.resume = `utilise ${a.objet ?? 'objet en main'}`; break;
+        }
         [a.x, a.y, a.z] = entiers(3);
         if (args.length > 3) erreur(c, `${verbe} : x, y, z puis des options {...} seulement`);
         if (verbe === 'utilise' && a.opts.face !== undefined && !FACES.includes(a.opts.face)) erreur(`${c}.face`, `face inconnue (permis : haut, bas, nord, sud, est, ouest) ; "haut" : le dessus du bloc (briquet, seau)`);
@@ -105,6 +127,30 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
         if (a.opts.face !== undefined && !FACES.includes(a.opts.face)) erreur(`${c}.face`, `face inconnue (permis : haut, bas, nord, sud, est, ouest)`);
         a.resume = `pose ${a.x},${a.y},${a.z} ${a.bloc}`; break;
       }
+      case 'lance': case 'tire': {
+        if (args.length === 0) a.cible = null;
+        else if (args.length === 1 && typeof args[0] === 'string') {
+          if (!noms.has(args[0])) erreur(`${c}[2]`, `acteur inconnu ${JSON.stringify(args[0])} (acteurs : ${[...noms].join(', ')})`);
+          a.cible = { acteur: args[0] };
+        } else { const [x, y, z] = nombres(3, 'x, y, z du point vise'); a.cible = { x, y, z }; }
+        a.resume = `${verbe} ${a.cible === null ? 'devant' : a.cible.acteur ?? a.cible.x + ',' + a.cible.y + ',' + a.cible.z}`;
+        break;
+      }
+      case 'jette': {
+        if (args.length > 1 || (args.length === 1 && !(Number.isInteger(args[0]) && args[0] >= 1 && args[0] <= 64))) erreur(c, 'jette : nombre entier de pieces de 1 a 64 attendu, par exemple [2, "jette", 3]');
+        a.n = args[0] ?? 1; a.resume = `jette ${a.n}`; break;
+      }
+      case 'prend': case 'depose': {
+        [a.x, a.y, a.z] = entiers(3);
+        const reste = args.slice(3);
+        for (const r of reste) {
+          if (typeof r === 'string') { if (!ID_OBJET.test(r)) erreur(c, `${verbe} : identifiant d'objet du jeu attendu`); a.objet = r.replace(/^minecraft:/, ''); }
+          else if (Number.isInteger(r) && r >= 1 && r <= 3456) a.n = r;
+          else erreur(c, `${verbe} : x, y, z, "objet", nombre (entier de 1 a 3456) attendus`);
+        }
+        if (verbe === 'depose' && !a.objet && !a.opts.objet) { /* l'objet en main est utilise */ }
+        a.resume = `${verbe} ${a.x},${a.y},${a.z}${a.objet ? ' ' + a.objet : ''}`; break;
+      }
       default: break;
     }
     return a;
@@ -118,7 +164,7 @@ export function descripteursActeurs(scene) {
     const premier = a.actes.find((x) => x.verbe === 'va' || x.verbe === 'regarde' && x.cible && x.cible.x !== undefined);
     const but = premier ? (premier.verbe === 'va' ? [premier.x, premier.z] : [premier.cible.x, premier.cible.z]) : null;
     const lacet = a.lacet ? a.lacet.cles[0].v[0] : but && Math.hypot(but[0] - k.x, but[1] - k.z) > 0.5 ? Math.atan2(-(but[0] - k.x), but[1] - k.z) * 180 / Math.PI : 0;
-    return { nom: a.nom, pos: Number.isFinite(k.y) ? [k.x, k.y, k.z] : [k.x, k.z], lacet, objet: a.objetD?.cles?.[0]?.id ?? null, actes: a.actes, vie: a.vie, invulnerable: a.invulnerable, ramasse: a.ramasse };
+    return { nom: a.nom, pos: Number.isFinite(k.y) ? [k.x, k.y, k.z] : [k.x, k.z], lacet, objet: a.objetD?.cles?.[0]?.id ?? null, actes: a.actes, vie: a.vie, invulnerable: a.invulnerable, ramasse: a.ramasse, faim: a.faim, sac: a.sac };
   });
 }
 

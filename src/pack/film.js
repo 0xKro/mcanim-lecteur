@@ -15,7 +15,7 @@ import { imageEn, cielEn } from '../film/look.js';
 import { preparerPersonnages, simulerScene } from '../film/video.js';
 import { appliquerTextures, dossierCache } from '../film/cache.js';
 import { PostTraitement } from '../rendu/post.js';
-import { construireCiel, ticksDepuisHeure } from '../rendu/ciel-vanille.js';
+import { construireCiel, ticksDepuisHeure, etatAvecMeteo } from '../rendu/ciel-vanille.js';
 
 const b64 = (ta) => Buffer.from(ta.buffer, ta.byteOffset, ta.byteLength).toString('base64');
 
@@ -61,6 +61,7 @@ function agrandirForce(f, w, h, W, H) {
 const GENRES = {
   tnt: { entite: 'minecraft:tnt' }, chute: { entite: 'minecraft:falling_block' }, objet: { entite: 'minecraft:item' },
   bloc: { programme: 'bloc' }, fissure: { programme: 'fissure' }, particule: { programme: 'particule' },
+  fleche: { entite: 'minecraft:arrow' }, pluie: { programme: 'meteo' }, eclair: { programme: 'meteo' },   // projectiles, pluie et neige (gbuffers_weather), foudre
 };
 
 // Profondeur de l'hote (depthtex0, flottants 0..1 non lineaires, ligne du haut d'abord) -> { donnees: 1 / distance de vue (0 = ciel), W, H, ssaa }
@@ -172,11 +173,19 @@ export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {
       await appliquerMaj(im.tm);
       const ciel = cielEn(scene, im.t);
       const heure = ciel?.heure ?? 12, jour = ciel?.jour ?? 0;
-      const e = etatImage({ scene: rs, camera: im.camera, heure, jour, largeur: rw, hauteur: rh, frame: 0, temps: temps ?? im.tm });
+      // meteo : rainStrength, thunderStrength et wetness du pack (humidite = pluie moyenne des 10 dernieres secondes, le jeu l'adoucit) ; ciel du jeu terni comme dans le rendu de base
+      let meteo = null;
+      if (effets?.meteo) {
+        const niv = effets.meteo.niveaux(im.tm), eclair = effets.meteo.eclair(sim.replay.tickDe(im.tm));
+        let h = 0;
+        for (let k = 0; k < 20; k++) h += effets.meteo.niveaux(Math.max(0, im.tm - k * 0.5)).pluie / 20;
+        if (niv.pluie > 0 || niv.orage > 0 || h > 0 || eclair) meteo = { pluie: niv.pluie, orage: niv.orage, humidite: h, eclair };
+      }
+      const e = etatImage({ scene: rs, camera: im.camera, heure, jour, largeur: rw, hauteur: rh, frame: 0, temps: temps ?? im.tm, meteo });
       // le ciel du jeu : disque, lueur, etoiles, soleil, lune, nuages
       const ticks = ticksDepuisHeure(heure);
       const base = rs.cielV.couleursCamera(rs.zone, im.camera.x, im.camera.z);
-      const et = rs.cielV.etat(ticks, jour, base);
+      const et = meteo ? etatAvecMeteo(rs.cielV.etat(ticks, jour, base), meteo) : rs.cielV.etat(ticks, jour, base);
       const cv = construireCiel(rs.cielV, et, im.camera, null, (temps ?? im.tm) * 20);
       const v = cv.vanille;
       e.ciel3d = {

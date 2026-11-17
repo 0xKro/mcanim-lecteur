@@ -4,7 +4,7 @@
 //   - le comparateur lit la plenitude (AbstractContainerMenu.getRedstoneSignalFromContainer) ;
 //   - la taille maximale d'une pile est une table courte (1, 16 ou 64) : pas les donnees du jeu entieres.
 // Ce n'est PAS un inventaire de joueur : pas de clic, pas de recettes, pas d'enchantements, pas de four (le contenu d'un four n'est pas gere).
-const TAILLES = { ChestBlock: 27, BarrelBlock: 27, HopperBlock: 5, DispenserBlock: 9, ShulkerBoxBlock: 27 };
+const TAILLES = { ChestBlock: 27, BarrelBlock: 27, HopperBlock: 5, DispenserBlock: 9, ShulkerBoxBlock: 27, FurnaceBlock: 3 };   // le four : entree, combustible, sortie (four.js)
 
 const UN = /(_sword|_pickaxe|_axe|_shovel|_hoe|_helmet|_chestplate|_leggings|_boots|_horse_armor|_boat|_raft|_minecart|_bed|_chest_boat)$|^(bow|crossbow|trident|shield|fishing_rod|elytra|flint_and_steel|shears|water_bucket|lava_bucket|milk_bucket|powder_snow_bucket|potion|splash_potion|lingering_potion|saddle|totem_of_undying|cake|enchanted_book|written_book|writable_book|carrot_on_a_stick|warped_fungus_on_a_stick|brush|spyglass|compass|clock|mace|music_disc_\w+|minecart|lead|name_tag|map|filled_map)$/;
 const SEIZE = /(_sign|_hanging_sign|_banner)$|^(bucket|ender_pearl|egg|snowball|honey_bottle|armor_stand|wind_charge)$/;
@@ -35,6 +35,7 @@ export class Contenus {
   ajouter(x, y, z, item, n) {
     const s = this.lire(x, y, z);
     if (!s) return n;
+    if (s.length === 3 && this.sim.fours?.estFour(x, y, z)) return this.sim.fours.deposer([x, y, z], item, n);   // le four range l'entree, le combustible et la sortie lui-meme
     const max = pileMax(item);
     for (const e of s) if (e && e.item === item && e.n < max && n > 0) { const k = Math.min(n, max - e.n); e.n += k; n -= k; }
     for (let i = 0; i < s.length && n > 0; i++) if (!s[i]) { const k = Math.min(n, max); s[i] = { item, n: k }; n -= k; }

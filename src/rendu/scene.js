@@ -278,7 +278,7 @@ class Scene {
       if (!masqueId) { masqueId = this.prochainMasque++; this.masqueIds.set(mk.valeurs, masqueId); this._masquesNouveaux.push({ id: masqueId, data: Uint8Array.from(mk.valeurs) }); }
     }
     const kM = Math.max(0, Math.min(256, Math.round((m.forceMasque ?? 1) * 256))), kE = Math.max(0, Math.min(256, Math.round((m.lueur ?? 0) * 256)));
-    return { positions: pos, uvs, couleurs: col, indices: ind, sections: [{ debut: 0, nb: ind.length, bbox: [...mn, ...mx] }], texId: tex, mode, deuxFaces: !!m.deuxFaces, partage: true, masqueId, kM, kE, exempt: !!m.exempt, nuage: !!m.nuage };
+    return { positions: pos, uvs, couleurs: col, indices: ind, sections: [{ debut: 0, nb: ind.length, bbox: [...mn, ...mx] }], texId: tex, mode, deuxFaces: !!m.deuxFaces, partage: true, masqueId, kM, kE, exempt: !!m.exempt, nuage: !!m.nuage, additif: !!m.additif };
   }
 
   // ---- shader (voir src/shader et docs/FORMAT-SHADER.md) : null ou un fichier lu par lireShader ; vide = rendu d'avant, au pixel pres

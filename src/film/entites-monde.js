@@ -43,7 +43,7 @@ function transformer(p, aff) {
   return [x, y, z];
 }
 
-// Texture de la fleche (16 x 10) dessinee ici : le kit n'a pas entity/projectiles/arrow.png. Haut (16 x 5) : vue de cote (plumes, hampe, pointe) ; bas gauche (5 x 5) : plumes vues de face.
+// Texture de repli de la fleche (16 x 10) dessinee ici, pour un kit sans le groupe `projectiles` (entity/projectiles/arrow.png, vraie texture 32 x 32). Haut (16 x 5) : vue de cote (plumes, hampe, pointe) ; bas gauche (5 x 5) : plumes vues de face.
 let TEX_FLECHE = null;
 function texFleche() {
   if (TEX_FLECHE) return TEX_FLECHE;
@@ -175,9 +175,11 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
           const K = 0.05625, queue = -11 * K, pointe = 5 * K, h = 2.5 * K;
           const P = (c, lat, hau) => [x + dx * c + lat[0] * hau, y + dy * c + lat[1] * hau, z + dz * c + lat[2] * hau];
           const axes = [[(up[0] + r[0]) * 0.7071, (up[1] + r[1]) * 0.7071, (up[2] + r[2]) * 0.7071], [(up[0] - r[0]) * 0.7071, (up[1] - r[1]) * 0.7071, (up[2] - r[2]) * 0.7071]];
-          const T = texFleche();
-          for (const ax of axes) M('fleche', T, 'fleche').quad([P(queue, ax, h), P(pointe, ax, h), P(pointe, ax, -h), P(queue, ax, -h)], [[0, 0], [1, 0], [1, 0.5], [0, 0.5]], L);
-          M('fleche', T, 'fleche').quad([P(queue, up, h), P(queue, r, h), P(queue, up, -h), P(queue, r, -h)], [[0, 0.5], [0.3125, 0.5], [0.3125, 1], [0, 1]], L);
+          // vraie texture du jeu (32 x 32, groupe `projectiles` du kit) : hampe vue de cote en haut a gauche (16 x 5), plaque de plumes (5 x 5) dessous ; sinon l'image dessinee ici (16 x 10)
+          const reelle = kit ? texObjet(kit, 'entity/projectiles/arrow') : null;
+          const T = reelle ?? texFleche(), us = reelle ? 0.5 : 1, vs = reelle ? 5 / 32 : 0.5, pu = reelle ? 5 / 32 : 0.3125, pv0 = reelle ? 5 / 32 : 0.5, pv1 = reelle ? 10 / 32 : 1;
+          for (const ax of axes) M('fleche', T, 'fleche').quad([P(queue, ax, h), P(pointe, ax, h), P(pointe, ax, -h), P(queue, ax, -h)], [[0, 0], [us, 0], [us, vs], [0, vs]], L);
+          M('fleche', T, 'fleche').quad([P(queue, up, h), P(queue, r, h), P(queue, up, -h), P(queue, r, -h)], [[0, pv0], [pu, pv0], [pu, pv1], [0, pv1]], L);
         } else if (type === 'lance') {
           // sprite de l'objet lance, de face a la camera (taille 0,5 comme l'affichage ground)
           const nom = replay.noms[E[a + 7]], modele = quadsObjet(nom), nomTex = modele.quads[0]?.tex;

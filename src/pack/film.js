@@ -61,7 +61,7 @@ function agrandirForce(f, w, h, W, H) {
 const GENRES = {
   tnt: { entite: 'minecraft:tnt' }, chute: { entite: 'minecraft:falling_block' }, objet: { entite: 'minecraft:item' },
   bloc: { programme: 'bloc' }, fissure: { programme: 'fissure' }, particule: { programme: 'particule' },
-  fleche: { entite: 'minecraft:arrow' }, pluie: { programme: 'meteo' }, eclair: { programme: 'meteo' },   // projectiles, pluie et neige (gbuffers_weather), foudre
+  fleche: { entite: 'minecraft:arrow' }, pluie: { programme: 'meteo' }, eclair: { entite: 'minecraft:lightning_bolt' },   // projectiles, pluie et neige (gbuffers_weather), foudre (Iris : programme des entites, emissif, additif)
 };
 
 // Profondeur de l'hote (depthtex0, flottants 0..1 non lineaires, ligne du haut d'abord) -> { donnees: 1 / distance de vue (0 = ciel), W, H, ssaa }
@@ -165,6 +165,7 @@ export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {
       if (g.entite) spec.entiteNom = g.entite;
       if (g.programme) spec.programme = g.programme;
       if (m.bloc) spec.blocNom = m.bloc;
+      if (m.additif) { spec.additif = true; spec.bloc = 15; }     // foudre : emissive (lumiere 15) et additive (SRC_ALPHA, ONE), comme RenderType.lightning
       if (m.genre === 'tnt' && blanc) spec.bloc = 15;    // le clignotement du TNT est blanc plein (emissif)
       return spec;
     };

@@ -174,9 +174,16 @@ class PassesMixin:
                 gl.CullFace(0x0405)
             gl.Enable(0x0BC0)
             gl.AlphaFunc(0x204, 0.1)
+            if g.get("additif"):       # foudre : SRC_ALPHA, ONE quel que soit le melange du pack (RenderType.lightning), sans ecrire la profondeur
+                gl.Enable(0x0BE2)
+                gl.BlendFunc(0x302, 1)
+                gl.DepthMask(0)
             v = self._vals_perso(vals, custom, renderStage=etape)
             self._tracer_geo(nom, g, v, mv, vals["gbufferProjection"], nom, {"entityId": g["entite"] or (id_joueur if genre == "entites" else 0),
                                                                               "entityColor": g["couleurEntite"], "blockEntityId": g["bloc_id"]})
+            if g.get("additif"):
+                gl.DepthMask(1)
+                self._appliquer_blend(nom, "SRC_ALPHA ONE_MINUS_SRC_ALPHA ONE ONE_MINUS_SRC_ALPHA" if translucide else "off", cib)
         gl.Disable(0x0B44)
         gl.Disable(0x0BC0)
         gl.Disable(0x0BE2)

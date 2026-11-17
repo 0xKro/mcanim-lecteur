@@ -20,8 +20,13 @@ class Plans {
     this.idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
   }
   vide() { return this.idx.length === 0; }
-  maillage(texture, genre) { return { genre, positions: Float32Array.from(this.pos), uvs: Float32Array.from(this.uv), couleurs: Float32Array.from(this.col), indices: Uint32Array.from(this.idx), texture, mode: 'melange', deuxFaces: true }; }
+  maillage(texture, genre, additif = false) { return { genre, additif, positions: Float32Array.from(this.pos), uvs: Float32Array.from(this.uv), couleurs: Float32Array.from(this.col), indices: Uint32Array.from(this.idx), texture, mode: 'melange', deuxFaces: true }; }
 }
+
+// Pluie : la texture du jeu (environment/rain.png, 70/103/195 a alpha faible) est dessinee telle quelle, comme le jeu et Horizon (couleur de sommet blanche).
+// Regle du proprietaire : tout comme le jeu. Les constantes ci-dessous permettent de la palir (0 et 1 = texture d'origine) ; ne pas les changer sans raison.
+const PALE = [222, 228, 238], MELANGE_PALE = 0, OPACITE_PALE = 1;
+const palir = (t) => t && ({ largeur: t.largeur, hauteur: t.hauteur, rgba: t.rgba.map((v, i) => { const c = i % 4; return c === 3 ? Math.round(v * OPACITE_PALE) : Math.round(v + (PALE[c] - v) * MELANGE_PALE); }) });
 
 export function creerMeteoRendu({ rs, replay, scene, donnees, terrain, texOf, lum }) {
   const piste = scene.ciel?.meteo ?? null;
@@ -30,7 +35,8 @@ export function creerMeteoRendu({ rs, replay, scene, donnees, terrain, texOf, lu
   const foudres = new Map();
   for (let i = 0; i < n; i++) if (replay.noms[E[i * 8 + 2]] === 'foudre') { const id = E[i * 8 + 1]; if (!foudres.has(id)) foudres.set(id, []); foudres.get(id).push(i * 8); }
   if (!piste && !foudres.size) return null;
-  const tex = { pluie: piste ? texOf('environment/rain.png') : null, neige: piste ? texOf('environment/snow.png') : null, eclat: [] };
+  const tex = { pluie: piste ? palir(texOf('environment/rain.png')) : null, neige: piste ? texOf('environment/snow.png') : null, eclat: [] };
+  let splash;   // gouttes : texture palie une seule fois (le rasteriseur garde les textures par identite)
   const variantes = new Map();
   const alphaTex = (cle, base, niveau) => {      // copie de la texture dont l'alpha est multiplie par (niveau + 1) / 8
     const k = cle + niveau;
@@ -67,6 +73,8 @@ export function creerMeteoRendu({ rs, replay, scene, donnees, terrain, texOf, lu
   };
 
   // ---- foudre : la forme du jeu
+  // couleur par couche (de la plus fine, tres claire, a la plus large, bleutee et faible) : un coeur mince tres brillant, un halo discret
+  const CL = [[1, 1, 1], [0.27, 0.32, 0.5], [0.1, 0.12, 0.22], [0.04, 0.05, 0.1]];
   const bolt = (graine, x, y, z, P) => {
     const af = new Float64Array(8), af1 = new Float64Array(8);
     let f = 0, f1 = 0;
@@ -81,19 +89,20 @@ export function creerMeteoRendu({ rs, replay, scene, donnees, terrain, texOf, lu
         let f2 = af[k] - f, f3 = af1[k] - f1;
         for (let i1 = k; i1 >= l; i1--) {
           const f4 = f2, f5 = f3;
-          if (j === 0) { f2 += r1.entierBorne(11) - 5; f3 += r1.entierBorne(11) - 5; } else { f2 += r1.entierBorne(10) - 5; f3 += r1.entierBorne(10) - 5; }
+          if (j === 0) { f2 += r1.entierBorne(11) - 5; f3 += r1.entierBorne(11) - 5; } else { f2 += r1.entierBorne(31) - 15; f3 += r1.entierBorne(31) - 15; }   // branches : plus larges (Horizon : nextInt(31) - 15)
           let w1 = 0.1 + k1 * 0.2, w2 = 0.1 + k1 * 0.2;
           if (j === 0) { w1 *= i1 * 0.1 + 1; w2 *= (i1 - 1) * 0.1 + 1; }
           const face = (a, b, c, d) => {
             const S = (cond, w) => (cond ? w : -w);
-            P.quad([[x + f2 + S(a, w1), y + i1 * 16, z + f3 + S(b, w1)], [x + f4 + S(a, w2), y + (i1 + 1) * 16, z + f5 + S(b, w2)], [x + f4 + S(c, w2), y + (i1 + 1) * 16, z + f5 + S(d, w2)], [x + f2 + S(c, w1), y + i1 * 16, z + f3 + S(d, w1)]], [[0, 0], [1, 0], [1, 1], [0, 1]], [0.9, 0.9, 1]);
+            P.quad([[x + f2 + S(a, w1), y + i1 * 16, z + f3 + S(b, w1)], [x + f4 + S(a, w2), y + (i1 + 1) * 16, z + f5 + S(b, w2)], [x + f4 + S(c, w2), y + (i1 + 1) * 16, z + f5 + S(d, w2)], [x + f2 + S(c, w1), y + i1 * 16, z + f3 + S(d, w1)]], [[0, 0], [1, 0], [1, 1], [0, 1]], CL[k1]);
           };
           face(false, false, true, false); face(true, false, true, true); face(true, true, false, true); face(false, true, false, false);
         }
       }
     }
   };
-  const texEclair = { largeur: 1, hauteur: 1, rgba: new Uint8Array([255, 255, 255, 150]) };
+  // couche de 0,3 d'opacite en blanc bleute (0,45 0,45 0,5 dans LightningBoltRenderer), ici un peu renforcee ; dessinee en ADDITIF : 4 couches empilees, coeur tres clair, halo bleute
+const texEclair = { largeur: 1, hauteur: 1, rgba: new Uint8Array([255, 255, 255, 235]) };
 
   return {
     // niveaux de pluie et d'orage au temps du monde tm (secondes de film)
@@ -153,7 +162,7 @@ export function creerMeteoRendu({ rs, replay, scene, donnees, terrain, texOf, lu
         }
         for (const { t, niveau, P } of parTex.values()) {
           if (P.vide()) continue;
-          if (t === 'goutte') { const g = texOf('particle/splash_0.png'); if (g) out.push(P.maillage(alphaTex('g', g, 7), 'pluie')); continue; }
+          if (t === 'goutte') { const g = (splash ??= palir(texOf('particle/splash_0.png'))); if (g) out.push(P.maillage(alphaTex('g', g, 7), 'pluie')); continue; }
           out.push(P.maillage(alphaTex(t, t === 'pluie' ? tex.pluie : tex.neige, niveau), 'pluie'));
         }
       }
@@ -165,7 +174,7 @@ export function creerMeteoRendu({ rs, replay, scene, donnees, terrain, texOf, lu
         const r = L[k];
         bolt(E[r + 6] | 0, E[r + 3], E[r + 4], E[r + 5], B);
       }
-      if (!B.vide()) out.push(B.maillage(texEclair, 'eclair'));
+      if (!B.vide()) out.push(B.maillage(texEclair, 'eclair', true));
       return out;
     },
   };

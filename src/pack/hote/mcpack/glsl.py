@@ -54,6 +54,20 @@ def mettre_a_zero_sorties_non_ecrites(corps):
     return corps[:m.end()] + " " + " ".join(ajouts) + " " + corps[m.end():]
 
 
+def mettre_a_zero_sorties_fragment(corps):
+    """`gl_FragData[i]` jamais ecrit par un fragment shader (Bliss : `gbuffers_weather` n'ecrit que `gl_FragData[1]` quand WEATHER est defini, alors que
+    DRAWBUFFERS vaut 29) : un pilote de carte graphique laisse en pratique la cible intacte (alpha 0 avec le melange du pack), Mesa llvmpipe ecrit une
+    valeur au hasard (la pluie devenait une grille de points sombres). On met a zero, au debut de main(), chaque `gl_FragData[i]` cite par le code."""
+    m = RE_MAIN.search(corps)
+    if not m:
+        return corps
+    indices = sorted({int(i) for i in re.findall(r"\bgl_FragData\[\s*(\d+)\s*\]", corps)})
+    if not indices:
+        return corps
+    zero = " ".join("gl_FragData[%d] = vec4(0.0);" % i for i in indices)
+    return corps[:m.end()] + " " + zero + " " + corps[m.end():]
+
+
 RE_INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]+"([^"]+)"[^\n]*$', re.M)
 RE_CONST_FORMAT = re.compile(r"^[ \t]*const[ \t]+int[ \t]+\w+Format[ \t]*=[^;\n]*;", re.M)
 RE_VERSION = re.compile(r"^[ \t]*#[ \t]*version[ \t]+(\d+)[ \t]*(\w*)[ \t]*$", re.M)
@@ -161,6 +175,8 @@ def construire(src, chemin, lire, macros_jeu, etape, surcharges=None, macros_ext
         corps = motif.sub(flat if rep == "@FLAT@" else rep, corps)
     if etape == "vert":
         corps = mettre_a_zero_sorties_non_ecrites(corps)
+    elif etape == "frag":
+        corps = mettre_a_zero_sorties_fragment(corps)
     if neutraliser:
         corps = RE_CONST_FORMAT.sub(lambda m: "// " + m.group(0), corps)   # `const int colortex1Format = RGBA16;` : reglage du pack, pas du GLSL
     lignes.append("#line 1\n")

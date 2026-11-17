@@ -54,6 +54,7 @@ mesh = {
   forceMasque: 1,            // 0..1, multiplie la force du masque (defaut 1)
   lueur: 0,                  // 0..1 : part "lumineuse" des texels du masque (non assombris par les couleurs de sommet) (defaut 0)
   exempt: false,             // true : tous les pixels du maillage sont exemptes (force 255), sans masque
+  additif: false,            // true (avec mode 'melange') : destination + couleur x alpha, sans brume, sans lumiere globale ni ecriture de profondeur (foudre)
 }
 ```
 - Meme nombre de sommets partout : `positions.length/3 === uvs.length/2 === couleurs.length/3`.

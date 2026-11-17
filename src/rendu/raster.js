@@ -332,7 +332,7 @@ export class Rasteriseur {
     const tex = d.tex;
     const mips = tex.niveaux;
     // etat du dessin pour tri()
-    this.mode = mode; this.c = c; this.tex = tex; this.nuageTri = d.nuage === true;
+    this.mode = mode; this.c = c; this.tex = tex; this.nuageTri = d.nuage === true; this.addF = d.additif === true;
     // masque de couleur selective (maillages dynamiques seulement) : voir rendu/LISEZMOI.md
     this.msk = d.masque ?? null; this.kM = d.kM ?? 256; this.kE = d.kE ?? 0; this.exFlag = d.exempt ? 255 : 0;
     // options du shader (voir src/shader) : ombres cuites, AO reglable, balancement, surface d'eau. Toutes nulles sans shader.
@@ -521,7 +521,7 @@ export class Rasteriseur {
     const vw0 = VW[a] * TH, vw1 = VW[b] * TH - vw0, vw2 = VW[c] * TH - vw0;
     const dvwx = (vw1 * dy2 - vw2 * dy1) * inv, dvwy = (vw2 * dx1 - vw1 * dx2) * inv;
     // lumiere globale (facteur par canal, 1 = inchange) : multiplie la couleur de sommet, donc tout le terrain et les acteurs
-    const LP = this.nuageTri === true ? null : cx.params.lumiere;   // les nuages ont leur propre couleur : pas de lumiere du terrain
+    const LP = this.nuageTri === true || this.addF === true ? null : cx.params.lumiere;   // les nuages ont leur propre couleur : pas de lumiere du terrain
     const LR = LP ? LP[0] : 1, LG = LP ? LP[1] : 1, LB = LP ? LP[2] : 1;
     const sat = LR > 1 || LG > 1 || LB > 1;     // la couleur peut depasser 255 : on la rabat
     const r0 = R[a] * LR, r1 = R[b] * LR - r0, r2 = R[c] * LR - r0;
@@ -631,6 +631,23 @@ export class Rasteriseur {
               const a = al * (1 / 255);
               const dr = dst & 255, dg = (dst >> 8) & 255, db = (dst >> 16) & 255;
               pixels[o] = (0xff000000 | (((db + (sb - db) * a) | 0) << 16) | (((dg + (sg - dg) * a) | 0) << 8) | ((dr + (sr - dr) * a) | 0)) >>> 0;
+            }
+            continue;
+          }
+          if (this.addF === true) {   // additif (foudre) : destination + couleur x opacite, sans brume ni ecriture de profondeur
+            for (; o < oe; o++, iw += diwx, uw += duwx, vw += dvwx, r += drx, g += dgx, bl += dbx) {
+              if (iw <= zb[o]) continue;
+              const w = 1 / iw;
+              let tu = (uw * w) | 0, tv = (vw * w) | 0;
+              if (tu < 0) tu = 0; else if (tu >= TW) tu = TW - 1;
+              if (tv < 0) tv = 0; else if (tv >= TH) tv = TH - 1;
+              const t = texd[tv * TW + tu];
+              const a = (t >>> 24) * (1 / 255);
+              if (a < 0.015) continue;
+              const dst = pixels[o];
+              let nr = (dst & 255) + (((t & 255) * r) >> 8) * a, ng = ((dst >> 8) & 255) + ((((t >> 8) & 255) * g) >> 8) * a, nb = ((dst >> 16) & 255) + ((((t >> 16) & 255) * bl) >> 8) * a;
+              if (nr > 255) nr = 255; if (ng > 255) ng = 255; if (nb > 255) nb = 255;
+              pixels[o] = (0xff000000 | ((nb | 0) << 16) | ((ng | 0) << 8) | (nr | 0)) >>> 0;
             }
             continue;
           }

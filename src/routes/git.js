@@ -12,7 +12,7 @@ import { GROUPS, SOUND_EVENTS, resolveSoundNames, listKitFiles, pool } from '../
 
 export const DEPOT = 'https://github.com/misode/mcmeta';
 const RAW = 'https://raw.githubusercontent.com/misode/mcmeta';
-const GROUPES_ASSETS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'environnement', 'objets', 'armures', 'interface'];
+const GROUPES_ASSETS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'environnement', 'objets', 'armures', 'interface', 'projectiles'];
 
 const erreur = (message, court) => Object.assign(new Error(message), { court });
 

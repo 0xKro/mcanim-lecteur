@@ -146,7 +146,7 @@ class Dyn:
             bloc_id = self.r.pack.blocs.id(*analyser_etat(s["blocNom"])) if s.get("blocNom") else 0
             res.append(self._geo(a, idx, tex=tex[0], mode=m, deuxFaces=bool(s.get("deuxFaces")), masque=self.masques.get(s.get("masque")),
                                  kM=float(s.get("kM", 1.0)), exempt=bool(s.get("exempt")), entite=ident, programme=s.get("programme", "entites"), bloc_id=bloc_id,
-                                 couleurEntite=tuple(s.get("couleurEntite", (0.0, 0.0, 0.0, 0.0))), couche=3 if m == "melange" else 1))
+                                 couleurEntite=tuple(s.get("couleurEntite", (0.0, 0.0, 0.0, 0.0))), additif=bool(s.get("additif")), couche=3 if m == "melange" else 1))
         return res
 
     def liberer(self):

@@ -210,3 +210,12 @@ Memes termes : code MIT de Horizon, relu et reecrit en JavaScript (comportements
 | `TreeFeature`, troncs droit et fourchu, feuillages en boule, sapin, acacia | `worldgen/tree/` | `moteur/arbres.js` |
 | `Level.isRainingAt`, `tickPrecipitation`, neige et gel, foudre (`LightningBolt`), niveaux de pluie et d'orage | `world/level/weather.rs`, `client/game/{weather,lightning}.rs` | `moteur/meteo.js`, `film/meteo.js` |
 | Dessin de la pluie et de la neige (`WeatherEffectRenderer`), de l'eclair (`LightningBoltRenderer`) | `client-render/src/{weather,gfx/weather,gfx/lightning}.rs` | `film/meteo-rendu.js` |
+
+## Meteo (`src/film/meteo-rendu.js`) et foudre
+
+Reecrit en JavaScript a partir de Horizon (MIT), aucun fichier copie :
+
+| Ce qui est porte | Fichier d'origine (Horizon) | Ou chez nous |
+|---|---|---|
+| Forme de l'eclair (`LightningBoltRenderer.submit`) : 8 segments de 16 blocs, deux branches de 3 segments (ecart `nextInt(31) - 15`), 4 couches de largeur `0,1 + 0,2 x couche`, 4 quads par segment, couleur blanc bleute 0,45 0,45 0,5 a 0,3 d'opacite, dessin additif | `crates/horizon-client-render/src/gfx/lightning.rs` (`geometry`) | `src/film/meteo-rendu.js` (`bolt`), additif dans `src/rendu/raster.js` |
+| Colonnes de pluie et de neige (`WeatherEffectRenderer`) : opacite `(max + t x (0,5 - max)) x intensite`, pluie max 1, neige 0,8, couleur de sommet blanche | `crates/horizon-client-render/src/weather.rs` (`column_quad`) | `src/film/meteo-rendu.js` |

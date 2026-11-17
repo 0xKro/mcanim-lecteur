@@ -10,7 +10,7 @@ export function groupesDeScene(scene) {
   const { objets, armures } = idsDeScene(scene);
   const m = groupesMontage(scene);   // textes et incrustations : groupe `interface` (police, sprites) ; icones d'objets : `objets`
   // une scene avec monde peut lacher des objets au sol (butin des blocs casses ou detruits) : leur modele vient du groupe `objets`
-  return [...(objets.size || m.objets || scene.monde ? ['objets'] : []), ...(armures.size ? ['armures'] : []), ...(m.interface ? ['interface'] : [])];
+  return [...(objets.size || m.objets || scene.monde ? ['objets'] : []), ...(armures.size ? ['armures'] : []), ...(m.interface ? ['interface'] : []), ...(scene.monde ? ['projectiles'] : [])];
 }
 
 // Groupes de kit dont le montage a besoin : { interface, objets }.

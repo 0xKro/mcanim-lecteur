@@ -47,13 +47,14 @@ export const GROUPS = {
   // groupes A LA DEMANDE (recuperes seulement quand une scene en a besoin : voir GROUPES_A_LA_DEMANDE) :
   objets: ['assets/minecraft/items/', 'assets/minecraft/models/item/', 'assets/minecraft/textures/item/'],   // objets tenus en main (champs `objet` et `objetG`)
   armures: ['assets/minecraft/equipment/', 'assets/minecraft/textures/entity/equipment/'],                    // armure portee (champ `armure`)
+  projectiles: ['assets/minecraft/textures/entity/projectiles/'],                                            // fleche, trident, fleche spectrale, charge de vent... (monde simule)
   // interface (montage : textes, incrustations) : police du jeu (fournisseurs + textures), sprites de l'interface (coeurs, barre d'objets, infobulle, succes...), fonds de conteneurs
   interface: ['assets/minecraft/font/', 'assets/minecraft/textures/font/', 'assets/minecraft/textures/gui/sprites/', 'assets/minecraft/textures/gui/container/'],
 };
 // Hors de DEFAULT_GROUPS : le premier lancement reste leger. `trouverKit({ groupes })` (film/cache.js) les ajoute quand la scene en a besoin.
-export const GROUPES_A_LA_DEMANDE = ['objets', 'armures', 'interface'];
+export const GROUPES_A_LA_DEMANDE = ['objets', 'armures', 'interface', 'projectiles'];
 export const DEFAULT_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'environnement', 'sons'];
-export const JAR_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'environnement', 'worldgen', 'objets', 'armures', 'interface'];
+export const JAR_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'environnement', 'worldgen', 'objets', 'armures', 'interface', 'projectiles'];
 
 export function groupOf(rel) {
   for (const [g, prefixes] of Object.entries(GROUPS)) {

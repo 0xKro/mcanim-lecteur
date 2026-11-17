@@ -296,7 +296,7 @@ export function lireSousTitres(D, brut, duree) {
 
 // ---------------------------------------------------------------- incrustations
 const ANCRES = ['ecran', 'monde', 'acteur'];
-const COMMUNS = ['type', 't', 'calque', ...CLES_MOUVEMENT, 'pop', 'opacite', 'ecran', 'monde', 'acteur', 'decalage', 'decalageEcran', 'echelle', 'ref', 'occlusion', 'pivot', 'depuis', 'taille'];
+const COMMUNS = ['type', 't', 'calque', ...CLES_MOUVEMENT, 'pop', 'opacite', 'ecran', 'monde', 'acteur', 'decalage', 'decalageEcran', 'echelle', 'ref', 'occlusion', 'pivot', 'depuis', 'taille', 'eviteActeurs'];
 const PAR_TYPE = {
   texte: ['texte', 'segments', ...CLES_STYLE],
   compteur: ['valeurs', 'duree', 'decimales', 'separateur', 'decimal', 'prefixe', 'suffixe', 'mode', 'delai', ...CLES_STYLE],
@@ -361,6 +361,7 @@ export function lireIncrustations(D, brut, duree, chemin = 'incrustations', { da
     if (e.occlusion !== undefined) { if (typeof e.occlusion !== 'boolean') D.err(`${ch}.occlusion`, 'true (cache par le decor) ou false (toujours dessus)'); o.occlusion = e.occlusion; }
     if (e.pivot !== undefined) { if (!Array.isArray(e.pivot) || e.pivot.length !== 2 || !e.pivot.every(estNombre)) D.err(`${ch}.pivot`, '[x, y] (0..1) attendu : point de l\'image place sur l\'ancre'); o.pivot = e.pivot; }
     if (e.taille !== undefined) o.taille = nombreEntre(D, e.taille, `${ch}.taille`, 0.003, 2, undefined);
+    if (e.eviteActeurs !== undefined) { if (typeof e.eviteActeurs !== 'boolean') D.err(`${ch}.eviteActeurs`, 'false : l\'incrustation ne s\'ecarte pas des visages (par defaut true)'); o.eviteActeurs = e.eviteActeurs; }
     lireContenu(D, e, o, ch, duree);
     return o;
   });

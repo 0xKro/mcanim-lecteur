@@ -53,13 +53,25 @@ const echellePolice = (ctx, taille, lisse = false) => { const s = (taille * ctx.
 
 // Tailles MINIMALES lisibles sur un telephone (part du petit cote de l'image : 0,05 = 54 px de haut de ligne sur 1080). Une taille plus petite est relevee
 // et une note le dit : le texte d'un film vertical se lit a bout de bras, sur un ecran de 6 pouces.
-export const TAILLE_MINI = { texte: 0.05, legende: 0.05, compteur: 0.05, nom: 0.034, bulle: 0.065, chat: 0.036, fleche: 0.045, horloge: 0.04, succes: 0.8 };
+export const TAILLE_MINI = { texte: 0.05, legende: 0.05, compteur: 0.05, nom: 0.034, bulle: 0.065, chat: 0.036, fleche: 0.045, horloge: 0.04, succes: 0.8, coffre: 0.6, inventaire: 0.5, hud: 0.6 };
 function tailleLisible(ctx, el, type, def, mini = TAILLE_MINI[type] ?? 0) {
   const t = el.taille ?? def;
   if (t >= mini) return t;
   noter(ctx, `mini#${type}#${el.ordre ?? el._seq}`, `${type}${el.texte ? ` "${String(el.texte).slice(0, 18)}"` : ''} a t=${el.t?.[0]} s : taille ${t} relevee a ${mini} (minimum lisible sur un telephone)`);
   return mini;
 }
+
+// Echelle (pixels d'ecran par pixel du jeu) d'un panneau de jeu large de `total` pixels de jeu (coffre 176, barre 182, toast 160...).
+// Sans `taille` : `part` de la LARGEUR SURE (0,8 = 80 %), arrondie a un ENTIER (pixels nets du jeu), sans depasser la zone ni 0,9 du petit cote.
+// Avec `taille` (part du petit cote) : echelle exacte, relevee au minimum lisible (TAILLE_MINI) avec une note.
+export function echelleGui(ctx, el, total, type, part) {
+  if (el.taille !== undefined) return (tailleLisible(ctx, el, type, el.taille) * ctx.U) / total;
+  const zw = ctx.zone?.actif ? ctx.zone.w : ctx.W * 0.92;
+  const E = (Math.min(part * zw, 0.9 * ctx.U)) / total;
+  if (E < 2) return E;
+  return Math.max(2, Math.min(Math.round(E), Math.floor(zw / total)));
+}
+const eHud = (ctx, el) => echelleGui(ctx, el, 182, 'hud', 0.85);
 
 function imageTexte(ctx, texte, el, defauts = {}) {
   const police = el.police === 'sans' && ctx.policeSans ? ctx.policeSans : ctx.police, lisse = police === ctx.policeSans && !!ctx.policeSans;
@@ -291,7 +303,7 @@ function imageChat(ctx, el) {
 
 // Toast de succes du jeu : sprite 160 x 32, icone a gauche, deux lignes de texte.
 function imageSucces(ctx, el) {
-  const largeur = tailleLisible(ctx, el, 'succes', 0.9) * ctx.U, E = largeur / 160;
+  const E = echelleGui(ctx, el, 160, 'succes', 0.8);
   const S = Math.max(1, Math.round(E));
   const spr = sprite(ctx.kit, 'toast/advancement');
   const w = Math.round(160 * E), h = Math.round(32 * E);
@@ -308,11 +320,11 @@ function imageSucces(ctx, el) {
 }
 
 // Panneau d'inventaire : une barre (sprite hotbar) ou une grille de cases (fond du jeu), icones, nombres, barres de durabilite, cases surlignees.
-function imageInventaire(ctx, el) {
+function imageInventaire(ctx, el, Eforce = null) {
   const cols = el.colonnes, rows = Math.ceil(el.cases.length / cols);
   const style = el.style ?? (rows === 1 ? 'barre' : 'grille');
   const total = style === 'barre' ? 182 : cols * 18 + 14;
-  const E = ((el.taille ?? 0.8) * ctx.U) / total;
+  const E = Eforce ?? echelleGui(ctx, el, total, 'inventaire', 0.8);
   const Sg = Math.max(1, Math.round(E));
   let o, pos;   // pos(k) -> [x, y] de l'icone (pixels d'image)
   if (style === 'barre') {
@@ -352,7 +364,7 @@ function imageInventaire(ctx, el) {
 // Ecran d'un conteneur (coffre) : le fond du jeu (container/generic_54.png : titre, rangees de cases), le titre en gris sombre sans ombre, les icones avec leur nombre.
 // Le jeu ne montre pas le contenu d'un coffre ouvert dans le monde : c'est CET ecran que le joueur voit. Sans "joueur", on garde le haut du panneau et son bord du bas.
 function imageCoffre(ctx, el) {
-  const rows = el.rangees, E = ((el.taille ?? 0.8) * ctx.U) / 176, Sg = Math.max(1, Math.round(E));
+  const rows = el.rangees, E = echelleGui(ctx, el, 176, 'coffre', 0.8), Sg = Math.max(1, Math.round(E));
   const hTop = rows * 18 + 17, hBas = el.joueur ? 96 : 7;
   const w = Math.round(176 * E), hT = Math.round(hTop * E), h = Math.round((hTop + hBas) * E);
   const o = creerImage(w, h);
@@ -374,10 +386,10 @@ function imageCoffre(ctx, el) {
 
 // HUD de jeu : barre d'objets, coeurs, faim, barre d'experience (+ niveau). Le viseur est dessine a part, au centre de l'image.
 function imageHud(ctx, el) {
-  const E = ((el.taille ?? 0.9) * ctx.U) / 182;
+  const E = eHud(ctx, el);
   const w = Math.round(182 * E), h = Math.round(49 * E);
   const o = creerImage(w, h);
-  const hotbar = imageInventaire(ctx, { cases: Array.from({ length: 9 }, (_, k) => el.cases?.[k] ?? null), colonnes: 9, selection: el.selection, taille: el.taille ?? 0.9 }).img;
+  const hotbar = imageInventaire(ctx, { cases: Array.from({ length: 9 }, (_, k) => el.cases?.[k] ?? null), colonnes: 9, selection: el.selection }, E).img;
   composer(o, hotbar, 0, h - hotbar.h);
   const fond = sprite(ctx.kit, 'hud/experience_bar_background'), prog = sprite(ctx.kit, 'hud/experience_bar_progress');
   const yx = Math.round((49 - 22 - 7) * E);
@@ -633,6 +645,66 @@ function preparerPose(film, ctx, el, spr, anc, anim) {
   return { box, peindre, zone };
 }
 
+// ---- fleches et visages : le trait et l'etiquette ne passent pas sur la tete ni le torse d'un acteur (boites du plan : acteurs-evites.js).
+// Decision UNE FOIS PAR PLAN (memo ctx.cacheEvite) : decalage horizontal du trait (cote ou il y a le plus de place, au moins 0,6 bloc d'un acteur quand
+// l'ancre est dans le monde) et place de l'etiquette (cote normal, cote oppose, ou au bout de la fleche) la moins genante. `eviteActeurs: false` coupe tout ca.
+function rectsActeurs(ctx, el) {
+  if (el.eviteActeurs === false || !ctx.obstacles) return [];
+  return [...ctx.obstacles.tetes, ...ctx.obstacles.torses].map((o) => ({ x0: o.x, y0: o.y, x1: o.x + o.w, y1: o.y + o.h }));
+}
+function clePlan(ctx, el) {
+  const plan = ctx.scene.plans?.find((q) => ctx.t >= q.de && ctx.t < q.a);
+  return `${plan ? 'p' + plan.de : 'c'}|${ctx.W}x${ctx.H}|${el._seq}`;
+}
+const aireCommune = (a, b) => { const w = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0), h = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0); return w > 0 && h > 0 ? w * h : 0; };
+function decalageFleche(ctx, el, pa, pb, ep, tete) {
+  const rects = rectsActeurs(ctx, el);
+  if (!rects.length || !ctx.cacheEvite) return 0;
+  const cle = 'fl|' + clePlan(ctx, el);
+  if (ctx.cacheEvite.has(cle)) return ctx.cacheEvite.get(cle);
+  const bloc = pa.P && pa.w ? (0.6 * ctx.proj.f) / pa.w : 0;   // 0,6 bloc en pixels d'ecran
+  const m = ep / 2 + tete * 0.6 + Math.max(bloc, 0.008 * ctx.U);
+  const infl = rects.map((r) => ({ x0: r.x0 - m, y0: r.y0 - m, x1: r.x1 + m, y1: r.y1 + m }));
+  const Z = ctx.zone.actif ? ctx.zone : { x0: 0, y0: 0, x1: ctx.W, y1: ctx.H };
+  const coupe = (d) => infl.filter((r) => couperSegment(r, pa.x + d, pa.y, pb.x + d, pb.y));
+  const xmin = Math.min(pa.x, pb.x), xmax = Math.max(pa.x, pb.x);
+  let res = 0;
+  const g0 = coupe(0);
+  if (g0.length) {
+    const essai = (sens) => {
+      let d = 0;
+      for (let i = 0; i < 6; i++) {
+        const g = coupe(d);
+        if (!g.length) return xmin + d >= Z.x0 + m && xmax + d <= Z.x1 - m ? d : null;
+        d = sens < 0 ? Math.min(...g.map((r) => r.x0 - xmax)) - 1 : Math.max(...g.map((r) => r.x1 - xmin)) + 1;
+      }
+      return null;
+    };
+    const dg = essai(-1), dd = essai(1);
+    const placeG = Math.min(...g0.map((r) => r.x0)) - Z.x0, placeD = Z.x1 - Math.max(...g0.map((r) => r.x1));
+    res = dg === null ? (dd ?? 0) : dd === null ? dg : placeG >= placeD ? dg : dd;
+    if (res) noter(ctx, `fleche-visage#${el.ordre ?? el._seq}`, `fleche a t=${el.t[0]} s : trait decale de ${Math.round(Math.abs(res))} px pour ne pas passer sur un acteur`);
+  }
+  ctx.cacheEvite.set(cle, res);
+  return res;
+}
+// Choix (une fois par plan) de la place de l'etiquette parmi 4 : 0 cote normal, 1 cote oppose, 2 et 3 au-dela des deux bouts. cands : [{ex, ey}] (coin haut gauche de l'image).
+function choisirEtiquette(ctx, el, cands, vis, R) {
+  const rects = rectsActeurs(ctx, el), occ = ctx.occupe ?? [];
+  if ((!rects.length && !occ.length) || !ctx.cacheEvite) return 0;
+  const cle = 'fe|' + clePlan(ctx, el);
+  if (ctx.cacheEvite.has(cle)) return ctx.cacheEvite.get(cle);
+  let best = 0, bestC = Infinity;
+  cands.forEach((c, i) => {
+    const r = contenir(R, c.ex + vis.x, c.ey + vis.y, vis.w, vis.h);
+    const box = { x0: r.x, y0: r.y, x1: r.x + vis.w, y1: r.y + vis.h };
+    const cout = rects.reduce((a, q) => a + aireCommune(box, { x0: q.x0 - 0.01 * ctx.U, y0: q.y0 - 0.01 * ctx.U, x1: q.x1 + 0.01 * ctx.U, y1: q.y1 + 0.01 * ctx.U }), 0) / (vis.w * vis.h) * 1000 + occ.reduce((a, q) => a + aireCommune(box, { x0: q.x - 0.008 * ctx.U, y0: q.y - 0.008 * ctx.U, x1: q.x + q.w + 0.008 * ctx.U, y1: q.y + q.h + 0.008 * ctx.U }), 0) / (vis.w * vis.h) * 1000 + r.deplacement * 0.5 + i * 0.01;
+    if (cout < bestC - 1e-9) { bestC = cout; best = i; }
+  });
+  ctx.cacheEvite.set(cle, best);
+  return best;
+}
+
 function dessinerFleche(film, ctx, el, anim) {
   const A = pointMonde(ctx, el.de), B = pointMonde(ctx, el.a);
   let pa, pb;
@@ -641,6 +713,7 @@ function dessinerFleche(film, ctx, el, anim) {
   else if (B && A === null && B.P && el.de.monde) { const seg = ctx.proj.recouper(el.de.monde, B.P); if (!seg) return; pa = pointMonde(ctx, { monde: seg[0] }); pb = pointMonde(ctx, { monde: seg[1] }); }
   else return;
   if (!pa || !pb) return;
+  { const dxv = decalageFleche(ctx, el, pa, pb, Math.max(1.5, el.epaisseur * ctx.U), el.pointe * ctx.U); if (dxv) { pa = { ...pa, x: pa.x + dxv }; pb = { ...pb, x: pb.x + dxv }; } }
   // la fleche reste dans la zone sure : on coupe son segment au rectangle (les pointes se posent sur les bouts coupes)
   const Z = ctx.zone;
   if (Z.actif) {
@@ -688,7 +761,10 @@ function dessinerFleche(film, ctx, el, anim) {
     // l'etiquette reste entierement dans la zone sure (l'image entiere moins 2 % sans zone) ; elle fait un petit pop quand la fleche est finie
     const R = Z.actif ? Z : { x0: ctx.W * 0.02, y0: ctx.H * 0.02, x1: ctx.W * 0.98, y1: ctx.H * 0.98, w: ctx.W * 0.96, h: ctx.H * 0.96 };
     const vis = boiteOpaque(t.img);
-    const ex = mx + nx * decal - b.w / 2 - b.x + dx, ey = my + ny * decal - b.h / 2 - b.y + dy;
+    const place = (cx, cy) => ({ ex: cx - b.w / 2 - b.x + dx, ey: cy - b.h / 2 - b.y + dy });
+    const bout = Math.abs(ux) * (b.w / 2) + Math.abs(uy) * (b.h / 2) + tete + 0.012 * U;
+    const cands = [place(mx + nx * decal, my + ny * decal), place(mx - nx * decal, my - ny * decal), place(x0 - ux * bout, y0 - uy * bout), place(x1 + ux * bout, y1 + uy * bout)];
+    const { ex, ey } = cands[choisirEtiquette(ctx, el, cands, vis, R)];
     const c = contenir(R, ex + vis.x, ey + vis.y, vis.w, vis.h);
     const lx = c.x - vis.x, ly = c.y - vis.y;
     if (c.deplacement > 0.04 * ctx.U && Z.actif) noter(ctx, `fleche-etiquette#${el.ordre}`, `etiquette de fleche a t=${el.t[0]} s : deplacee de ${Math.round(c.deplacement)} px pour rester dans la zone sure`);
@@ -734,13 +810,18 @@ function dessinerLigne(film, ctx, el, anim) {
 
 // Priorites de la disposition (disposition.js) : plus petit = plus fort.
 const FIXES = new Set(['hud', 'image', 'coeurs', 'faim']);   // grands elements poses a dessein : obstacles qui ne bougent pas
+// evAct : 2 = l'element evite les tetes et les torses des acteurs (repli : les tetes seules) ; 0 = jamais (legendes, noms, elements fixes, `eviteActeurs: false`).
+// gap : ecart minimal (part du petit cote) avec les autres incrustations d'ecran : les textes et panneaux empiles ne se collent pas (0,045 = 49 px sur 1080).
+export const ECART_ECRAN = 0.045;
 function classer(el, anc) {
-  if (el.legende) return { prio: 0, fixe: true };
-  if (FIXES.has(el.type)) return { prio: 2, fixe: true };
-  if (el.type === 'nom') return { prio: 4, fixe: false, maxDep: 0.05 };
+  if (el.legende) return { prio: 0, fixe: true, evAct: 0 };
+  if (FIXES.has(el.type)) return { prio: 2, fixe: true, evAct: 0 };
+  if (el.type === 'nom') return { prio: 4, fixe: false, maxDep: 0.05, evAct: 0 };
   const monde = !!anc.mondeAncre;
-  if (['texte', 'chat', 'succes', 'bulle'].includes(el.type)) return { prio: monde ? 3 : 1, fixe: false, maxDep: monde ? 0.15 : Infinity };
-  return { prio: monde ? 3 : 2, fixe: false, maxDep: monde ? 0.15 : Infinity };
+  const evAct = el.eviteActeurs === false ? 0 : 2;   // tetes ET torses d'abord ; si aucune place, tetes seules (disposition.js)
+  const gap = monde ? 0 : ECART_ECRAN;
+  if (['texte', 'chat', 'succes', 'bulle'].includes(el.type)) return { prio: monde ? 3 : 1, fixe: false, maxDep: monde ? 0.15 : Infinity, evAct, gap };
+  return { prio: monde ? 3 : 2, fixe: false, maxDep: monde ? 0.15 : Infinity, evAct, gap };
 }
 
 // Prepare un element a l'instant ctx.t : retourne null (rien a dessiner) ou { el, prio, fixe, box, force, maxDep, peindre(dx, dy) }.
@@ -768,10 +849,10 @@ export function preparerElement(film, ctx, el) {
     pose.peindre(dx, dy);
     if (el.type === 'hud' && el.viseur) {
       const v = sprite(ctx.kit, 'hud/crosshair');
-      if (v) { const E = ((el.taille ?? 0.9) * ctx.U) / 182, w = Math.round(15 * E); poserImage(film, ctx.W, ctx.H, v, Math.round(ctx.W / 2 - w / 2), Math.round(ctx.H / 2 - w / 2), w, w, { alpha: anim.a }); }
+      if (v) { const E = eHud(ctx, el), w = Math.round(15 * E); poserImage(film, ctx.W, ctx.H, v, Math.round(ctx.W / 2 - w / 2), Math.round(ctx.H / 2 - w / 2), w, w, { alpha: anim.a }); }
     }
   };
-  return { el, prio: c.prio, fixe: c.fixe, maxDep: c.maxDep === undefined ? undefined : c.maxDep * ctx.U, box: pose.box, force: anc.mondeAncre ? anc.k : 0, peindre };
+  return { el, prio: c.prio, fixe: c.fixe, maxDep: c.maxDep === undefined ? undefined : c.maxDep * ctx.U, evAct: c.evAct, gap: c.gap ? c.gap * ctx.U : 0, box: pose.box, force: anc.mondeAncre ? anc.k : 0, peindre };
 }
 
 // Dessine un element sur l'image de film `film` (RGBA W*H*4, alpha 255) a l'instant ctx.t. Retourne true s'il a dessine quelque chose.

@@ -14,13 +14,32 @@ export function imageEn(scene, t) {
   const im = scene.image;
   // montage : un plan peut avoir son propre `image` (temps relatifs au plan) qui remplace les leviers du meme nom
   const pl = scene.plans && scene.plans.find((p) => p.image && t >= p.de && t < p.a);
-  if (!im && !pl) return null;
+  const ob = scene._obscurite ? scene._obscurite(t) : null;   // effet Obscurite d'un joueur (warden) : automatique
+  if (!im && !pl && !ob) return null;
   const v = (nom) => (pl?.image?.[nom] ? evaluer(pl.image[nom], t - pl.de) : im?.[nom] ? evaluer(im[nom], t) : undefined);
+  let lum = v('luminosite')?.[0], vig = v('vignette')?.[0];
+  if (ob) { lum = (lum ?? 1) * (1 - ob.s); vig = Math.max(vig ?? 0, 0.8 * ob.f); }
   const p = normaliserImage({
-    saturation: v('saturation')?.[0], contraste: v('contraste')?.[0], luminosite: v('luminosite')?.[0],
-    teinte: v('teinte'), vignette: v('vignette')?.[0], flou: v('flou')?.[0], fondu: v('fondu'),
+    saturation: v('saturation')?.[0], contraste: v('contraste')?.[0], luminosite: lum,
+    teinte: v('teinte'), vignette: vig, flou: v('flou')?.[0], fondu: v('fondu'),
   });
   return imageActive(p) ? p : null;
+}
+
+// Obscurite (MobEffects.DARKNESS) sur la vue : facteur qui monte et descend en 22 ticks (MobEffectInstance.BlendState), puis
+// LightTexture.calculateDarknessScale : max(0, cos(tick x pi x 0,025) x 0,45 x facteur) retire a la lumiere (impulsions de 4 s) ; la brume
+// se referme a 15 blocs (FogRenderer, DarknessFogFunction) : ici une vignette 0,8 x facteur. Rend t -> { s, f } ou null.
+export function obscuriteDe(replay) {
+  const L = replay?.obscurite ?? [];
+  if (!L.length) return null;
+  const fin = Math.max(...L.map((o) => o.fin)), fac = new Float32Array(fin + 24);
+  let f = 0;
+  for (let k = 0; k < fac.length; k++) { const actif = L.some((o) => k >= o.debut && k < o.fin); f = actif ? Math.min(1, f + 1 / 22) : Math.max(0, f - 1 / 22); fac[k] = f; }
+  return (t) => {
+    const u = t * 20 * (replay.ralenti || 1), k = Math.floor(u), ff = k >= 0 && k < fac.length ? fac[k] : 0;
+    if (ff <= 0) return null;
+    return { s: Math.max(0, Math.cos(u * Math.PI * 0.025) * 0.45 * ff), f: ff };
+  };
 }
 
 // ---------------------------------------------------------------- ciel et lumiere

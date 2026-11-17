@@ -1,11 +1,14 @@
 // Incrustations : legendes (textes, sousTitres) et graphismes poses sur les images du film (tout ce qui n'est pas du terrain ni des acteurs).
 // Appel : const inc = await creerIncrustations({ scene, kit, baseDir, solide }) ; inc.dessiner(film, W, H, { t, im, proj, prof }).
 import { chargerPolice, chargerPoliceSans } from './police.js';
-import { preparerElement } from './elements.js';
+import { preparerElement, ECART_TITRE_LEGENDE, estTitre } from './elements.js';
+export { ECART_TITRE_LEGENDE };
 import { disposer } from './disposition.js';
 import { obstaclesActeurs } from './acteurs-evites.js';
 import { creerProjecteur, transformRoulis } from './ancrage.js';
 import { rectSur } from '../montage/zones.js';
+import { textesEnDouble } from '../montage/doublons.js';
+
 
 // Y a-t-il quelque chose a dessiner dans cette scene ?
 export const aIncrustations = (scene) => !!(scene.textes?.length || scene.incrustations?.length);
@@ -26,6 +29,10 @@ export async function creerIncrustations({ scene, kit, baseDir = process.cwd(), 
   const notesZone = new Map();
   const memoDispo = new Map();    // disposition : decision gardee par element jusqu'a la coupe suivante (disposition.js)
   const cacheEvite = new Map();   // legendes : emplacement choisi par plan (montage/evitement.js)
+  // textes en double (montage/doublons.js) : une puce de legende que le titre dit deja est cachee pendant le titre (fusion)
+  const fusions = new Map();
+  for (const d of textesEnDouble(scene)) if (d.couvert) (fusions.get(d.legende) ?? fusions.set(d.legende, []).get(d.legende)).push([d.t0, d.t1]);
+  const fondue = (e, t) => fusions.get(e)?.some(([a, b]) => t >= a && t < b) ?? false;
   return {
     police, policeSans, cartes,
     // carte plein cadre active a l'instant t (la derniere declaree si elles se chevauchent) ou null
@@ -38,10 +45,12 @@ export async function creerIncrustations({ scene, kit, baseDir = process.cwd(), 
       const liste = carte ? tri([...libresTries.filter((e) => e.monde === undefined && e.acteur === undefined && e.type !== 'fleche' && e.type !== 'ligne'), ...carte.incrustations]) : libresTries;
       // 1. on prepare tout ce qui est visible, 2. la disposition decale ou cache ce qui se recouvre, 3. on dessine dans l'ordre des calques
       const prets = [];
-      for (const e of liste) if (t >= e.t[0] && t < e.t[1]) { const p = preparerElement(film, ctx, e); if (p) prets.push(p); }
+      for (const e of liste) if (t >= e.t[0] && t < e.t[1] && !fondue(e, t)) { const p = preparerElement(film, ctx, e); if (p) prets.push(p); }
       const obstacles = !carte && prets.length && im.acteurs?.length ? obstaclesActeurs(ctx) : null;   // visages et torses des acteurs (une fois par plan)
       ctx.obstacles = obstacles;
-      const items = prets.filter((p) => p.box).map((p) => ({ id: p.el._seq, prio: p.prio, fixe: p.fixe, box: p.box, maxDep: p.maxDep, force: p.force, ordre: p.el._seq, evAct: p.evAct, gap: p.gap }));
+      // titre (texte ou compteur ancre a l'ecran) : jamais colle a une legende (test combat v3 : titre pousse sous la legende, deux lignes collees) ;
+      // ecart minimal 0,12 du petit cote entre les deux, en plus de l'ecart general
+      const items = prets.filter((p) => p.box).map((p) => ({ id: p.el._seq, prio: p.prio, fixe: p.fixe, box: p.box, maxDep: p.maxDep, force: p.force, ordre: p.el._seq, evAct: p.evAct, gap: p.gap, legende: !!p.el.legende, ...(estTitre(p.el) ? { gapLegende: ECART_TITRE_LEGENDE * U } : {}) }));
       const plan = carte ? null : scene.plans?.find((q) => t >= q.de && t < q.a);
       const Z = ctx.zone.actif ? ctx.zone : { x0: 0, y0: 0, x1: W, y1: H };
       const place = items.length > 0 && obstacles?.tetes.length ? disposer(items, { zone: Z, memo: memoDispo, cle: carte ? 'carte' + carte.t[0] : plan ? 'p' + plan.de : 'sans-plan', marge: 0.006 * U, obstacles }) : items.length > 1 ? disposer(items, { zone: Z, memo: memoDispo, cle: carte ? 'carte' + carte.t[0] : plan ? 'p' + plan.de : 'sans-plan', marge: 0.006 * U }) : null;

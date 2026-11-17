@@ -10,19 +10,28 @@
 import { resoudreObjet } from '../objets/definition.js';
 import { cuire, afficheDe } from '../objets/modele-objet.js';
 import { texture as texObjet, teinter, groupePresent } from '../objets/fichiers.js';
+import { Aleatoire } from '../moteur/aleatoire.js';
 
 const RAD = Math.PI / 180;
 const OMBRE_DIR = [0.5, 1, 0.8, 0.8, 0.6, 0.6];       // bas, haut, nord, sud, ouest, est
 
 class Mailleur {
   constructor() { this.pos = []; this.uv = []; this.col = []; this.idx = []; }
-  quad(p, uv, c) {       // 4 sommets quelconques (le rasteriseur dessine les deux faces)
+  quad(p, uv, c) {       // 4 sommets quelconques (le rasteriseur dessine les deux faces) ; c : gris, [r, g, b], ou 4 couleurs [[r, g, b] x 4]
     const b = this.pos.length / 3;
-    for (let i = 0; i < 4; i++) { this.pos.push(p[i][0], p[i][1], p[i][2]); this.uv.push(uv[i][0], uv[i][1]); this.col.push(c, c, c); }
+    for (let i = 0; i < 4; i++) {
+      this.pos.push(p[i][0], p[i][1], p[i][2]); this.uv.push(uv[i][0], uv[i][1]);
+      const k = Array.isArray(c) ? (Array.isArray(c[0]) ? c[i] : c) : null;
+      if (k) this.col.push(k[0], k[1], k[2]); else this.col.push(c, c, c);
+    }
     this.idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
   }
   vide() { return this.idx.length === 0; }
-  maillage(texture, genre) { return { genre, positions: Float32Array.from(this.pos), uvs: Float32Array.from(this.uv), couleurs: Float32Array.from(this.col), indices: Uint32Array.from(this.idx), texture, mode: 'decoupe', deuxFaces: true }; }
+  maillage(texture, genre) {
+    const m = { genre, positions: Float32Array.from(this.pos), uvs: Float32Array.from(this.uv), couleurs: Float32Array.from(this.col), indices: Uint32Array.from(this.idx), texture, mode: 'decoupe', deuxFaces: true };
+    if (genre === 'lumiere') { m.mode = 'melange'; m.additif = true; m.emissif = true; }   // rayons (laser du gardien, cristal, mort du dragon) : additifs, pleine lumiere
+    return m;
+  }
 }
 
 // hasard deterministe d'une entite (decalage de rotation, copies d'une pile) : pas de Math.random
@@ -63,7 +72,9 @@ function texFleche() {
 
 export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
   const E = replay.entitesVue, n = E.length / 8;
-  if (!n) return { maillages: () => [] };
+  const traits = new Map();   // replay.traits par tick (laser du gardien, rayon du cristal de l'End, rayons de la mort du dragon)
+  for (const t of replay.traits ?? []) { const k = Math.round(t.tick); if (!traits.has(k)) traits.set(k, []); traits.get(k).push(t); }
+  if (!n && !traits.size) return { maillages: () => [] };
   const parId = new Map();
   for (let i = 0; i < n; i++) { const id = E[i * 8 + 1]; if (!parId.has(id)) parId.set(id, []); parId.get(id).push(i * 8); }
   const palette = [...rs.zone.palette, ...replay.palAjouts];
@@ -118,6 +129,57 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
     return teintees.get(cle);
   };
 
+  const blancTex = { largeur: 1, hauteur: 1, rgba: new Uint8Array([255, 255, 255, 255]) };
+  // rayons entre deux points (replay.traits)
+  function dessinerTrait(t, u, M) {
+    const [ax, ay, az] = t.de, [bx, by, bz] = t.vers;
+    if (t.type === 'laser') {
+      // GuardianRenderer.renderBeam : deux plans croises qui tournent (rayon 0,2), texture guardian_beam qui defile (V x 2,5 par bloc),
+      // couleur (64 + s^2 x 191, 32 + s^2 x 191, 128 - s^2 x 64) selon la charge s ; pleine lumiere
+      const tx = textureDe('entity/guardian_beam', null); if (!tx) return;
+      const v = [bx - ax, by - ay, bz - az], L = Math.hypot(...v) || 1, d = v.map((c) => c / L);
+      let r = Math.abs(d[1]) > 0.99 ? [1, 0, 0] : [d[2], 0, -d[0]]; const rl = Math.hypot(...r); r = r.map((c) => c / rl);
+      const up = [r[1] * d[2] - r[2] * d[1], r[2] * d[0] - r[0] * d[2], r[0] * d[1] - r[1] * d[0]];
+      const temps = u, rot = temps * 0.05 * -1.5, cs = t.a * t.a, col = [(64 + cs * 191) / 255, (32 + cs * 191) / 255, Math.max(0, 128 - cs * 64) / 255];
+      const P = (s, ang, rad) => [ax + d[0] * s + (r[0] * Math.cos(ang) + up[0] * Math.sin(ang)) * rad, ay + d[1] * s + (r[1] * Math.cos(ang) + up[1] * Math.sin(ang)) * rad, az + d[2] * s + (r[2] * Math.cos(ang) + up[2] * Math.sin(ang)) * rad];
+      const minV = -1 + (temps * 0.5) % 1, maxV = minV + L * 2.5, len = L + 1;
+      for (let k0 = Math.floor(minV); k0 < maxV; k0++) {
+        const v0 = Math.max(minV, k0), v1 = Math.min(maxV, k0 + 1), s0 = (v0 - minV) / (maxV - minV) * len, s1 = (v1 - minV) / (maxV - minV) * len;
+        for (const a0 of [rot + Math.PI, rot + Math.PI / 2]) M('laser', tx, 'lumiere').quad([P(s1, a0, 0.2), P(s0, a0, 0.2), P(s0, a0 + Math.PI, 0.2), P(s1, a0 + Math.PI, 0.2)], [[0.4999, v1 - k0], [0.4999, v0 - k0], [0, v0 - k0], [0, v1 - k0]], col);
+      }
+    } else if (t.type === 'cristal') {
+      // EnderDragonRenderer.renderCrystalBeams : un tube de 8 faces du dragon (rayon 0,15, noir) au cristal (rayon 0,75, blanc ; le cristal
+      // monte de getY), texture end_crystal_beam qui defile de 0,01 par tick
+      const tx = textureDe('entity/end_crystal/end_crystal_beam', null); if (!tx) return;
+      const f0 = Math.sin(u * 0.2) / 2 + 0.5, cy = ay + ((f0 * f0 + f0) * 0.4 - 1.4) + 1 + 1.5;   // haut du cristal (getY), echelle 2
+      const v = [ax - bx, cy - by, az - bz], L = Math.hypot(...v) || 1, d = v.map((c) => c / L);
+      let r = Math.abs(d[1]) > 0.99 ? [1, 0, 0] : [d[2], 0, -d[0]]; const rl = Math.hypot(...r); r = r.map((c) => c / rl);
+      const up = [r[1] * d[2] - r[2] * d[1], r[2] * d[0] - r[0] * d[2], r[0] * d[1] - r[1] * d[0]];
+      const v2 = -u * 0.01, v3 = L / 32 - u * 0.01;
+      const P = (s, ang, rad) => [bx + d[0] * s + (r[0] * Math.sin(ang) + up[0] * Math.cos(ang)) * rad, by + d[1] * s + (r[1] * Math.sin(ang) + up[1] * Math.cos(ang)) * rad, bz + d[2] * s + (r[2] * Math.sin(ang) + up[2] * Math.cos(ang)) * rad];
+      for (let j = 1; j <= 8; j++) {
+        const a0 = (j - 1) * Math.PI * 2 / 8, a1 = j * Math.PI * 2 / 8, u0 = (j - 1) / 8, u1 = j / 8;
+        M('cristal', tx, 'lumiere').quad([P(0, a0, 0.15), P(L, a0, 0.75), P(L, a1, 0.75), P(0, a1, 0.15)], [[u0, v2], [u0, v3], [u1, v3], [u1, v2]], [[0, 0, 0], [1, 1, 1], [1, 1, 1], [0, 0, 0]]);
+      }
+    } else if (t.type === 'rayons') {
+      // rayons de la mort du dragon : (f + f^2) / 2 x 60 triangles, hasard fixe (graine 432), blanc au centre -> magenta transparent au bout,
+      // longueur 5 a 25 (+ 10 apres 0,8), largeur 1 a 3 ; ils palissent apres 0,8 (additifs)
+      const f = Math.min(1, t.a / 200), f5 = Math.min(f > 0.8 ? (f - 0.8) / 0.2 : 0, 1), n = Math.floor((f + f * f) / 2 * 60);
+      const h = new Aleatoire(432), c0 = [1 - f5, 1 - f5, 1 - f5], c1 = [0, 0, 0];
+      let Q = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+      const mulM = (A, B) => { const C = new Array(9).fill(0); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) C[i * 3 + j] += A[i * 3 + k] * B[k * 3 + j]; return C; };
+      const RX = (a) => [1, 0, 0, 0, Math.cos(a), -Math.sin(a), 0, Math.sin(a), Math.cos(a)], RY = (a) => [Math.cos(a), 0, Math.sin(a), 0, 1, 0, -Math.sin(a), 0, Math.cos(a)], RZ = (a) => [Math.cos(a), -Math.sin(a), 0, Math.sin(a), Math.cos(a), 0, 0, 0, 1];
+      const ap = (M3, p) => [ax + M3[0] * p[0] + M3[1] * p[1] + M3[2] * p[2], ay + M3[3] * p[0] + M3[4] * p[1] + M3[5] * p[2], az + M3[6] * p[0] + M3[7] * p[1] + M3[8] * p[2]];
+      const T2 = Math.PI * 2, S3 = Math.sqrt(3) / 2;
+      for (let k = 0; k < n; k++) {
+        Q = mulM(Q, mulM(mulM(RX(h.flottant() * T2), RY(h.flottant() * T2)), RZ(h.flottant() * T2)));
+        Q = mulM(Q, mulM(mulM(RX(h.flottant() * T2), RY(h.flottant() * T2)), RZ(h.flottant() * T2 + f * Math.PI / 2)));
+        const lo = h.flottant() * 20 + 5 + f5 * 10, la = h.flottant() * 2 + 1 + f5 * 2;
+        const p0 = ap(Q, [0, 0, 0]), p1 = ap(Q, [-S3 * la, lo, -0.5 * la]), p2 = ap(Q, [S3 * la, lo, -0.5 * la]), p3 = ap(Q, [0, lo, la]);
+        for (const [A, B] of [[p1, p2], [p2, p3], [p3, p1]]) M('rayons', blancTex, 'lumiere').quad([p0, A, B, B], [[0, 0], [0, 0], [0, 0], [0, 0]], [c0, c1, c1, c1]);
+      }
+    }
+  }
   return {
     maillages(u, camera) {
       const tick = Math.floor(u), f = u - tick, parTex = new Map();
@@ -180,6 +242,49 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
           const T = reelle ?? texFleche(), us = reelle ? 0.5 : 1, vs = reelle ? 5 / 32 : 0.5, pu = reelle ? 5 / 32 : 0.3125, pv0 = reelle ? 5 / 32 : 0.5, pv1 = reelle ? 10 / 32 : 1;
           for (const ax of axes) M('fleche', T, 'fleche').quad([P(queue, ax, h), P(pointe, ax, h), P(pointe, ax, -h), P(queue, ax, -h)], [[0, 0], [us, 0], [us, vs], [0, vs]], L);
           M('fleche', T, 'fleche').quad([P(queue, up, h), P(queue, r, h), P(queue, up, -h), P(queue, r, -h)], [[0, pv0], [pu, pv0], [pu, pv1], [0, pv1]], L);
+        } else if (type === 'boule_feu') {
+          // boule de feu (ThrownItemRenderer de la charge de feu, echelle 3 ou 0,75, pleine lumiere) : sprite de face a la camera, centre au milieu
+          const nom = replay.noms[E[a + 7]], modele = quadsObjet(nom), nomTex = modele.quads[0]?.tex;
+          if (!nomTex) continue;
+          const t = textureDe(nomTex, null);
+          if (!t) continue;
+          const cam = camera ?? { lacet: 0, tangage: 0 }, ya = (cam.lacet ?? 0) * RAD, pa = (cam.tangage ?? 0) * RAD;
+          const fw = [-Math.sin(ya) * Math.cos(pa), -Math.sin(pa), Math.cos(ya) * Math.cos(pa)], rr = [-Math.cos(ya), 0, -Math.sin(ya)];
+          const hh = [rr[1] * fw[2] - rr[2] * fw[1], rr[2] * fw[0] - rr[0] * fw[2], rr[0] * fw[1] - rr[1] * fw[0]], s = 0.25 * E[a + 6];
+          M('feu|' + nomTex, t, 'objet').quad([[x - rr[0] * s + hh[0] * s, y - rr[1] * s + hh[1] * s, z - rr[2] * s + hh[2] * s], [x + rr[0] * s + hh[0] * s, y + rr[1] * s + hh[1] * s, z + rr[2] * s + hh[2] * s], [x + rr[0] * s - hh[0] * s, y + rr[1] * s - hh[1] * s, z + rr[2] * s - hh[2] * s], [x - rr[0] * s - hh[0] * s, y - rr[1] * s - hh[1] * s, z - rr[2] * s - hh[2] * s]], [[0, 0], [1, 0], [1, 1], [0, 1]], 1);
+        } else if (type === 'crane' || type === 'crane_bleu') {
+          // WitherSkullRenderer : la tete du wither (cube de 8 px, texOffs(0, 35) sur la texture du wither, bleue si dangereuse), tournee
+          // selon sa vitesse (lacet, tangage) ; les faces UV du cube du jeu (dessus, dessous, cotes)
+          const t = textureDe(type === 'crane' ? 'entity/wither/wither' : 'entity/wither/wither_invulnerable', null);
+          if (!t) { note('crane du wither : texture entity/wither/wither absente du kit'); continue; }
+          const ya = E[a + 6] * RAD, pa = E[a + 7] * RAD, h = 0.25, L = lum(x, y, z), W = t.largeur, H = t.hauteur;
+          const tourne = (q) => { let [px, py, pz] = q; [py, pz] = [py * Math.cos(pa) - pz * Math.sin(pa), py * Math.sin(pa) + pz * Math.cos(pa)]; [px, pz] = [px * Math.cos(ya) - pz * Math.sin(ya), px * Math.sin(ya) + pz * Math.cos(ya)]; return [x + px, y + py, z + pz]; };
+          const uvr = (u0, v0, w, hh) => [[u0 / W, v0 / H], [(u0 + w) / W, v0 / H], [(u0 + w) / W, (v0 + hh) / H], [u0 / W, (v0 + hh) / H]];
+          const F = [   // avant (+z, le visage : vers la vitesse), arriere, gauche, droite, dessus, dessous : [sommets, uv]
+            [[[h, h, h], [-h, h, h], [-h, -h, h], [h, -h, h]], uvr(8, 43, 8, 8), 0.8], [[[-h, h, -h], [h, h, -h], [h, -h, -h], [-h, -h, -h]], uvr(24, 43, 8, 8), 0.8],
+            [[[-h, h, h], [-h, h, -h], [-h, -h, -h], [-h, -h, h]], uvr(16, 43, 8, 8), 0.6], [[[h, h, -h], [h, h, h], [h, -h, h], [h, -h, -h]], uvr(0, 43, 8, 8), 0.6],
+            [[[h, h, -h], [-h, h, -h], [-h, h, h], [h, h, h]], uvr(8, 35, 8, 8), 1], [[[h, -h, h], [-h, -h, h], [-h, -h, -h], [h, -h, -h]], uvr(16, 35, 8, 8), 0.5],
+          ];
+          for (const [P4, uv, o] of F) M(type, t, 'objet').quad(P4.map(tourne), uv, o * L);
+        } else if (type === 'boule_dragon') {
+          // DragonFireballRenderer : sprite de face a la camera, echelle 2, pleine lumiere
+          const t = textureDe('entity/enderdragon/dragon_fireball', null);
+          if (!t) continue;
+          const cam = camera ?? { lacet: 0, tangage: 0 }, ya = (cam.lacet ?? 0) * RAD, pa = (cam.tangage ?? 0) * RAD;
+          const fw = [-Math.sin(ya) * Math.cos(pa), -Math.sin(pa), Math.cos(ya) * Math.cos(pa)], rr = [-Math.cos(ya), 0, -Math.sin(ya)];
+          const hh = [rr[1] * fw[2] - rr[2] * fw[1], rr[2] * fw[0] - rr[0] * fw[2], rr[0] * fw[1] - rr[1] * fw[0]], s = 0.5 * E[a + 6];
+          M('dragon_boule', t, 'objet').quad([[x - rr[0] * s + hh[0] * s, y - rr[1] * s + hh[1] * s, z - rr[2] * s + hh[2] * s], [x + rr[0] * s + hh[0] * s, y + rr[1] * s + hh[1] * s, z + rr[2] * s + hh[2] * s], [x + rr[0] * s - hh[0] * s, y + rr[1] * s - hh[1] * s, z + rr[2] * s - hh[2] * s], [x - rr[0] * s - hh[0] * s, y - rr[1] * s - hh[1] * s, z - rr[2] * s - hh[2] * s]], [[0, 0], [1, 0], [1, 1], [0, 1]], 1);
+        } else if (type === 'orbe') {
+          // ExperienceOrbRenderer : icone (4 x 4 de 16 px) selon la valeur, echelle 0,3, couleur qui pulse (r = (sin(f) + 1) x 0,5, v = 1,
+          // b = (sin(f + 4,189) + 1) x 0,1, f = (age + partiel) / 2), pleine lumiere, monte de 0,1
+          const t = textureDe('entity/experience_orb', null);
+          if (!t) continue;
+          const ic = E[a + 6], u0 = (ic % 4) * 16 / 64, v0 = Math.floor(ic / 4) * 16 / 64, f2 = (k + f) / 2;
+          const col = [(Math.sin(f2) + 1) * 0.5, 1, (Math.sin(f2 + 4.1887903) + 1) * 0.1];
+          const cam = camera ?? { lacet: 0, tangage: 0 }, ya = (cam.lacet ?? 0) * RAD, pa = (cam.tangage ?? 0) * RAD;
+          const fw = [-Math.sin(ya) * Math.cos(pa), -Math.sin(pa), Math.cos(ya) * Math.cos(pa)], rr = [-Math.cos(ya), 0, -Math.sin(ya)];
+          const hh = [rr[1] * fw[2] - rr[2] * fw[1], rr[2] * fw[0] - rr[0] * fw[2], rr[0] * fw[1] - rr[1] * fw[0]], s = 0.15, cy = y + 0.1 + 0.075;
+          M('orbe', t, 'orbe').quad([[x - rr[0] * s + hh[0] * s, cy - rr[1] * s + hh[1] * s, z - rr[2] * s + hh[2] * s], [x + rr[0] * s + hh[0] * s, cy + rr[1] * s + hh[1] * s, z + rr[2] * s + hh[2] * s], [x + rr[0] * s - hh[0] * s, cy + rr[1] * s - hh[1] * s, z + rr[2] * s - hh[2] * s], [x - rr[0] * s - hh[0] * s, cy - rr[1] * s - hh[1] * s, z - rr[2] * s - hh[2] * s]], [[u0, v0], [u0 + 0.25, v0], [u0 + 0.25, v0 + 0.25], [u0, v0 + 0.25]], col);
         } else if (type === 'lance') {
           // sprite de l'objet lance, de face a la camera (taille 0,5 comme l'affichage ground)
           const nom = replay.noms[E[a + 7]], modele = quadsObjet(nom), nomTex = modele.quads[0]?.tex;
@@ -211,6 +316,7 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
           }
         }
       }
+      for (const t of traits.get(tick) ?? []) dessinerTrait(t, u, M);
       const out = [];
       for (const { texture, genre, m } of parTex.values()) if (!m.vide()) out.push(m.maillage(texture, genre));
       return out;

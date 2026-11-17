@@ -5,6 +5,7 @@ import { effetsDeScene } from './effets-camera.js';
 import { creerIncrustations, aIncrustations } from '../incrust/index.js';
 import { creerProjecteur, transformRoulis } from '../incrust/ancrage.js';
 import { notesRythme } from './rythme.js';
+import { textesEnDouble, notesDoublons } from './doublons.js';
 
 export const scenePourMontage = (scene) => effetsDeScene(scene) || aIncrustations(scene);
 
@@ -16,7 +17,8 @@ export async function creerComposition({ scene, kit, baseDir, rs = null, anim, g
   if (!scenePourMontage(scene)) return null;
   const solide = rs && typeof rs.estSolidePourCamera === 'function' ? (x, y, z) => rs.estSolidePourCamera(x, y, z) : null;
   const inc = aIncrustations(scene) ? await creerIncrustations({ scene, kit, baseDir, solide }) : null;
-  const notes = [...notesRythme(scene, anim.images)];   // rythme compare aux videos de reference (notes courtes)
+  const notes = [...notesRythme(scene, anim.images), ...notesDoublons(textesEnDouble(scene))];   // rythme compare aux videos de reference ; textes en double (doublons.js)
+  const nDepart = notes.length;
   const prof = { demandee: 0, ignoree: 0 };
   const parNom = new Map(scene.acteurs.map((a, k) => [a.nom, k]));
   return {
@@ -56,6 +58,7 @@ export async function creerComposition({ scene, kit, baseDir, rs = null, anim, g
       }
       return faits;
     },
-    notesFinales() { return [...notes, ...(inc?.notes() ?? [])]; },
+    // les notes de depart (rythme, textes en double) sont deja recopiees dans les notes du film (film/video.js) : ici seulement les suivantes
+    notesFinales() { return [...notes.slice(nDepart), ...(inc?.notes() ?? [])]; },
   };
 }

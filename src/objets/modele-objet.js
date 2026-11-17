@@ -57,9 +57,13 @@ function quad(p, uv, n, tex, tint) {
 export function extruder(nom, t, couche = 0, tint = null) {
   const { largeur: w, hauteur: h, rgba } = t;
   const e = 0.0004 * couche, z0 = EPAISSEUR_Z0 - e, z1 = EPAISSEUR_Z1 + e;
+  // Comme ItemModelGenerator du jeu : face sud (avant) uv [0,0,16,16], face nord (arriere) uv [16,0,0,16]. Sur les deux faces u = x et
+  // v = 1 - y : l'avant montre l'image de l'inventaire, l'arriere la montre EN MIROIR (on voit l'objet "par transparence"), et les
+  // petites faces des aretes (pixel du bord, meme u = x) tombent juste sous les deux. Avant : l'arriere avait u = 1 - x (image non
+  // inversee vue de derriere), donc decalee par rapport a sa propre silhouette et a ses aretes.
   const quads = [
     quad([[0, 1, z1], [0, 0, z1], [1, 0, z1], [1, 1, z1]], [[0, 0], [0, 1], [1, 1], [1, 0]], [0, 0, 1], nom, tint),   // avant (sud)
-    quad([[1, 1, z0], [1, 0, z0], [0, 0, z0], [0, 1, z0]], [[0, 0], [0, 1], [1, 1], [1, 0]], [0, 0, -1], nom, tint),  // arriere (nord) : image non inversee vue de derriere
+    quad([[1, 1, z0], [1, 0, z0], [0, 0, z0], [0, 1, z0]], [[1, 0], [1, 1], [0, 1], [0, 0]], [0, 0, -1], nom, tint),  // arriere (nord) : u = x, miroir vu de derriere
   ];
   const opaque = (i, j) => i >= 0 && j >= 0 && i < w && j < h && rgba[(j * w + i) * 4 + 3] !== 0;
   for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {

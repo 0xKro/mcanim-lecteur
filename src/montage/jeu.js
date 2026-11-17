@@ -72,6 +72,90 @@ export function resoudreGestes(acteurs, motsTemps, err) {
     }
     a.gestes?.sort((x, y) => x.t - y.t);
   }
+  // parole : les blocs de sous-titres avec `qui` -> repliques de chaque acteur { debut, fin, qui, accents: [t], mots: [t] }
+  const blocs = new Map();
+  for (const m of motsTemps) {
+    if (!m.qui) continue;
+    const b = blocs.get(m.bloc) ?? blocs.set(m.bloc, { debut: m.t, fin: m.fin, qui: m.qui, accents: [], mots: [] }).get(m.bloc);
+    b.mots.push(m.t); if (m.accent) b.accents.push(m.t);
+  }
+  const repliques = [...blocs.values()].sort((x, y) => x.debut - y.debut);
+  for (const a of acteurs) {
+    if (!repliques.length || a.creature) continue;
+    a.parole = repliques.filter((r) => r.qui === a.nom);   // ce qu'il dit
+    a.ecoute = repliques.filter((r) => r.qui !== a.nom);   // ce qu'il ecoute (il regarde celui qui parle)
+  }
+}
+
+// ---------------------------------------------------------------- marche automatique
+// Un acteur que la scene DEPLACE (piste pos) sans ecrire de jambes (ni piste ni boucle jambeD/jambeG) glissait, raide, sur le sol.
+// Dans une scene montee (`jeu` actif) il marche tout seul : la foulee de la fiche marcher (periode 2,16 / v des 2,4 blocs/s, 0,9 s
+// en dessous avec des angles x v / 2,4), hanches 42 -> 8 -> -43, genoux jusqu'a 80, bras +-33 opposes, coudes 20 a 40. La phase
+// avance avec la vitesse lissee (l'acteur demarre et s'arrete sans a-coup). Rien pour une creature, une monture, un acteur a intentions.
+const jambesEcrites = (a) => !!(a.jambeD || a.jambeG || a.genouD || a.genouG || a.boucles?.some((b) => b.pistes.jambeD || b.pistes.jambeG || b.pistes.genouD || b.pistes.genouG));
+export function marcheAutoPossible(a) {
+  if (a.creature || a.monture || a.actes) return false;
+  if (jambesEcrites(a)) return false;
+  const c = a.pos?.cles ?? [];
+  return c.some((k) => Math.hypot(k.x - c[0].x, k.z - c[0].z) > 0.05);
+}
+const DT_IMAGE = 1 / 30;
+// Avance l'etat de marche `e` (objet de l'acteur dans anim.js) d'une image, v = vitesse horizontale (blocs/s).
+export function avancerMarche(e, v) {
+  const prec = e.vMarche ?? 0;
+  e.vMarche = prec + (Math.min(8, v) - prec) * 0.35;   // ~0,1 s pour prendre la vitesse
+  const periode = e.vMarche >= 2.4 ? 2.16 / e.vMarche : 0.9;
+  if (e.vMarche > 0.05) e.phaseMarche = ((e.phaseMarche ?? 0) + DT_IMAGE / periode) % 1;   // a l'arret la phase reste : les jambes reviennent par l'amplitude
+}
+// interpolation periodique de cles [[phase, valeur]] (la derniere rejoint la premiere), lissee
+function cycle(cles, ph) {
+  for (let k = 0; k < cles.length; k++) {
+    const [p0, v0] = cles[k], [p1, v1] = k + 1 < cles.length ? cles[k + 1] : [1 + cles[0][0], cles[0][1]];
+    if (ph >= p0 && ph < p1) { const u = (ph - p0) / (p1 - p0); return v0 + (v1 - v0) * (0.5 - 0.5 * Math.cos(Math.PI * u)); }
+  }
+  return cles[0][1];
+}
+const HANCHE = [[0, 42], [0.3, 8], [0.64, -43]], GENOU = [[0, 1], [0.3, 21], [0.64, 34], [0.74, 80], [0.9, 30]];
+export function poseMarche(pose, e) {
+  const A = Math.min(1, (e.vMarche ?? 0) / 2.4) * lisse(((e.vMarche ?? 0) - 0.05) / 0.6);
+  if (A <= 0.001) return;
+  const ph = e.phaseMarche ?? 0, phG = (ph + 0.5) % 1;
+  const hD = cycle(HANCHE, ph), hG = cycle(HANCHE, phG);
+  pose.jambeD[0] += A * hD; pose.jambeG[0] += A * hG;
+  const c = Math.max(-1, Math.min(1, (hD - hG) / 85));   // les bras suivent les jambes a l'oppose (+-33 quand les hanches sont a +-42)
+  pose.brasD[0] += -33 * A * c; pose.brasG[0] += 33 * A * c;
+  if (pose.genouD !== undefined) { pose.genouD = Math.max(pose.genouD, A * cycle(GENOU, ph)); pose.genouG = Math.max(pose.genouG, A * cycle(GENOU, phG)); }
+  if (pose.coudeD !== undefined) { pose.coudeD = Math.max(pose.coudeD, A * (30 - 10 * c)); pose.coudeG = Math.max(pose.coudeG, A * (30 + 10 * c)); }
+}
+
+// ---------------------------------------------------------------- parole (sous-titres avec `qui`)
+// Celui qui parle : la tete accompagne les mots (petit hochement a chaque mot), l'avant-bras marque les mots en accent et le debut
+// de la replique ("battement" : coude 25 -> 70, bras un peu en avant, 0,6 s) ; celui qui ecoute tourne la tete vers lui.
+function jouerParole(pose, a, t, posDe, lacet) {
+  for (const r of a.parole ?? []) {
+    if (t < r.debut - 0.2 || t > r.fin + 0.4) continue;
+    const dedans = lisse((t - r.debut + 0.2) / 0.25) * lisse((r.fin + 0.4 - t) / 0.3);
+    for (const tm of r.mots) { const x = t - tm; if (x > -0.05 && x < 0.35) pose.tete[1] += 5 * dedans * Math.sin(Math.PI * (x + 0.05) / 0.4); }
+    pose.tete[0] += SIGNE_TETE * 6 * dedans * Math.sin((2 * Math.PI * (t - r.debut)) / 1.7);
+    const battements = r.accents.length ? [r.debut, ...r.accents] : [r.debut];
+    for (const tb of battements) {
+      const x = t - tb + 0.1;   // le geste part un peu avant le mot
+      if (x < 0 || x > 0.7) continue;
+      const e = lisse(x / 0.18) * lisse((0.7 - x) / 0.3);
+      pose.brasD[0] += -24 * e; pose.brasD[1] = (pose.brasD[1] ?? 0) + 8 * e;
+      if (pose.coudeD !== undefined) pose.coudeD = Math.min(150, pose.coudeD * (1 - e) + 70 * e);
+      pose.tete[1] += 6 * e; pose.penche += 2.5 * e;
+    }
+  }
+  if (!posDe) return;
+  for (const r of a.ecoute ?? []) {
+    if (t < r.debut || t > r.fin + 0.3) continue;
+    const p = posDe(r.qui); if (!p) continue;
+    const rel = normaliser180((Math.atan2(-(p[0] - pose.x), p[1] - pose.z) / RAD) - lacet);
+    if (Math.abs(rel) > 120) continue;
+    const e = lisse((t - r.debut) / 0.4) * lisse((r.fin + 0.3 - t) / 0.3);
+    pose.tete[0] += SIGNE_TETE * 0.35 * Math.max(-50, Math.min(50, rel)) * e;   // en plus du regard de la vie au repos : il fixe celui qui parle
+  }
 }
 
 // Graine stable d'un nom.
@@ -84,20 +168,30 @@ function enveloppe(g, t) {
   return lisse(x / 0.18) * lisse((g.duree - x) / 0.25);
 }
 
-// Ajoute la vie et les gestes a `pose` (modifiee en place). ctx : { t, a, vie (bool : la vie est jouee), posDe(nom) -> [x, z] ou null (avec posDe.noms), marche (bool : l'acteur se deplace ou saute), lacet }.
+// Ajoute la vie et les gestes a `pose` (modifiee en place). ctx : { t, a, vie (bool : la vie est jouee), posDe(nom) -> [x, z] ou null (avec posDe.noms), marche (bool : l'acteur se deplace ou saute), lacet,
+//   la marche automatique est posee avant, par anim.js (poseMarche). }.
 export function ajouterJeu(pose, { t, a, marche, posDe, lacet, vie }) {
   const J = a.jeu, I = J.intensite;
   const s = graine(a.nom);
   if (vie && !marche) {
-    // respiration : cycle de 3,6 s ; le buste se penche d'un demi-degre, les bras suivent a contretemps
+    // respiration : cycle de 3,6 s ; le buste se penche, les bras suivent a contretemps
     const resp = Math.sin((2 * Math.PI * t) / 3.6 + s);
-    pose.penche += 1.4 * I * resp + 1.0 * I * bruit(t * 0.22, s + 7);   // le poids passe d'un pied sur l'autre
+    pose.penche += 1.4 * I * resp + 1.0 * I * bruit(t * 0.22, s + 7);
+    // le poids passe d'un pied sur l'autre (cycle lent de ~6 s) : les jambes s'ouvrent d'un cote puis de l'autre, le buste suit
+    const poids = Math.sin((2 * Math.PI * t) / 6.2 + s * 0.7) * 0.7 + 0.3 * bruit(t * 0.18, s + 23);
+    if (!jambesEcrites(a)) {   // jamais par-dessus des jambes ecrites par la scene (pistes ou boucles)
+      pose.jambeD[1] = (pose.jambeD[1] ?? 0) + 2.5 * I * Math.max(0, poids); pose.jambeG[1] = (pose.jambeG[1] ?? 0) + 2.5 * I * Math.max(0, -poids);
+      pose.jambeD[0] += 3 * I * poids; pose.jambeG[0] -= 3 * I * poids;
+    }
+    // bras : balancement de respiration ET changements lents d'appui (visibles sur un telephone : 4 a 6 degres)
     const bras = a.brasD || a.brasG ? 0.5 : 1;
-    pose.brasD[0] += 2.6 * I * bras * Math.sin((2 * Math.PI * t) / 3.6 + s + 0.9) + 2.0 * I * bruit(t * 0.35, s + 3);
-    pose.brasG[0] += 2.6 * I * bras * Math.sin((2 * Math.PI * t) / 3.6 + s + 1.3) + 2.0 * I * bruit(t * 0.35, s + 5);
-    // la tete : bruit lent (regards, petits hochements)
-    pose.tete[0] += SIGNE_TETE * (9 * I * bruit(t * 0.45, s + 11));
-    pose.tete[1] += 5 * I * bruit(t * 0.55, s + 17) + 1.6 * I * resp;
+    pose.brasD[0] += 4.5 * I * bras * Math.sin((2 * Math.PI * t) / 3.6 + s + 0.9) + 3.0 * I * bruit(t * 0.35, s + 3);
+    pose.brasG[0] += 4.5 * I * bras * Math.sin((2 * Math.PI * t) / 3.6 + s + 1.3) + 3.0 * I * bruit(t * 0.35, s + 5);
+    pose.brasD[1] = (pose.brasD[1] ?? 0) + 2.5 * I * bras * (0.5 + 0.5 * resp); pose.brasG[1] = (pose.brasG[1] ?? 0) + 2.5 * I * bras * (0.5 - 0.5 * resp);
+    // la tete : bruit lent (regards, petits hochements) + un coup d'oeil de cote toutes les ~4 s
+    const coup = Math.sin((2 * Math.PI * t) / 4.3 + s * 1.3);
+    pose.tete[0] += SIGNE_TETE * (12 * I * bruit(t * 0.45, s + 11) + 7 * I * Math.sign(coup) * lisse((Math.abs(coup) - 0.85) / 0.15));
+    pose.tete[1] += 6 * I * bruit(t * 0.55, s + 17) + 2 * I * resp;
     // le regard va vers l'autre personnage (le plus proche dans le champ), la tete tourne de 85 % de l'angle
     if (J.regard && posDe) {
       let meilleur = null;
@@ -113,6 +207,7 @@ export function ajouterJeu(pose, { t, a, marche, posDe, lacet, vie }) {
       }
     }
   }
+  if (a.parole || a.ecoute) jouerParole(pose, a, t, J.regard ? posDe : null, lacet);
   for (const g of a.gestes ?? []) {
     const e = enveloppe(g, t) * g.force;
     if (e <= 0) continue;
@@ -139,4 +234,4 @@ export function ajouterJeu(pose, { t, a, marche, posDe, lacet, vie }) {
 }
 
 // Y a-t-il des gestes qui plient le coude (il faut alors les articulations dans la pose) ?
-export const gesteAvecCoude = (a) => (a.gestes ?? []).some((g) => ['pointer', 'montrer', 'lever', 'saluer'].includes(g.nom));
+export const gesteAvecCoude = (a) => (a.gestes ?? []).some((g) => ['pointer', 'montrer', 'lever', 'saluer'].includes(g.nom)) || !!a.parole?.length;

@@ -12,6 +12,7 @@ import { ombre } from '../perso/modele.js';
 import { ESPECES, VEHICULES, TEINTURES, TYPES_VILLAGEOIS, METIERS, NIVEAUX, couleurTeinture, couleurLaine, lireVariante, rgb } from './especes.js';
 import { Poses } from './poses.js';
 import { poser, animerNommee } from './anim.js';
+import { maillageCorde, maillageNoeud } from './laisse.js';
 import { objetPourNotes } from '../objets/habillage.js';
 import { matriceAffichage } from '../objets/placement.js';
 import { cuire as cuireBloc, afficheDe } from '../objets/modele-objet.js';
@@ -184,9 +185,9 @@ export function couchesDe(o, modeles, kitDir) {
     case 'strider': if (o.selle && adulte) ajoute('strider', 'saddle', 'equipment/strider_saddle/saddle'); break;
     case 'iron_golem': if (ch[0] !== 'intact') ajoute(modele, 'main', `iron_golem/iron_golem_crackiness_${ch[0].replace('cracked_', '')}`); break;
     case 'slime': ajoute('slime', 'outer', 'slime/slime', blanc, { mode: 'melange' }); break;
-    case 'spider': case 'cave_spider': ajoute(modele, 'main', 'spider/spider_eyes', blanc, { emissif: true }); break;
-    case 'enderman': ajoute('enderman', 'main', 'enderman/enderman_eyes', blanc, { emissif: true }); break;
-    case 'phantom': ajoute('phantom', 'main', 'phantom/phantom_eyes', blanc, { emissif: true }); break;
+    case 'spider': case 'cave_spider': ajoute(modele, 'main', 'spider/spider_eyes', blanc, { emissif: true, yeux: true }); break;
+    case 'enderman': ajoute('enderman', 'main', 'enderman/enderman_eyes', blanc, { emissif: true, yeux: true }); break;
+    case 'phantom': ajoute('phantom', 'main', 'phantom/phantom_eyes', blanc, { emissif: true, yeux: true }); break;
     case 'copper_golem': ajoute('copper_golem', 'main', `copper_golem/copper_golem_eyes${ch[0] === 'unaffected' ? '' : '_' + ch[0]}`, blanc, { emissif: true }); break;
     case 'drowned': ajoute(bebe ? 'drowned_baby' : 'drowned', 'outer', `zombie/drowned_outer_layer${bebe ? '_baby' : ''}`); break;
     case 'stray': ajoute('stray', 'outer', 'skeleton/stray_overlay'); break;
@@ -197,10 +198,12 @@ export function couchesDe(o, modeles, kitDir) {
       ajoute('warden', 'pulsating_spots', 'warden/warden_pulsating_spots_1', blanc, { emissif: true, pulse: 'taches1' });
       ajoute('warden', 'pulsating_spots', 'warden/warden_pulsating_spots_2', blanc, { emissif: true, pulse: 'taches2' });
       ajoute('warden', 'heart', 'warden/warden_heart', blanc, { emissif: true, pulse: 'coeur' });
+      ajoute('warden', 'main', 'warden/warden_tendrils', blanc, { emissif: true, pulse: 'vrilles' });   // getTendrilAnimation : les vrilles s'allument quand il entend une vibration
       break;
     case 'creaking': if (o.yeux !== false) ajoute('creaking', 'eyes', 'creaking/creaking_eyes', blanc, { emissif: true }); break;   // CreakingRenderer : yeux allumes (actif)
     case 'creeper': if (o.charge) ajoute('creeper', 'armor', 'creeper/creeper_armor', [0.5, 0.5, 0.5], { emissif: true, defile: 0.01, gonfle: 2 }); break;
-    case 'wither': if (o.charge) ajoute('wither', 'armor', 'wither/wither_armor', [0.5, 0.5, 0.5], { emissif: true, defile: 0.01 }); break;
+    case 'wither': ajoute('wither', 'armor', 'wither/wither_armor', [0.5, 0.5, 0.5], { emissif: true, defile: 0.01, gonfle: 0.5, cond: o.charge ? null : 'armure' }); break;   // WitherArmorLayer : sous la moitie de la vie (IA) ou `charge`
+    case 'ender_dragon': ajoute('ender_dragon', 'main', 'enderdragon/dragon_eyes', blanc, { emissif: true, yeux: true, cond: 'vivant' }); break;   // EnderDragonRenderer : yeux (pas pendant la mort)
     default: break;
   }
   // armure des humanoides (HumanoidArmorLayer) : les couches helmet/chestplate/leggings/boots du modele, textures entity/equipment
@@ -225,6 +228,7 @@ function pulsation(nom, pose, et) {
   if (nom === 'taches1') return Math.max(0, Math.cos(age * 0.045) * 0.25);
   if (nom === 'taches2') return Math.max(0, Math.cos(age * 0.045 + Math.PI) * 0.25);
   if (nom === 'coeur') { const m = et?.m; if (!m) return 0; const a = et.s?.partial ?? 0; return Math.max(0, (m.anim.vo[1] + (m.anim.v[1] - m.anim.vo[1]) * a) / 10); }
+  if (nom === 'vrilles') { const m = et?.m; if (!m) return 0; const a = et.s?.partial ?? 0; return Math.max(0, (m.anim.vo[0] + (m.anim.v[0] - m.anim.vo[0]) * a) / 10); }
   return 1;
 }
 
@@ -249,6 +253,24 @@ export class Creature {
     if (!this.couches.length) throw new Error(`creature ${o.type} : rien a dessiner (${notes.join(' ; ')})`);
     this.nbQuads = this.couches.reduce((s, c) => s + c.noeuds.reduce((a, n) => a + (n.q ? n.q.length / 20 : 0), 0), 0);
     this.texture = this.couches[0].t;
+    // texture d'etat choisie image par image par l'IA (GhastRenderer : shooting ; VexRenderer : charging ; BeeRenderer : angry)
+    const ALT = { ghast: 'ghast/ghast_shooting', vex: 'illager/vex_charging', bee: o.bebe ? null : `bee/bee_angry${lireVariante(o.type, o.variante).choix?.[1] === 'nectar' ? '_nectar' : ''}` };
+    this.texAlt = ALT[o.type] ? textureEntite(kitDir, ALT[o.type]) : null;
+  }
+
+  // RenderType.dragonExplosionAlpha : un pixel reste si l'alpha de enderdragon/dragon_exploding >= mort / 200 (pas de 1/100, en cache)
+  dissoudre(t, f) {
+    const q = Math.round(f * 100), cle = 'dis' + q, C = (this.dissous ??= new Map());
+    if (C.has(cle)) return C.get(cle);
+    const ex = (this.texExplosion ??= textureEntite(this.kitDir, 'enderdragon/dragon_exploding'));
+    let out = t;
+    if (ex && ex.largeur === t.largeur && ex.hauteur === t.hauteur) {
+      const rgba = new Uint8Array(t.rgba), seuil = q / 100 * 255;
+      for (let i = 3; i < rgba.length; i += 4) if (ex.rgba[i] < seuil) rgba[i] = 0;
+      out = { largeur: t.largeur, hauteur: t.hauteur, rgba };
+    }
+    C.set(cle, out);
+    return out;
   }
 
   // Poses de toutes les parties d'une couche (animation du type + pistes de l'acteur) ; `etat` : pose.creature (film/creatures.js)
@@ -279,7 +301,13 @@ export class Creature {
       if (pose.bascule) B = mul(B, RX(-pose.bascule * RAD));
       return mul(mul(B, S(-1, -1, 1)), RY(Math.PI / 2));
     }
-    let B = mul(T(pose.x, y, pose.z), RY((180 - lacet) * RAD));
+    const tremble = et.tremble ? Math.cos(Math.floor(pose.age ?? 0) * 3.25) * Math.PI * 0.4 : 0;   // LivingEntityRenderer.setupRotations : isShaking (conversion)
+    let B = mul(T(pose.x, y, pose.z), RY((180 - lacet - tremble) * RAD));
+    if (et.couche) {   // couche dans un lit (LivingEntityRenderer : recul de (oeil - 0,1) vers le pied, Y(direction du lit), Z(90), Y(270))
+      const r = et.couche.lacet, pas = { 90: [0, 1], 0: [-1, 0], 270: [0, -1], 180: [1, 0] }[Math.round(r)] ?? [0, 0], f = et.couche.oeil - 0.1;
+      B = mul(mul(mul(T(pose.x - pas[0] * f, y, pose.z - pas[1] * f), RY(r * RAD)), RZ(Math.PI / 2)), RY(270 * RAD));
+    }
+    if (et.tangage) B = mul(B, RX(et.tangage * RAD));   // PhantomRenderer.setupRotations : le corps suit son tangage
     if (et.poisson) {   // poisson : ondulation, hors de l'eau couche sur le flanc
       const q = et.poisson;
       B = mul(mul(B, RY(q.lacet * RAD)), T(q.avant[0], q.avant[1], q.avant[2]));
@@ -314,10 +342,11 @@ export class Creature {
       const normales = brut ? new Float32Array(nQ * 12) : null;
       const mats = new Array(c.noeuds.length), cachee = new Array(c.noeuds.length);
       let q = 0;
-      const teinte = c.teinte;
+      const teinte = et?.teinteLaine && (c.couche === 'wool' || c.couche === 'wool_undercoat') ? et.teinteLaine : c.teinte;   // jeb_ : laine arc-en-ciel
       const emissif = !!c.emissif;
       const pulse = c.pulse ? pulsation(c.pulse, pose, et) : 1;   // couches du warden qui pulsent (WardenRenderer)
       if (pulse <= 0.002) continue;
+      if ((c.cond === 'armure' && !et?.armure) || (c.cond === 'vivant' && et?.dissolution)) continue;   // armure du wither ; yeux du dragon (pas pendant sa mort)
       for (let i = 0; i < c.noeuds.length; i++) {
         const n = c.noeuds[i];
         const p = (n.nom && P.pose(n.nom)) || n.base;
@@ -339,7 +368,7 @@ export class Creature {
             positions[v * 3 + 1] = M[4] * X + M[5] * Y + M[6] * Z + M[7];
             positions[v * 3 + 2] = M[8] * X + M[9] * Y + M[10] * Z + M[11];
             uvs[v * 2] = n.q[b + 3] / c.W; uvs[v * 2 + 1] = n.q[b + 4] / c.H;
-            if (brut) { couleurs[v * 3] = teinte[0]; couleurs[v * 3 + 1] = teinte[1]; couleurs[v * 3 + 2] = teinte[2]; normales[v * 3] = mx; normales[v * 3 + 1] = my; normales[v * 3 + 2] = mz; continue; }
+            if (brut) { const kp = emissif ? pulse : 1; couleurs[v * 3] = teinte[0] * kp; couleurs[v * 3 + 1] = teinte[1] * kp; couleurs[v * 3 + 2] = teinte[2] * kp; normales[v * 3] = mx; normales[v * 3 + 1] = my; normales[v * 3 + 2] = mz; continue; }
             let r = o * teinte[0], g = o * teinte[1], bl = o * teinte[2];
             if (!emissif) {
               if (teinteCorps) { r *= teinteCorps[0]; g *= teinteCorps[1]; bl *= teinteCorps[2]; }
@@ -352,9 +381,12 @@ export class Creature {
         }
       }
       if (!q) continue;
-      const texture = c.defile ? textureDecalee(c.t, (age * c.defile) % 1) : c.t;
+      const texEtat = et?.texEtat && c.corps ? ((this.texEtats ??= {})[et.texEtat] ??= textureEntite(this.kitDir, et.texEtat) ?? null) : null;   // abeille : en colere et/ou avec du nectar
+      let texture = c.defile ? textureDecalee(c.t, (age * c.defile) % 1) : texEtat ?? (et?.alt && c.corps && this.texAlt ? this.texAlt : c.t);   // ghast qui tire, vex qui charge, abeille en colere
+      if (et?.dissolution && c.corps) texture = this.dissoudre(texture, et.dissolution);   // dragon qui meurt : seuls restent les pixels ou dragon_exploding est assez opaque
       const m = { positions, uvs, couleurs, indices, texture, mode: emissif ? 'melange' : c.mode, deuxFaces: c.mode !== 'melange' || emissif, genre: 'creature', entite: this.entite };
-      if (emissif) { m.additif = true; m.emissif = true; }
+      if (emissif) { m.additif = true; m.emissif = true; if (c.yeux) m.yeux = true; if (!c.yeux && !c.defile && !c.pulse) m.lueur = true; }   // lueur : RenderType.entityTranslucentEmissive (warden, breeze, creaking, golem de cuivre) : un vrai pack la melange (pas d'ajout), pleine lumiere   // yeux (RenderType.eyes) : programme gbuffers_spidereyes d'un vrai pack
+      if (brut && blanc > 0 && !emissif) m.blanc = blanc;   // eclair blanc du creeper : entityColor blanc d'un vrai pack (le rendu de base l'a deja dans les couleurs)
       if (normales) m.normales = normales;
       if (pose.horsImage) m.exempt = true;
       sorties.push(m);
@@ -375,6 +407,12 @@ export class Creature {
       }
     }
     if (this.kitDir) sorties.push(...this.blocs(pose, lumiere, brut, cachePoses.get(this.couches[0].racine)));
+    // laisse (film/creatures.js : pose.laisse = { de, vers, noeud }) : corde du jeu jusqu'a la main ou au noeud de barriere
+    if (pose.laisse) {
+      const avecN = (m) => { if (m && brut) { m.normales = new Float32Array(m.positions.length); for (let i = 1; i < m.normales.length; i += 3) m.normales[i] = 1; } return m; };
+      sorties.push(avecN(maillageCorde(pose.laisse.de, pose.laisse.vers, lumiere, pose.laisse.lumVers ?? lumiere)));
+      if (pose.laisse.noeud) { const k = avecN(maillageNoeud(this.kitDir, pose.laisse.noeud, pose.laisse.lumVers ?? lumiere)); if (k) sorties.push(k); }
+    }
     return sorties;
   }
 
@@ -393,11 +431,12 @@ export class Creature {
       for (const mo of morceauxBloc(this.kitDir, id)) out.push(maillageObjet(mo, M, lumiere, brut, pose, this.entite));
       return out;
     }
-    if (this.type === 'enderman' && this.o.porte) {
+    const porte = et.porte !== undefined ? et.porte : this.o.porte;   // bloc pris en cours de route (ia-vie.js) ou champ porte
+    if (this.type === 'enderman' && porte) {
       let M = mul(this.base(pose), T(0, 0.6875, -0.75));
       M = mul(mul(M, RX(20 * RAD)), RY(45 * RAD));
       M = mul(mul(mul(M, T(0.25, 0.1875, 0.25)), S(-0.5, -0.5, 0.5)), RY(Math.PI / 2));
-      for (const mo of morceauxBloc(this.kitDir, this.o.porte)) out.push(maillageObjet(mo, M, lumiere, brut, pose, this.entite));
+      for (const mo of morceauxBloc(this.kitDir, porte)) out.push(maillageObjet(mo, M, lumiere, brut, pose, this.entite));
     }
     if (['villager', 'wandering_trader'].includes(this.type) && this.o.echange) {
       const Ma = this.matrice(pose, 'arms', P);

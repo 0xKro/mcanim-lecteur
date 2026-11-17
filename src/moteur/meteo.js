@@ -155,7 +155,11 @@ export class Meteo {
       if (e.vie >= 0 && !e.visuel) {
         for (const a of sim.acteurs ? sim.acteurs.liste : []) {
           const b = a.boite();
-          if (b[3] > e.x - 3 && b[0] < e.x + 3 && b[4] > e.y - 3 && b[1] < e.y + 9 && b[5] > e.z - 3 && b[2] < e.z + 3 && a.mort < 0) a.degats(R.valeur('meteo.foudreDegats', 5), 'foudre');
+          if (b[3] > e.x - 3 && b[0] < e.x + 3 && b[4] > e.y - 3 && b[1] < e.y + 9 && b[5] > e.z - 3 && b[2] < e.z + 3 && a.mort < 0) {
+            // Entity.thunderHit (une fois par eclair) : villageois -> sorciere, cochon -> piglin zombifie, creeper charge, champimeuh qui change de couleur
+            if (a.ia && !(e.touches ??= new Set()).has(a)) { e.touches.add(a); if (a.ia.foudroye?.(e)) continue; }
+            a.degats(R.valeur('meteo.foudreDegats', 5), 'foudre');
+          }
         }
       }
       this.ecrire(e);

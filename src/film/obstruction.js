@@ -31,6 +31,10 @@ export function obstructionsCamera(scene, images, terrain) {
     const boites = images[i].acteurs.map((p) => ({ nom: p.nom, x0: p.x - 0.3, x1: p.x + 0.3, y0: p.y, y1: p.y + 1.8, z0: p.z - 0.3, z1: p.z + 0.3 }));
     let caches = 0;
     const vus = new Map();
+    // camera DANS un bloc non plein (coffre, barriere, feuillage...) : le planificateur ne l'evite pas et un bloc a collision (coffre) arrete
+    // les rayons des le depart (terrain.solide) : sans ce controle rien n'etait signale alors que l'image entiere montre l'interieur du bloc.
+    const dans = terrain.bloc(Math.floor(c.x), Math.floor(c.y), Math.floor(c.z));
+    if (dans && !VIDE.test(dans) && !terrain.solide(c.x, c.y, c.z)) { parImage.push({ part: 1, dom: `b:${nomCourt(dans)}` }); continue; }
     for (let j = 0; j < LIGNES; j++) for (let k = 0; k < COLS; k++) {
       const sx = ((k + 0.5) / COLS) * 2 - 1, sy = 1 - ((j + 0.5) / LIGNES) * 2;
       let d = [f[0] + r[0] * sx * tx + u[0] * sy * ty, f[1] + r[1] * sx * tx + u[1] * sy * ty, f[2] + r[2] * sx * tx + u[2] * sy * ty];

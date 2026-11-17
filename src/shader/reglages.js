@@ -106,7 +106,7 @@ export function nonGere(reglages) {
   if ([...reglages.props.keys()].some((k) => /^image\.|^bufferObject\./.test(k))) manque.push('images/SSBO du pack (ex. eclairage par propagation LPV)');
   if (tout(/(^|\/)dh_[a-z_]+\.(fsh|vsh)$/i)) manque.push('Distant Horizons');
   if (tout(/gbuffers_(hand|hand_water)\.(fsh|vsh)$/i)) manque.push('main du joueur');
-  if (tout(/gbuffers_(beaconbeam|armor_glint|spidereyes)\.(fsh|vsh)$/i)) manque.push('faisceaux, brillance d\'armure, yeux');
+  if (tout(/gbuffers_(beaconbeam|armor_glint)\.(fsh|vsh)$/i)) manque.push('faisceaux, brillance d\'armure');   // yeux des creatures : gbuffers_spidereyes (fait)
   manque.push('relief et reflets labPBR (normales et speculaire plates)', 'biomes (un seul biome fixe)', 'meteo (le pack ne voit la pluie que si la scene a ciel.meteo ; sinon beau temps)');
   return manque;
 }

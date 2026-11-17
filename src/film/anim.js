@@ -16,8 +16,9 @@ import { notesObstruction } from './obstruction.js';   // camera : herbe, feuill
 import { valeurObjet } from './objets-scene.js';   // objets tenus et armure : pistes de changements d'un coup
 import { appliquerCibles, aCibles } from './cibles.js';   // articulations libres : cibles des mains et des pieds (cinematique inverse)
 import { carteTemps } from '../montage/temps.js';   // montage : ralenti, accelere, arret du temps du monde par plan (facultatif)
-import { ajouterJeu, gesteAvecCoude } from '../montage/jeu.js';   // montage : vie des acteurs au repos et gestes sur mots cles (facultatif)
-import { cameraDeCadre } from '../montage/cadrage.js';   // montage : cadrage par intention (plan moyen, rapproche...)
+import { ajouterJeu, gesteAvecCoude, marcheAutoPossible, avancerMarche, poseMarche } from '../montage/jeu.js';   // montage : vie des acteurs au repos et gestes sur mots cles (facultatif)
+import { cameraDeCadre, reserverTitres } from '../montage/cadrage.js';
+import { rectSur } from '../montage/zones.js';   // montage : cadrage par intention (plan moyen, rapproche...)
 import { appliquerMontage, effetsDeScene } from '../montage/effets-camera.js';   // montage : secousse, coup de zoom, roulis, flous, transitions (facultatif)
 
 const RAD = Math.PI / 180;
@@ -125,14 +126,15 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
   const acteurs = scene.acteurs;
   const parNom = new Map(acteurs.map((a, i) => [a.nom, i]));
   const notes = [...(scene.notesSaisie ?? [])];   // formes courtes acceptees a la lecture (camera.pos [x,y,z]...)
-  const articule = acteurs.map((a) => ['coudeD', 'coudeG', 'genouD', 'genouG'].some((n) => a[n] || a.boucles.some((b) => b.pistes[n])) || aCibles(a) || gesteAvecCoude(a));
+  const marcheAuto = acteurs.map((a) => !!scene.jeu && marcheAutoPossible(a));   // montage : un acteur deplace sans jambes ecrites marche tout seul (jeu.js)
+  const articule = acteurs.map((a, k) => ['coudeD', 'coudeG', 'genouD', 'genouG'].some((n) => a[n] || a.boucles.some((b) => b.pistes[n])) || aCibles(a) || gesteAvecCoude(a) || marcheAuto[k]);
   // corps [t, penche, cote, torsion] (plus d'une valeur) : le haut du corps entier tourne autour des hanches ; une seule valeur : le dos du jeu
   const etatsIK = acteurs.map(() => ({}));   // dernier pivot de coude de chaque membre tenu par une cible (continuite d'une image a l'autre)
   const corpsComplet = acteurs.map((a) => (a.corps?.arite ?? 1) > 1 || a.boucles.some((b) => (b.pistes.corps?.arite ?? 1) > 1));
 
   // Pied du joueur : plus haut sol sous les 4 coins et le centre (comme la boite du jeu), dalles et escaliers a leur vraie hauteur.
   const solSous = (x, z, yr) => { const m = solFin.sous(x, z, yr); return m ? m.y : null; };
-  const vivants = acteurs.map((a) => ((a.actes || a.creature?.ia) && monde?.replay ? creerVivant(monde.replay, a.nom) : null));   // trace des acteurs a intentions
+  const vivants = acteurs.map((a) => ((a.actes || a.creature?.ia) && monde?.replay ? creerVivant(monde.replay, a._trace ?? a.nom) : null));   // _trace : acteur ne ou change en cours de route (film/naissances.js)   // trace des acteurs a intentions
 
   // Etat de chaque acteur, avance image par image.
   const etat = acteurs.map((a) => {
@@ -239,6 +241,10 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
           if (vs.mortT >= 20) { pose.y -= 1000; pose.absent = true; } else { const rot = Math.min(1, Math.sqrt(Math.max(0, vs.mortT) / 20 * 1.6)) * 90; pose.roulis = rot; pose.dy = (pose.dy ?? 0) + descenteBascule(0, rot); }
         }
       }
+      if (a._absentAvant !== undefined || a._absentApres !== undefined) {   // entite nee (ou changee) en cours de route : rien hors de sa fenetre de ticks
+        const tk = monde?.replay ? monde.replay.tickDe(tmA) : 0;
+        if ((a._absentAvant !== undefined && tk < a._absentAvant) || (a._absentApres !== undefined && tk >= a._absentApres)) { pose.y -= 1000; pose.absent = true; }
+      }
       if (st.echelle && !imposee) pose.echelle = true;
       // orientation du corps entier et decalage vertical (pistes facultatives : rien n'est ajoute sans elles)
       const clamp180 = (v) => Math.max(-180, Math.min(180, v));
@@ -258,6 +264,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
         pose.coudeD = flexion(a, 'coudeD', T('coudeD'), H('coudeD'), fB, c); pose.coudeG = flexion(a, 'coudeG', T('coudeG'), H('coudeG'), fB, c);
         pose.genouD = flexion(a, 'genouD', T('genouD'), H('genouD'), fJ, g); pose.genouG = flexion(a, 'genouG', T('genouG'), H('genouG'), fJ, g);
       }
+      if (marcheAuto[k]) { avancerMarche(e, figeA ? 0 : Math.hypot(dx, dz) / DT); poseMarche(pose, e); }   // montage : marche automatique, avant l'appui (le corps monte et descend)
       // cibles des pieds (cinematique inverse) : avant l'appui, qui pose ensuite le pied le plus bas sur le sol
       const fk = {}, ciblesPieds = aCibles(a) ? appliquerCibles(a, pose, t, evaluer, 'jambes', fk, etatsIK[k], FG ? T : null) : 0;
       if (articule[k] || plie || incline) {
@@ -288,7 +295,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
       for (const [champ, piste] of [['objetD', a.objetD], ['objetG', a.objetG]]) { const id = piste ? valeurObjet(piste, T(champ)) : null; if (id) pose[champ] = id; }
       if (a.armure) { let arm = null; for (const [e, piste] of Object.entries(a.armure)) { const id = valeurObjet(piste, T('armure')); if (id) (arm ??= {})[e] = id; } if (arm) pose.armure = arm; }
       // montage : vie au repos (respiration, regard) et gestes sur mots cles, ajoutes a la pose (rien sans `jeu` ni `gestes`)
-      if (a.gestes?.length || (scene.jeu && a.jeu?.actif && !a.creature)) ajouterJeu(pose, { t, a, vie: !!scene.jeu && a.jeu.actif, marche: Math.hypot(dx, dz) / DT > 0.5 || !auSol || !!st.eau, posDe: posDeImage, lacet });
+      if (a.gestes?.length || a.parole?.length || a.ecoute?.length || (scene.jeu && a.jeu?.actif && !a.creature)) ajouterJeu(pose, { t, a, vie: !!scene.jeu && a.jeu.actif, marche: Math.hypot(dx, dz) / DT > 0.5 || !auSol || !!st.eau, posDe: posDeImage, lacet });
       if (FG && etU.fige) pose.figee = true;   // cet acteur est fige : pas de bruits de pas (pas.js, sons.js)
       return pose;
     }));
@@ -346,6 +353,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
     for (const m of r.slice(0, 2)) if (m.part > SEUIL_CACHE) { notes.push(noteSujetCache({ plan: seg.plan, de: seg.de ?? i0 * DT, a: seg.a ?? i1 * DT, nom: m.nom, part: m.part, bloc: m.bloc, corrigee: corrigeable })); note = true; }
     return note;
   };
+  if (scene.plans && scene.incrustations) reserverTitres(scene, rectSur(scene.zonesSures, scene.largeur, scene.hauteur), scene.largeur, scene.hauteur);   // montage : place pour les titres du haut (cadrage.js)
   for (const seg of segments) {
     const { i0, i1, c: c0, dec } = seg;
     // cadrage par intention (montage/cadrage.js) : la camera est calculee depuis les poses des acteurs de ce plan

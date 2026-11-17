@@ -45,7 +45,9 @@ export function coutLegende(boites, r) {
 
 // Hauteur (part de H) du centre de la legende pour un plan : { y, cout, deplacee }.
 //   images : images de l'animation ; i0, i1 : images du plan ; zone : zone sure { x0, y0, x1, y1 } ; larg, haut : taille de la legende en pixels.
-export function choisirHauteur({ images, i0, i1, W, H, zone, larg, haut, xc = W / 2 }) {
+//   interdits : bandes [y0, y1] (pixels) gardees par les titres d'ecran du plan : une hauteur qui les touche coute tres cher (un titre et une
+//   legende colles se lisent comme un texte en double, test combat v3).
+export function choisirHauteur({ images, i0, i1, W, H, zone, larg, haut, xc = W / 2, interdits = [] }) {
   const n = Math.max(1, i1 - i0);
   const echantillons = [0.2, 0.5, 0.8].map((f) => images[Math.min(images.length - 1, i0 + Math.floor(f * (n - 1)))]).map((im) => boitesActeurs(im, W, H));
   const bas = (zone.y1 - haut / 2) / H, hautMax = (zone.y0 + haut / 2) / H;
@@ -54,8 +56,10 @@ export function choisirHauteur({ images, i0, i1, W, H, zone, larg, haut, xc = W 
     const y = Math.min(bas, Math.max(hautMax, c0)), cle = Math.round(y * 200);
     if (vus.has(cle)) continue; vus.add(cle);
     const r = { x0: xc - larg / 2, x1: xc + larg / 2, y0: y * H - haut / 2, y1: y * H + haut / 2 };
-    const cout = Math.max(...echantillons.map((b) => coutLegende(b, r))) + (y < 0.6 ? 0.12 : 0) + Math.abs(y - CANDIDATS[0]) * 0.4;   // on prefere rester pres de la position de reference, et en dessous
+    const titre = interdits.some(([a, b]) => r.y0 < b && r.y1 > a) ? 5 : 0;
+    const cout = Math.max(...echantillons.map((b) => coutLegende(b, r))) + (y < 0.6 ? 0.12 : 0) + Math.abs(y - CANDIDATS[0]) * 0.4 + titre;   // on prefere rester pres de la position de reference, et en dessous
     if (!meilleur || cout < meilleur.cout - 1e-9) meilleur = { y, cout };
   }
+  if (meilleur.cout >= 5) meilleur.cout -= 5;   // aucune place hors des titres : la note de cout parle des acteurs seulement
   return { ...meilleur, deplacee: Math.abs(meilleur.y - Math.min(bas, Math.max(hautMax, CANDIDATS[0]))) > 0.01 };
 }

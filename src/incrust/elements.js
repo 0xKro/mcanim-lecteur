@@ -10,7 +10,8 @@ import { texture } from '../objets/fichiers.js';
 import { decoderPNG } from '../rendu/png.js';
 import { visibleParProfondeur, visibleParTerrain } from './ancrage.js';
 import { contenir, couperSegment } from '../montage/zones.js';
-import { choisirHauteur } from '../montage/evitement.js';   // legendes : hors des visages et des torses
+import { choisirHauteur } from '../montage/evitement.js';
+import { HAUTS, hauteurElement } from '../montage/cadrage.js';   // elements d'ecran du haut : leur place est gardee   // legendes : hors des visages et des torses
 import { neutre, etatEntree, etatSortie, etatEmphase, composer2, progressionMot, courbe, COURBE_DEFAUT, DUREE_DEFAUT } from '../montage/mouvement.js';
 
 const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
@@ -53,7 +54,7 @@ const echellePolice = (ctx, taille, lisse = false) => { const s = (taille * ctx.
 
 // Tailles MINIMALES lisibles sur un telephone (part du petit cote de l'image : 0,05 = 54 px de haut de ligne sur 1080). Une taille plus petite est relevee
 // et une note le dit : le texte d'un film vertical se lit a bout de bras, sur un ecran de 6 pouces.
-export const TAILLE_MINI = { texte: 0.05, legende: 0.05, compteur: 0.05, nom: 0.034, bulle: 0.065, chat: 0.036, fleche: 0.045, horloge: 0.04, succes: 0.8, coffre: 0.6, inventaire: 0.5, hud: 0.6 };
+export const TAILLE_MINI = { texte: 0.05, legende: 0.05, compteur: 0.05, nom: 0.034, bulle: 0.065, chat: 0.036, fleche: 0.045, horloge: 0.04, succes: 0.8, coffre: 0.6, marchand: 0.6, inventaire: 0.5, hud: 0.6 };
 function tailleLisible(ctx, el, type, def, mini = TAILLE_MINI[type] ?? 0) {
   const t = el.taille ?? def;
   if (t >= mini) return t;
@@ -234,6 +235,7 @@ function construire(el, ctx) {
     case 'succes': return imageSucces(ctx, el);
     case 'inventaire': return imageInventaire(ctx, el);
     case 'coffre': return imageCoffre(ctx, el);
+    case 'marchand': return imageMarchand(ctx, el);
     case 'hud': return imageHud(ctx, el);
     default: return null;
   }
@@ -364,7 +366,10 @@ function imageInventaire(ctx, el, Eforce = null) {
 // Ecran d'un conteneur (coffre) : le fond du jeu (container/generic_54.png : titre, rangees de cases), le titre en gris sombre sans ombre, les icones avec leur nombre.
 // Le jeu ne montre pas le contenu d'un coffre ouvert dans le monde : c'est CET ecran que le joueur voit. Sans "joueur", on garde le haut du panneau et son bord du bas.
 function imageCoffre(ctx, el) {
-  const rows = el.rangees, E = echelleGui(ctx, el, 176, 'coffre', 0.8), Sg = Math.max(1, Math.round(E));
+  // sans `taille` : TOUTE la largeur sure (test combat v3 : a 80 % et echelle entiere, 704 px sur 1080, le panneau paraissait petit) ;
+  // l'echelle n'est plus entiere (4,69 en zone "toutes") : les pixels du jeu font 4 ou 5 px, invisible apres compression video.
+  const rows = el.rangees, zw = ctx.zone?.actif ? ctx.zone.w : ctx.W * 0.92;
+  const E = el.taille !== undefined ? echelleGui(ctx, el, 176, 'coffre', 0.8) : Math.max(2, Math.min(zw, 0.9 * ctx.U) / 176), Sg = Math.max(1, Math.round(E));
   const hTop = rows * 18 + 17, hBas = el.joueur ? 96 : 7;
   const w = Math.round(176 * E), hT = Math.round(hTop * E), h = Math.round((hTop + hBas) * E);
   const o = creerImage(w, h);
@@ -381,6 +386,31 @@ function imageCoffre(ctx, el) {
   composer(o, titre.img, Math.round(8 * E) - titre.origine.x, Math.round(6 * E) - titre.origine.y);
   const px = Math.round(16 * E);
   el.cases.forEach((c, k) => { if (c) composer(o, imageIcone(ctx, c, px, Sg), Math.round((8 + (k % 9) * 18) * E), Math.round((18 + Math.floor(k / 9) * 18) * E)); });
+  return { img: o, boite: { x: 0, y: 0, w: o.w, h: o.h } };
+}
+
+// Ecran du marchand (MerchantScreen, gui/container/villager.png 276 x 166) : la liste des offres a gauche (boutons de 88 x 20 a x 5,
+// y 18 + 20 i : prix a x + 5, deuxieme prix a x + 30, fleche, resultat a x + 63), l'offre choisie dans les cases a droite (136, 37 ;
+// 162, 37 ; 220, 37), le titre centre. Sans la texture du kit : panneau gris.
+function imageMarchand(ctx, el) {
+  const zw = ctx.zone?.actif ? ctx.zone.w : ctx.W * 0.92;
+  const E = el.taille !== undefined ? echelleGui(ctx, el, 276, 'marchand', 0.8) : Math.max(2, Math.min(zw, 0.9 * ctx.U) / 276), Sg = Math.max(1, Math.round(E));
+  const w = Math.round(276 * E), h = Math.round(166 * E), o = creerImage(w, h);
+  const remplir = (x0, y0, x1, y1, c) => { for (let y = Math.round(y0 * E); y < Math.round(y1 * E); y++) for (let x = Math.round(x0 * E); x < Math.round(x1 * E); x++) { const i = (y * w + x) * 4; o.px[i] = c[0]; o.px[i + 1] = c[1]; o.px[i + 2] = c[2]; o.px[i + 3] = c[3] ?? 255; } };
+  const tex = textureGui(ctx.kit, 'container/villager');
+  if (tex) composer(o, redimensionner(decouper(tex, 0, 0, 276, 166), w, h, 'proche'), 0, 0);
+  else remplir(0, 0, 276, 166, [198, 198, 198]);
+  const px = Math.round(16 * E), icone = (c, x, y) => { if (c) composer(o, imageIcone(ctx, c, px, Sg), Math.round(x * E), Math.round(y * E)); };
+  el.offres.forEach((f, i) => {
+    const y = 18 + 20 * i;
+    if (i === el.selection) remplir(5, y, 93, y + 20, [255, 255, 255, 70]);
+    icone(f.a, 10, y + 2); icone(f.b, 35, y + 2); icone(f.r, 68, y + 2);
+    const fl = sprite(ctx.kit, 'container/villager/trade_arrow');
+    if (fl) composer(o, redimensionner(fl, Math.round(10 * E), Math.round(9 * E), 'proche'), Math.round(55 * E), Math.round((y + 5) * E));
+  });
+  const s = el.offres[el.selection]; icone(s.a, 136, 37); icone(s.b, 162, 37); icone(s.r, 220, 37);
+  const titre = rendreTexte(ctx.police, segmentsDeTexte(el.titre, { couleur: [64, 64, 64] }), { S: Sg, alignement: 'gauche' });
+  composer(o, titre.img, Math.round((49 + 227 / 2) * E) - Math.round(titre.img.w / 2) - titre.origine.x, Math.round(6 * E) - titre.origine.y);
   return { img: o, boite: { x: 0, y: 0, w: o.w, h: o.h } };
 }
 
@@ -421,6 +451,7 @@ const DEFAUTS_MOUV = {
   bulle: { entree: 'glisse', duree: 0.22, depuis: 'bas', distance: 0.04, sortie: 'fondu', dsortie: 0.15 },
   chat: { entree: 'fondu', duree: 0.12, sortie: 'fondu', dsortie: 0.2 },
   coffre: { entree: 'pop', duree: 0.25, depart: 0.8, sortie: 'fondu', dsortie: 0.15 },
+  marchand: { entree: 'pop', duree: 0.25, depart: 0.8, sortie: 'fondu', dsortie: 0.15 },
   succes: { entree: 'glisse', duree: 0.35, depuis: 'haut', distance: 0.14, courbe: 'retour', sortie: 'glisse', dsortie: 0.25 },
   defaut: { entree: 'pop', duree: 0.22, depart: 0.4, sortie: 'fondu', dsortie: 0.15 },
 };
@@ -561,6 +592,23 @@ const TEXTES = new Set(['texte', 'compteur']);
 const libelle = (el) => `${el.type}${el.texte ? ` "${String(el.texte).slice(0, 18)}"` : el.acteur ? ` "${el.acteur}"` : ''}`;
 function noter(ctx, cle, msg) { if (ctx.notes && !ctx.notes.has(cle)) ctx.notes.set(cle, msg); }
 
+// Titre d'ecran : texte ou compteur ancre a l'ecran (pas une legende). Ecart minimal titre / legende : part du petit cote.
+export const ECART_TITRE_LEGENDE = 0.12;
+export const estTitre = (el) => !el.legende && (el.type === 'texte' || el.type === 'compteur') && el.monde === undefined && el.acteur === undefined && Array.isArray(el.ecran);
+// Bandes (pixels [y0, y1]) gardees par les elements d'ecran (titre, compteur, icone, panneau de coffre) visibles au moins 0,2 s pendant
+// [t0, t1], ecart compris : la legende ne s'y pose pas (sinon elle les pousse sur les visages, ou colle au titre).
+function bandesTitres(ctx, t0, t1, Z) {
+  const out = [], zone = { x0: Z.x0, y0: Z.y0, w: Z.x1 - Z.x0, h: Z.y1 - Z.y0 };
+  for (const e of ctx.scene.incrustations ?? []) {
+    if (!HAUTS.has(e.type) || e.legende || !Array.isArray(e.ecran) || e.monde !== undefined || e.acteur !== undefined || e._carte) continue;
+    if (Math.min(t1, e.t[1]) - Math.max(t0, e.t[0]) < 0.2) continue;
+    const h = hauteurElement(e, zone, ctx.U), yc = Math.min(Z.y1 - h / 2, Math.max(Z.y0 + h / 2, Z.y0 + e.ecran[1] * zone.h));
+    const d = h / 2 + (estTitre(e) ? ECART_TITRE_LEGENDE + 0.01 : 0.045) * ctx.U;
+    out.push([yc - d, yc + d]);
+  }
+  return out;
+}
+
 // Hauteur (pixels) de la legende `auto` : choisie une fois par plan (montage/evitement.js), gardee pour toutes les puces du plan.
 function hauteurLegende(ctx, el, vis, k, zone) {   // vis, k : gardes pour compatibilite ; la taille essayee est celle d'une puce moyenne (0,075 du petit cote de haut, 55 % de la largeur sure)
   const plan = ctx.carteImage ? null : ctx.scene.plans?.find((p) => ctx.t >= p.de && ctx.t < p.a);
@@ -569,7 +617,8 @@ function hauteurLegende(ctx, el, vis, k, zone) {   // vis, k : gardes pour compa
   if (!c) {
     const Z = zone ?? { x0: 0, y0: 0, x1: ctx.W, y1: ctx.H };
     const i0 = ctx.carteImage ? 0 : plan ? plan.i0 : Math.round(el.t[0] * 30), i1 = ctx.carteImage ? 1 : plan ? plan.i1 : Math.max(i0 + 1, Math.round(el.t[1] * 30));
-    c = choisirHauteur({ images: ctx.images, i0, i1, W: ctx.W, H: ctx.H, zone: Z, larg: 0.55 * (Z.x1 - Z.x0), haut: 0.075 * ctx.U });
+    const interdits = ctx.carteImage ? [] : bandesTitres(ctx, plan ? plan.de : el.t[0], plan ? plan.a : el.t[1], Z);   // place des titres du plan
+    c = choisirHauteur({ images: ctx.images, i0, i1, W: ctx.W, H: ctx.H, zone: Z, larg: 0.55 * (Z.x1 - Z.x0), haut: 0.075 * ctx.U, interdits });
     ctx.cacheEvite.set(cle, c);
     if (c.cout > 0.6) noter(ctx, `evite#${cle}`, `legende a t=${el.t[0]} s : couvre un visage ou un torse malgre tout (aucune place libre dans la zone sure) ; cadre plus large, personnage decale (cadre.decale) ou "position":"haut"`);
   }
@@ -586,7 +635,7 @@ function hors_bande(ctx, el, vis, k, zone, cy, b, pivot) {
   let c = ctx.cacheEvite.get(cle);
   if (!c) {
     const i0 = plan ? plan.i0 : Math.round(el.t[0] * 30), i1 = plan ? plan.i1 : Math.max(i0 + 1, Math.round(el.t[1] * 30));
-    c = choisirHauteur({ images: ctx.images, i0, i1, W: ctx.W, H: ctx.H, zone: Z, larg: 0.55 * (Z.x1 - Z.x0), haut: 0.075 * ctx.U });
+    c = choisirHauteur({ images: ctx.images, i0, i1, W: ctx.W, H: ctx.H, zone: Z, larg: 0.55 * (Z.x1 - Z.x0), haut: 0.075 * ctx.U, interdits: bandesTitres(ctx, plan ? plan.de : el.t[0], plan ? plan.a : el.t[1], Z) });   // meme choix que hauteurLegende (meme cache)
     ctx.cacheEvite.set(cle, c);
   }
   const marge = 0.012 * ctx.U, b0 = c.y * ctx.H - 0.0375 * ctx.U - marge, b1 = c.y * ctx.H + 0.0375 * ctx.U + marge;

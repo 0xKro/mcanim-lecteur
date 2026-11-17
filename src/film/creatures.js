@@ -2,9 +2,10 @@
 // puis pour chaque creature l'etat d'animation du jeu tick par tick (WalkAnimationState : les pattes suivent la distance parcourue,
 // horloges des especes), regard, pistes de parties, gonflement du creeper, animations nommees. Le rendu (creatures/rendu.js) lit
 // `pose.creature`. Une scene sans creature ni monture ne passe pas par ici.
-import { ESPECES, SIEGES, DECALAGE_CAVALIER, VEHICULES } from '../creatures/especes.js';
-import { etatInitial, tick, echelleRendu } from '../creatures/anim.js';
+import { ESPECES, SIEGES, DECALAGE_CAVALIER, VEHICULES, couleurLaine } from '../creatures/especes.js';
+import { etatInitial, tick, echelleRendu, demarrer } from '../creatures/anim.js';
 import { evaluer } from './scene.js';
+import { attacheCreature, mainJoueur, tenueCreature, noeudBarriere } from '../creatures/laisse.js';
 
 const RAD = Math.PI / 180;
 const norm180 = (a) => { a = (a + 180) % 360; if (a < 0) a += 360; return a - 180; };
@@ -69,7 +70,7 @@ export function appliquerCreatures(scene, parImage, { DT = 1 / 30, terrain = {},
     };
     const [fm, fa] = MARCHE[type] ?? [4, 0.4];
     const m = vehicule ? {} : etatInitial(type);
-    const ia = c.ia && replay ? etatsIA(replay, a.nom) : null;   // creature a IA : son etat d'animation tick par tick (moteur/ia.js, replay.ia)
+    const ia = c.ia && replay ? etatsIA(replay, a._trace ?? a.nom) : null;   // creature a IA : son etat d'animation tick par tick (moteur/ia.js, replay.ia)
     if (!vehicule) { let id = 0; for (const ch of a.nom) id = (id * 31 + ch.charCodeAt(0)) | 0; Object.assign(m, { id, age: -1, bebe: !!c.bebe || m.bebe, coffre: !!c.coffre, tondu: !!c.tondu, taille: c.taille ?? 1, apprivoise: c.colle !== undefined && c.colle !== null, assis: false, bloc: !!c.porte }); }
     // lapin : il ne se deplace qu'en sautant (RabbitMoveControl) : sauts du jeu poses sur le trajet ecrit (sautsLapin)
     const sauts = type === 'rabbit' && c.sautille !== false ? sautsLapin(P, nt, vehiculeDe[k]) : null;
@@ -96,10 +97,15 @@ export function appliquerCreatures(scene, parImage, { DT = 1 / 30, terrain = {},
         m.agressif = c.agressif ? !!valeurA(c.agressif, j / 20) : !!(e && e.dr & 1);
         if (e?.attaque && !vehicule) { m.attaque = 10; attaque = j; }
         if (e && (e.dr & 4)) m.utilise = e.tension;
-        m.mainD = im.objetD ? String(im.objetD).replace(/^minecraft:/, '') : null; m.mainG = im.objetG ? String(im.objetG).replace(/^minecraft:/, '') : null;
+        m.mainD = im.objetD ? String(im.objetD).replace(/^minecraft:/, '') : null;
+        if (type === 'enderman' && c.ia) { m.bloc = !!m.mainD; m.mainD = null; }   // CarriedBlockLayer : bras leves quand il porte un bloc m.mainG = im.objetG ? String(im.objetG).replace(/^minecraft:/, '') : null;
         m.passager = passager; m.monte = !!montePar[k][q.i];
         m.gonfle = c.gonfle ? evaluer({ arite: 1, cles: c.gonfle.map((x) => ({ t: x.t, v: [x.v] })) }, j / 20)[0] : (e?.gonfle ?? 0);
+        m._ia = e ?? null;
+        if (e) etatEspece(type, m, e);   // drapeaux des especes (moteur/ia-especes.js) : perche, sommeil, boit, cri, charge, epaule, non, dard
+        if (e) etatPlus(type, m, e, j, im.lacet ?? 0, false);   // wither, dragon, warden, gardien, axolotl, tortue
         tick(type, m);
+        if (e) etatPlus(type, m, e, j, im.lacet ?? 0, true);    // calmar et tetes du wither : apres l'horloge du tick
       }
       snaps.push({ limbPos, limbSpeed, avant, pagaie, m: vehicule ? null : structuredClone(m) });
       prec = q;
@@ -210,6 +216,22 @@ export function appliquerCreatures(scene, parImage, { DT = 1 / 30, terrain = {},
       const swing = (tt - attaque) >= 0 && (tt - attaque) < 6 ? (tt - attaque) / 6 : 0;   // LivingEntity.swing : 6 ticks
       etat.s = { pos: (sn.limbPos - sn.limbSpeed * (1 - al)) * (c.bebe ? 3 : 1), speed: Math.min(1, sn.avant + (sn.limbSpeed - sn.avant) * al), age: (sn.m?.age ?? tt) - 1 + al, yRot, xRot, swing, baby: !!c.bebe, partial: al };
       etat.m = sn.m;
+      const ie = sn.m?._ia;   // IA : tangage du corps (PhantomRenderer), lit (LivingEntityRenderer, Pose.SLEEPING), textures d'etat
+      if (ie) {
+        if (type === 'phantom') etat.tangage = ie.tangage;
+        if (ie.dr & 8192) etat.couche = { lacet: ie.lit, oeil: boite.y };
+        if ((type === 'ghast' || type === 'vex') ? ie.dr & 128 : false) etat.alt = true;
+        if (type === 'bee' && !c.bebe && (ie.dr & (1 | 65536))) etat.texEtat = `bee/bee${ie.dr & 1 ? '_angry' : ''}${ie.dr & 65536 ? '_nectar' : ''}`;   // BeeRenderer : en colere, avec du nectar
+        if (ie.dr & 131072) { p.y -= 1000; p.absent = true; }                       // abeille dans la ruche : pas dessinee
+        if (ie.dr & 262144) etat.tremble = true;                                    // conversion (zombie qui se noie, zombie villageois qui guerit) : il tremble
+      }
+      if (type === 'enderman' && c.ia) { etat.porte = p.objetD ? String(p.objetD).replace(/^minecraft:/, '') : null; delete p.objetD; }   // bloc pris par l'enderman (ia-vie.js)
+      // mouton nomme jeb_ (etiquette) : laine arc-en-ciel (SheepWoolLayer : une couleur toutes les 25 ticks, fondu entre les deux)
+      if (type === 'sheep' && a.etiquette === 'jeb_') {
+        const age = etat.s.age, k = Math.floor(age / 25) + Math.abs(sn.m?.id ?? 0), f = ((age % 25) + 25) % 25 / 25;
+        const A = couleurLaine(((k % 16) + 16) % 16), B = couleurLaine((((k + 1) % 16) + 16) % 16);
+        etat.teinteLaine = A.map((v, j) => v + (B[j] - v) * f);
+      }
       // pistes de membres de l'acteur -> rotations de parties (degres) ; quadrupedes : bras = pattes avant, jambes = pattes arriere
       const parties = {};
       const ajoute = (nom, r) => { const x = (parties[nom] ??= [0, 0, 0]); x[0] += r[0]; x[1] += r[1]; x[2] += r[2]; };
@@ -236,6 +258,19 @@ export function appliquerCreatures(scene, parImage, { DT = 1 / 30, terrain = {},
       if (['donkey', 'mule', 'llama', 'trader_llama'].includes(type) && !c.coffre) etat.cacher.push('left_chest', 'right_chest');
       if (['horse', 'donkey', 'mule', 'skeleton_horse', 'zombie_horse', 'camel'].includes(type) && !montePar[k][i]) etat.cacher.push('left_saddle_line', 'right_saddle_line');
       if (type === 'spider' || type === 'cave_spider') etat.retourne = true;
+      if (type === 'wither') {   // WitherBossRenderer.scale : x 2, plus petit pendant la charge (2 - (charge - partiel) / 220 x 0,5) ; texture bleue qui clignote
+        const inv = sn.m?._invul ?? 0;
+        etat.echelle = 2 - (inv > 0 ? (inv - al) / 220 * 0.5 : 0);
+        if (inv > 0 && (inv > 80 || Math.floor(inv / 5) % 2 !== 1)) etat.texEtat = 'wither/wither_invulnerable';
+        if (sn.m?._armure) etat.armure = true;
+      }
+      if (type === 'end_crystal') etat.echelle = 2;   // EndCrystalRenderer : x 2
+      if (type === 'ender_dragon' && ie) {   // EnderDragonRenderer : tangage de l'historique de vol ; mort : texture qui se defait (dragon_exploding)
+        etat.tangage = ie.tangage;
+        const mt = sn.m?._mortDragon ?? -1;
+        if (mt > 0) etat.dissolution = Math.min(1, (mt - 1 + al) / 200);
+      }
+      if (type === 'dolphin' && sn.m?._tangage) etat.tangage = sn.m._tangage;
       // poissons (CodRenderer, SalmonRenderer, TropicalFishRenderer.setupRotations) : le corps ondule en lacet ; hors de l'eau il se couche
       // sur le flanc (rotation Z de 90 degres) et se debat plus vite (saumon : x 1,3 d'amplitude, x 1,7 de frequence)
       if (type === 'cod' || type === 'salmon' || type === 'tropical_fish') {
@@ -244,6 +279,18 @@ export function appliquerCreatures(scene, parImage, { DT = 1 / 30, terrain = {},
         etat.poisson = { lacet: fa * 4.3 * Math.sin(fg * 0.6 * age), avant: type === 'salmon' ? [0, 0, -0.4] : [0, 0, 0], hors, decal: type === 'cod' ? [0.1, 0.1, -0.1] : [0.2, 0.1, 0] };
       }
       p.creature = etat;
+      // laisse : points d'attache de la corde (creatures/laisse.js) ; une creature a IA dont la laisse a casse (replay.ia) n'en a plus
+      if (c.laisse) {
+        let v = valeurA(c.laisse, i * DT);
+        if (v && c.ia && ie && !(ie.dr & 16384)) v = null;
+        if (v) {
+          const de = attacheCreature(p, boite.y, boite.l, type);
+          let vers, noeud = null;
+          if (Array.isArray(v)) { vers = noeudBarriere(v); noeud = v; }
+          else { const kh = parNom.get(v), h = parImage[i][kh], ah = acteurs[kh]; vers = ah.creature ? tenueCreature(h, boiteDe(ah.creature, types).y) : mainJoueur(h); }
+          p.laisse = { de, vers, noeud };
+        }
+      }
     }
   });
   return notes;
@@ -299,12 +346,52 @@ export function sonsCreature({ a, k, images, sons, ajouter, blocSous, pasAuto })
   return n;
 }
 
-// etats d'IA d'un acteur (replay.ia) : Map tick -> { dr, gonfle, tension, attaque }
+// drapeaux des especes (moteur/ia-especes.js, D) -> champs d'animation de m (creatures/anim.js)
+function etatEspece(type, m, e) {
+  const d = e.dr;
+  if (type === 'bat') m.perche = !!(d & 16);
+  if (d & 32) m.mainD = 'potion';                        // sorciere qui boit (WitchModel : le nez s'ecarte, la potion en main)
+  if (type === 'enderman') m.cri = !!(d & 64);            // DATA_CREEPY : bouche ouverte
+  if (type === 'vex') m.charge = !!(d & 128);
+  if (type === 'bee') m.dard = !(d & 256);
+  if (d & 1024) m.mecontent = 40;                         // villageois qui secoue la tete (setUnhappy)
+  if (type === 'parrot') m.assis = !!(d & 4096);          // sur l'epaule : pose assise du perroquet
+  if (d & 8192) m.dort = true; else if (type === 'villager' || type === 'wandering_trader') m.dort = false;
+  if (type === 'parrot') m.fete = !!(d & 2048);           // perroquet qui danse pres d'un juke-box (ParrotModel.State.PARTY)
+  if (type === 'allay') m.danse = !!(d & 2048);           // allay qui danse (Allay.isDancing)
+}
+
+// etats d'IA d'un acteur (replay.ia) : Map tick -> { dr, gonfle, tension, attaque, plus (colonne iaPlus : wither, dragon, gardiens, warden, calmar) }
 function etatsIA(replay, nom) {
   const id = replay.acteurs.indexOf(nom), R = replay.iaVue, m = new Map();
   if (id < 0 || !R) return m;
-  for (let i = 0; i < R.length; i += 6) if (R[i + 1] === id) m.set(R[i] / (replay.ralenti || 1), { dr: R[i + 2], gonfle: R[i + 3], tension: R[i + 4], attaque: R[i + 5] > 0 });
+  for (let i = 0; i < R.length; i += 8) if (R[i + 1] === id) m.set(R[i] / (replay.ralenti || 1), { dr: R[i + 2], gonfle: R[i + 3], tension: R[i + 4], attaque: R[i + 5] > 0, tangage: R[i + 6], lit: R[i + 7] });
+  const X = replay.iaPlusVue;
+  if (X?.length) for (let i = 0; i < X.length; i += 8) if (X[i + 1] === id) { const e = m.get(X[i] / (replay.ralenti || 1)); if (e) e.plus = Array.from(X.subarray(i + 2, i + 8)); }
   return m;
+}
+// colonne iaPlus et drapeaux des dernieres creatures (moteur/ia-boss.js, ia-eau.js, ia-warden.js, ia-oeufs.js) -> champs d'animation
+const POSTURES_WARDEN = ['standing', 'emerging', 'digging', 'roaring', 'sniffing'];
+function etatPlus(type, m, e, j, lacetCorps, apres) {
+  const d = e.dr, x = e.plus;
+  if (apres) {
+    if ((type === 'squid' || type === 'glow_squid') && x) { const v = m.anim.v; v[0] = x[0]; v[1] = x[1]; v[2] = x[2]; v[3] = x[3]; }
+    if (type === 'wither' && x) for (let k = 0; k < 2; k++) { m.anim.v[k] = norm180(x[1 + k] - lacetCorps); m.anim.v[2 + k] = x[3 + k]; }
+    return;
+  }
+  if (type === 'wither' && x) { m._invul = x[0]; for (let k = 0; k < 2; k++) { m.anim.v[k] = norm180(x[1 + k] - lacetCorps); m.anim.v[2 + k] = x[3 + k]; } m._armure = !!(d & (1 << 19)); }
+  if (type === 'ender_dragon') { m.assis = !!(d & (1 << 20)); if (x) m._mortDragon = x[1]; }
+  if (type === 'warden' && x) {
+    m.posture = POSTURES_WARDEN[x[0]] ?? 'standing'; m.colere = x[2];
+    if (x[3] === j) m.vibration = true;
+    if (x[4] === j) demarrer('warden', m, 'attack');
+    if (x[5] === j) demarrer('warden', m, 'sonic_boom');
+  }
+  if ((type === 'squid' || type === 'glow_squid') && x) { const v = m.anim.v; v[0] = x[0]; v[1] = x[1]; v[2] = x[2]; v[3] = x[3]; }
+  if (type === 'guardian' || type === 'elder_guardian') m.bouge = !!(d & (1 << 21));
+  if (type === 'axolotl') { m.mortFeinte = !!(d & (1 << 22)); m.bouge = !!(d & (1 << 21)); }
+  if (type === 'turtle') { m.oeuf = !!(d & (1 << 24)); m.pond = !!(d & (1 << 25)); }
+  if (type === 'dolphin' && x) m._tangage = x[0];
 }
 
 // ---------------------------------------------------------------- sauts du lapin (Rabbit.getJumpPower, RabbitMoveControl, setLandingDelay)

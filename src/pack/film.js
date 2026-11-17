@@ -61,12 +61,13 @@ function agrandirForce(f, w, h, W, H) {
 const GENRES = {
   tnt: { entite: 'minecraft:tnt' }, chute: { entite: 'minecraft:falling_block' }, objet: { entite: 'minecraft:item' },
   bloc: { programme: 'bloc' }, fissure: { programme: 'fissure' }, particule: { programme: 'particule' },
+  orbe: { entite: 'minecraft:experience_orb' },   // orbes d'experience : entite du jeu, pleine lumiere (ExperienceOrbRenderer)
   fleche: { entite: 'minecraft:arrow' }, pluie: { programme: 'meteo' }, eclair: { entite: 'minecraft:lightning_bolt' },   // projectiles, pluie et neige (gbuffers_weather), foudre (Iris : programme des entites, emissif, additif)
 };
 
 // Profondeur de l'hote (depthtex0, flottants 0..1 non lineaires, ligne du haut d'abord) -> { donnees: 1 / distance de vue (0 = ciel), W, H, ssaa }
 // a la taille de l'image finale : le format du tampon du rasteriseur, pour la profondeur de champ du montage.
-export function profondeurDeChamp(octets, w, h, W, H, near = 0.05, far = 256) {
+export function profondeurDeChamp(octets, w, h, W, H, near = 0.05, far = 1024) {   // far = plan lointain de gbufferProjection (4 x `far`, uniformes.py PROJ_FAR)
   const d = new Float32Array(octets.buffer.slice(octets.byteOffset, octets.byteOffset + w * h * 4));
   const iw = new Float32Array(W * H);
   const conv = new Float32Array(w * h);
@@ -167,7 +168,8 @@ export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {
       if (g.programme) spec.programme = g.programme;
       if (m.bloc) spec.blocNom = m.bloc;
       if (m.additif) { spec.additif = true; spec.bloc = 15; }     // foudre : emissive (lumiere 15) et additive (SRC_ALPHA, ONE), comme RenderType.lightning
-      if (m.genre === 'tnt' && blanc) spec.bloc = 15;    // le clignotement du TNT est blanc plein (emissif)
+      if (m.genre === 'tnt' && blanc) spec.bloc = 15;
+      if (m.genre === 'orbe') { spec.bloc = 15; spec.col = b64(m.couleurs); }   // couleur qui pulse (vert-jaune), pleine lumiere : pas de division par la lumiere du lieu    // le clignotement du TNT est blanc plein (emissif)
       return spec;
     };
     const etatDe = async (i, { sansActeurs = false, temps } = {}) => {
@@ -220,7 +222,9 @@ export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {
             if (p.teinte) spec.couleurEntite = [1, 0, 0, 0.3];         // rougeur des degats : l'entityColor du jeu (hurt)
             if (m.genre === 'creature') {                              // creature : entityId du pack (entity.properties), teinte de la couche (laine, collier), yeux emissifs
               spec.entiteNom = m.entite; spec.col = b64(m.couleurs);
-              if (m.emissif) { spec.additif = true; spec.bloc = 15; }
+              if (m.emissif) { spec.additif = !m.lueur; spec.bloc = 15; }   // yeux et auras : ajoutes ; lueur translucide (entityTranslucentEmissive) : melange du pack, pleine lumiere
+              if (m.yeux) spec.programme = 'yeux';                     // RenderType.eyes : gbuffers_spidereyes (repli textured, basic), melange du pack
+              if (m.blanc > 0 && !p.teinte) spec.couleurEntite = [1, 1, 1, Math.min(1, m.blanc)];   // eclair blanc du creeper qui gonfle (overlay blanc)
             }
             e.acteurs.push(spec);
           }

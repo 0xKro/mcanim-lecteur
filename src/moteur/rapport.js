@@ -35,6 +35,17 @@ export function texteRapport({ sim, replay, duree }) {
     const tri = J.filter((l) => / (meurt|explose|brule)/.test(l)).concat(J.filter((l) => !/ (meurt|explose|brule)/.test(l))).slice(0, 6);
     if (tri.length) L.push('ia : ' + tri.map((l) => l.replace(/^(d+).(d)d? /, '$1,$2s ')).join(' ; ').slice(0, 300));
   }
+  // vie des creatures (moteur/ia-vie.js) : entites nees (bebes, conversions, golems), amours, abeilles, danses
+  if (replay.naissances?.length || S.ia?.amours || S.ia?.pollinisations || S.ia?.danses || replay.croissances?.length) {
+    const I = S.ia || {}, V = [];
+    if (replay.naissances?.length) V.push(`nes ${replay.naissances.length} (${replay.naissances.slice(0, 4).map((n) => `${n.nom} t=${fr(n.tick / 20 / replay.ralenti, 1)} ${n.raison}`).join(', ')}${replay.naissances.length > 4 ? '...' : ''})`);
+    if (replay.croissances?.length) V.push(`changements ${replay.croissances.length}`);
+    if (I.amours || I.amoursVillageois) V.push(`amours ${(I.amours || 0) + (I.amoursVillageois || 0)}`);
+    if (I.pollinisations || I.entreesRuche) V.push(`abeilles : fleurs ${I.pollinisations || 0}, nectar ${I.nectars || 0}, ruche ${I.entreesRuche || 0}/${I.sortiesRuche || 0}, miel +${I.miel || 0}, cultures ${I.culturesPoussees || 0}`);
+    if (I.danses) V.push(`danses ${I.danses}`);
+    if (S.experience) V.push(`xp ${S.experience}`);
+    L.push('vie : ' + V.join(' ; '));
+  }
   const ev = (replay.sons.length / 7) | 0, pa = (replay.particules.length / 9) | 0;
   if (ev || pa) L.push(`sons ${ev}, particules ${pa} ; voisins mis a jour ${sim.stats.voisins}, ticks planifies ${sim.stats.ticks}, aleatoires ${sim.stats.aleatoires}`);
   const rl = replay.ralenti;

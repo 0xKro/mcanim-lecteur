@@ -10,6 +10,7 @@ import { exploser } from './explosion.js';
 import { butinDe } from './butin.js';
 import { evenement } from './registre.js';
 import { Projectiles } from './projectiles.js';
+import { Aleatoire } from './aleatoire.js';
 
 const F_TOUS = 3;
 const LARGEUR = 0.98;
@@ -158,13 +159,45 @@ export class Entites {
       if (fini.has(e)) continue;
       if (e.debut === s.temps) { this.ecrire(e); continue; }    // creee ce tick : elle ne bouge qu'au suivant (meche exacte)
       if (e.proj) { this.proj.tick(e); continue; }
-      const vivante = e.type === 'tnt' ? this.tickTnt(e) : e.type === 'objet' ? this.tickObjet(e) : this.tickChute(e);
+      const vivante = e.type === 'tnt' ? this.tickTnt(e) : e.type === 'objet' ? this.tickObjet(e) : e.type === 'orbe' ? this.tickOrbe(e) : this.tickChute(e);
       if (vivante) this.ecrire(e);
     }
     this.liste = this.liste.filter((e) => !fini.has(e));    // les entites creees pendant ce tick (chaine) restent
   }
 
-  ecrire(e) { if (e.proj) { this.proj.ecrire(e); return; } this.sim.replay.entite(this.sim.temps, e.id, e.type, e.x, e.y, e.z, e.type === 'tnt' ? e.meche : e.type === 'objet' ? e.n : 0, e.type === 'chute' ? e.pal : e.type === 'objet' ? this.sim.replay.nom(e.item) : -1); }
+  ecrire(e) { if (e.proj) { this.proj.ecrire(e); return; } this.sim.replay.entite(this.sim.temps, e.id, e.type, e.x, e.y, e.z, e.type === 'tnt' ? e.meche : e.type === 'objet' ? e.n : e.type === 'orbe' ? e.icone : 0, e.type === 'chute' ? e.pal : e.type === 'objet' ? this.sim.replay.nom(e.item) : -1); }
+
+  // orbes d'experience (ExperienceOrb) : la valeur est coupee en orbes du jeu (2477, 1237, 617... 3, 1) ; depart (+-0,2, 0..0,4, +-0,2) tire
+  // du hasard propre de l'orbe ; gravite 0,03, frottement 0,98 (sol x 0,6) ; elle file vers le joueur le plus proche a 8 blocs
+  // ((1 - d / 8)^2 x 0,1) ; ramassee au contact (son pickup), 6000 ticks au plus. Icone (taille) : ExperienceOrb.getIcon.
+  orbes(x, y, z, total) {
+    const s = this.sim, T = [2477, 1237, 617, 307, 149, 73, 37, 17, 7, 3, 1], I = [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
+    while (total > 0) {
+      const k = T.findIndex((t) => total >= t), v = T[k]; total -= v;
+      const id = this.prochain++, h = new Aleatoire(((s.config.graine ?? 1) * 7919 + id * 2654435761) >>> 0);
+      this.liste.push({ id, type: 'orbe', valeur: v, icone: I[k], x, y, z, vx: (h.reel() * 0.2 - 0.1) * 2, vy: h.reel() * 0.2 * 2, vz: (h.reel() * 0.2 - 0.1) * 2, age: 0, debut: s.temps });
+    }
+  }
+  tickOrbe(e) {
+    const s = this.sim;
+    e.vy -= 0.03;
+    const b = [e.x - 0.25, e.y, e.z - 0.25, e.x + 0.25, e.y + 0.5, e.z + 0.25];
+    let cible = null, bd = 64;
+    for (const a of s.acteurs?.liste ?? []) { if (a.mort >= 0 || a.typeCreature) continue; const d = (a.x - e.x) ** 2 + (a.y + a.O / 2 - e.y) ** 2 + (a.z - e.z) ** 2; if (d < bd) { bd = d; cible = a; } }
+    if (cible) { const v = [cible.x - e.x, cible.y + cible.O / 2 - e.y, cible.z - e.z], d = Math.hypot(...v), k = (1 - d / 8) ** 2 * 0.1; if (d > 1e-6) { e.vx += v[0] / d * k; e.vy += v[1] / d * k; e.vz += v[2] / d * k; } }
+    const r = deplacerBoite(this.lec, b, [e.vx, e.vy, e.vz], false, 0);
+    e.x += r.dx; e.y += r.dy; e.z += r.dz;
+    if (r.bloqueX) e.vx = 0; if (r.bloqueZ) e.vz = 0; if (r.bloqueY) e.vy = 0;
+    const f = r.auSol ? 0.6 * 0.98 : 0.98; e.vx *= f; e.vy *= 0.98; e.vz *= f;
+    if (r.auSol) e.vy *= -0.9;
+    if (++e.age >= 6000) { this._fini.add(e); return false; }
+    if (cible) { const k = cible.boite(); if (k[3] > b[0] && k[0] < b[3] && k[4] > b[1] && k[1] < b[4] && k[5] > b[2] && k[2] < b[5] && s.temps >= (cible.delaiXp ?? 0)) {
+      cible.delaiXp = s.temps + 2; cible.xp = (cible.xp ?? 0) + e.valeur;
+      s.son('entity.experience_orb.pickup', e.x, e.y, e.z, 0.1, (s.hasard.flottant() - s.hasard.flottant()) * 0.35 + 0.9);
+      this._fini.add(e); return false;
+    } }
+    return true;
+  }
 
   bouger(e, g) {
     const s = this.sim;

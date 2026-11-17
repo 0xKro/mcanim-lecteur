@@ -12,6 +12,8 @@ import { Aleatoire } from '../moteur/aleatoire.js';
 import { deplacerBoite } from '../moteur/collision.js';
 import { creerMeteoRendu } from './meteo-rendu.js';   // pluie, neige, foudre
 import { creerEntites } from './entites-monde.js';   // TNT amorce, blocs qui tombent (vrai modele), objets au sol
+import { Creature } from '../creatures/rendu.js';   // fantome du gardien ancien (ElderGuardianParticle)
+import { etatInitial } from '../creatures/anim.js';
 
 const RAD = Math.PI / 180;
 const OMBRE = { haut: 1.0, bas: 0.5, nord: 0.8, sud: 0.8, ouest: 0.6, est: 0.6 };
@@ -51,7 +53,7 @@ const rotX = (p, a, [cx, cy, cz]) => { const y = p[1] - cy, z = p[2] - cz, c = M
 const rotZ = (p, a, [cx, cy]) => { const x = p[0] - cx, y = p[1] - cy, c = Math.cos(a), s = Math.sin(a); return [cx + x * c - y * s, cy + x * s + y * c, p[2]]; };
 const rotYcentre = (p, deg) => { const a = deg * RAD, x = p[0] - 8, z = p[2] - 8, c = Math.cos(a), s = Math.sin(a); return [8 + x * c + z * s, p[1], 8 - x * s + z * c]; };
 
-export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain }) {
+export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain, creatures: creaturesDonnees = null }) {
   const replay = sim.replay, zone = rs.zone, notes = [];
   const palette = [...zone.palette, ...replay.palAjouts];
   const dirTex = path.join(kit, 'assets', 'minecraft', 'textures');
@@ -228,6 +230,24 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain }) {
   const particules = creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes });
   const entites = creerEntites({ rs, replay, kit, texOf, lum, notes });   // TNT amorce, blocs qui tombent, objets au sol
   const meteoR = creerMeteoRendu({ rs, replay, scene, donnees, terrain, texOf, lum });   // pluie, neige, foudre (null sans meteo ni foudre)
+  // malediction du gardien ancien (ElderGuardianParticle) : 30 ticks, le gardien ancien devant la camera (3,5 blocs, 0,56 plus bas), qui
+  // bascule de 60 a -90 degres, opacite 0,05 + 0,5 x sin(f x pi)
+  const fantomes = [];
+  { const P = replay.particules; for (let i = 0; i < P.length; i += 9) if (replay.noms[P[i + 1]] === 'elder_guardian') fantomes.push(P[i]); }
+  let ancien = null;
+  if (fantomes.length && creaturesDonnees) { try { ancien = new Creature({ type: 'elder_guardian' }, creaturesDonnees, kit); } catch { ancien = null; } }
+  const transparents = new Map();
+  const transparent = (t, a) => { const k = Math.round(a * 50); let c = transparents.get(t); if (!c) transparents.set(t, (c = new Map())); if (!c.has(k)) { const rgba = new Uint8Array(t.rgba); for (let i = 3; i < rgba.length; i += 4) rgba[i] = Math.round(rgba[i] * k / 50); c.set(k, { largeur: t.largeur, hauteur: t.hauteur, rgba }); } return c.get(k); };
+  function fantomeAncien(u, camera) {
+    if (!ancien) return [];
+    const t0 = fantomes.filter((t) => u >= t && u < t + 30).pop();
+    if (t0 === undefined) return [];
+    const f = (u - t0) / 30, alpha = 0.05 + 0.5 * Math.sin(f * Math.PI);
+    const ya = camera.lacet * RAD, pa = camera.tangage * RAD, fw = [-Math.sin(ya) * Math.cos(pa), -Math.sin(pa), Math.cos(ya) * Math.cos(pa)];
+    const pose = { x: camera.x + fw[0] * 3.5, y: camera.y + fw[1] * 3.5 - 0.56 - 0.85, z: camera.z + fw[2] * 3.5, lacet: camera.lacet + 180, bascule: -(60 - 150 * f), age: u,
+      creature: { cacher: [], s: { pos: 0, speed: 0, age: u, yRot: 0, xRot: 0, swing: 0, baby: false, partial: 0 }, m: etatInitial('elder_guardian'), parties: {} } };
+    return ancien.maillage(pose, 1).map((m) => ({ ...m, texture: transparent(m.texture, alpha), mode: 'melange', deuxFaces: true, exempt: true }));
+  }
 
   // ---------------------------------------------------------------- une image
   return {
@@ -256,6 +276,7 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain }) {
       }
       out.push(...entites.maillages(u, camera));
       out.push(...particules.maillages(u, camera));
+      if (fantomes.length && camera) out.push(...fantomeAncien(u, camera));
       if (meteoR) out.push(...meteoR.maillages(tm, camera));
       return out;
     },
@@ -342,6 +363,12 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
     } else if (nom === 'happy_villager') {   // HappyVillagerParticle : des etincelles vertes qui montent (farine d'os)
       const r1 = alea.flottant(), r2 = alea.flottant();
       out.push({ type: 'anim', pref: 'particle/glitter_', n: 8, debut: tick, x, y, z, xd: (r1 - 0.5) * 0.02, yd: 0.02 + r2 * 0.03, zd: (r2 - 0.5) * 0.02, age: 0, duree: 14 + Math.floor(r1 * 12), taille: 0.1 + r2 * 0.05, gravite: 0, friction: 0.95, sol: false, uo: 0, vo: 0, couleur: [0.35, 1, 0.35], plein: true });
+    } else if (nom === 'heart' || nom === 'angry_villager') {   // HeartParticle (amour, colere du villageois) : vitesse x 0,01 + 0,1 vers le haut, taille x 1,5, 16 ticks, frottement 0,86
+      const r1 = alea.flottant();
+      out.push({ type: 'tex', tex: nom === 'heart' ? 'particle/heart' : 'particle/angry', debut: tick, x, y: nom === 'angry_villager' ? y + 0.5 : y, z, xd: P[idx * 9 + 5] * 0.01, yd: P[idx * 9 + 6] * 0.01 + 0.1, zd: P[idx * 9 + 7] * 0.01, age: 0, duree: 16, taille: 0.1 * (r1 * 0.5 + 0.5) * 1.5, gravite: 0, friction: 0.86, sol: false, uo: 0, vo: 0, couleur: [1, 1, 1], plein: true });
+    } else if (nom === 'falling_nectar') {   // DripParticle (nectar de l'abeille) : goutte qui tombe, couleur (0,92 ; 0,782 ; 0,72), gravite 0,007
+      const r1 = alea.flottant(), r2 = alea.flottant();
+      out.push({ type: 'tex', tex: 'particle/drip_fall', debut: tick, x, y, z, xd: 0, yd: 0, zd: 0, age: 0, duree: Math.floor(16 / (r1 * 0.8 + 0.2)), taille: 0.1 * (r2 * 0.5 + 0.5), gravite: 0.007 / 0.04, friction: 0.98, sol: false, uo: 0, vo: 0, couleur: [0.92, 0.782, 0.72] });
     } else if (nom === 'flame') {   // FlameParticle
       const r1 = alea.flottant(), r2 = alea.flottant();
       out.push({ type: 'tex', tex: 'particle/flame', debut: tick, x, y, z, xd: (r1 - 0.5) * 0.01, yd: 0.005 + r2 * 0.01, zd: (r2 - 0.5) * 0.01, age: 0, duree: Math.floor(8 / (r1 * 0.8 + 0.2)) + 4, taille: 0.06 + r2 * 0.03, gravite: 0, friction: 0.96, sol: false, uo: 0, vo: 0, couleur: [1, 1, 1], plein: true });
@@ -350,6 +377,19 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
       if (!tex) { jeter(nom, "miettes d'objet : texture item/" + objet + " absente du kit"); return out; }
       const r1 = alea.flottant(), r2 = alea.flottant(), r3 = alea.flottant();
       out.push({ type: 'bloc', tex, debut: tick, x, y, z, xd: P[idx * 9 + 5], yd: P[idx * 9 + 6], zd: P[idx * 9 + 7], age: 0, duree: Math.floor(4 / (r1 * 0.9 + 0.1)), taille: 0.1 * (r2 * 0.5 + 0.5), uo: r3 * 3, vo: r2 * 3, gravite: 1, friction: 0.98, sol: false, couleur: [1, 1, 1], plein: true });
+    } else if (nom === 'dragon_breath') {   // DragonBreathParticle : sprites generic, violet (0,72..0,80 ; 0 ; 0,82..0,98), 20 / (r x 0,8 + 0,2) ticks
+      const r1 = alea.flottant(), r2 = alea.flottant(), r3 = alea.flottant();
+      out.push({ type: 'anim', pref: 'particle/generic_', n: 8, debut: tick, x, y, z, xd: P[idx * 9 + 5] + (r1 - 0.5) * 0.01, yd: P[idx * 9 + 6], zd: P[idx * 9 + 7] + (r3 - 0.5) * 0.01, age: 0, duree: Math.floor(20 / (r2 * 0.8 + 0.2)), taille: 0.1 * 0.75 * (r3 * 0.5 + 0.5) * 2, gravite: 0, friction: 0.96, sol: false, uo: 0, vo: 0, couleur: [0.7176471 + r1 * 0.086, 0, 0.8235294 + r2 * 0.153], plein: true });
+    } else if (nom === 'sonic_boom') {   // SonicBoomParticle : 16 images sonic_boom_0..15, 16 ticks, taille 1,5, pleine lumiere
+      out.push({ type: 'anim', pref: 'particle/sonic_boom_', n: 16, debut: tick, x, y, z, xd: 0, yd: 0, zd: 0, age: 0, duree: 16, taille: 1.5, gravite: 0, friction: 1, sol: false, uo: 0, vo: 0, couleur: [1, 1, 1], plein: true, lumineux: true });
+    } else if (nom === 'vibration') {   // VibrationParticle : de la source a l'ecouteur en N ticks (champ nombre), texture vibration, 0,3, pleine lumiere
+      out.push({ type: 'tex', tex: 'particle/vibration', debut: tick, x, y, z, xd: 0, yd: 0, zd: 0, age: 0, duree: Math.max(1, N), taille: 0.15, gravite: 0, friction: 1, sol: false, uo: 0, vo: 0, couleur: [1, 1, 1], plein: true, trajet: { de: [x, y, z], vers: [P[idx * 9 + 5], P[idx * 9 + 6], P[idx * 9 + 7]] } });
+    } else if (nom === 'squid_ink' || nom === 'glow_squid_ink') {   // SquidInkParticle : nuage d'encre (noir ; luisant : cyan 0x00FFBF), frottement 0,92
+      const r1 = alea.flottant();
+      out.push({ type: 'anim', pref: 'particle/generic_', n: 8, debut: tick, x, y, z, xd: P[idx * 9 + 5], yd: P[idx * 9 + 6], zd: P[idx * 9 + 7], age: 0, duree: Math.floor(15 / (r1 * 0.8 + 0.2)), taille: 0.25 + r1 * 0.2, gravite: 0, friction: 0.92, sol: false, uo: 0, vo: 0, couleur: nom === 'squid_ink' ? [0.05, 0.05, 0.05] : [0.2, 1, 0.75], plein: true });
+    } else if (nom.startsWith('entity_effect|')) {   // particule d'effet d'une couleur donnee (wither : 0,7 0,7 0,9 pendant la charge, 0,7 0,7 0,5 en armure)
+      const col = nom.slice(14).split(',').map(Number), r1 = alea.flottant();
+      out.push({ type: 'anim', pref: 'particle/effect_', n: 8, debut: tick, x, y, z, xd: (r1 - 0.5) * 0.02, yd: 0.02, zd: (alea.flottant() - 0.5) * 0.02, age: 0, duree: Math.floor(16 / (r1 * 0.8 + 0.2)), taille: 0.12 + r1 * 0.06, gravite: -0.02, friction: 0.9, sol: false, uo: 0, vo: 0, couleur: col, plein: true });
     } else if (nom === 'explosion' || nom === 'explosion_emitter') {   // ExplosionParticle : 16 images explosion_0..15
       const grand = nom === 'explosion_emitter', nb = grand ? 10 : Math.max(1, N);
       for (let i = 0; i < nb; i++) {
@@ -364,6 +404,12 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
   const avancer = (E) => {
     for (const p of E.liste) {
       if (p.age++ >= p.duree) { p.mort = true; continue; }
+      if (p.trajet) {   // vibration : position interpolee de la source a l'ecouteur (VibrationParticle), vitesse = le pas suivant
+        const g = (q) => { const k = Math.min(1, q / p.duree); return p.trajet.de.map((c, i) => c + (p.trajet.vers[i] - c) * k); };
+        const [a0, a1] = [g(p.age), g(p.age + 1)];
+        p.x = a0[0]; p.y = a0[1]; p.z = a0[2]; p.xd = a1[0] - a0[0]; p.yd = a1[1] - a0[1]; p.zd = a1[2] - a0[2];
+        continue;
+      }
       p.yd -= 0.04 * p.gravite;
       // deplacement avec collisions (boite de 0,2)
       const demi = 0.1, boite = [p.x - demi, p.y - demi, p.z - demi, p.x + demi, p.y + demi, p.z + demi];

@@ -33,7 +33,9 @@ function lirePisteTexte(brut, ch, erreur, quoi) {
 // a : acteur brut ; ch : "acteurs[i]" ; erreur : (chemin, message) => leve. Retourne { objetD, objetG, armure } (champs absents : non definis).
 export function lireHabillage(a, ch, erreur) {
   const o = {};
+  if (a.objet !== undefined && a.objetD !== undefined) erreur(`${ch}.objetD`, '"objet" et "objetD" disent la meme chose (main droite) : garde un seul des deux');
   if (a.objet !== undefined) o.objetD = lirePisteTexte(a.objet, `${ch}.objet`, erreur, 'identifiant d\'objet');
+  else if (a.objetD !== undefined) o.objetD = lirePisteTexte(a.objetD, `${ch}.objetD`, erreur, 'identifiant d\'objet');   // "objetD" = "objet" (avant : accepte puis ignore sans rien dire)
   if (a.objetG !== undefined) o.objetG = lirePisteTexte(a.objetG, `${ch}.objetG`, erreur, 'identifiant d\'objet');
   if (a.armure !== undefined) {
     if (a.armure === null || typeof a.armure !== 'object' || Array.isArray(a.armure)) erreur(`${ch}.armure`, 'un objet est attendu, par exemple {"tete": "iron", "torse": "diamond"}');

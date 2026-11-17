@@ -11,8 +11,9 @@ import { chercherChemin, stationPourCellule, blocsOuvrables } from './navigation
 import { progressionParTick, ticksPourCasser, etapeFissure } from './cassage.js';
 import { dirDeLacet, VEC, OPPOSE, JEU, FR, decale, parseEtat, court } from './familles/_aide.js';
 import { evenement } from './registre.js';
-import { installerUtilisation, BIT } from './utilisation.js';
+import { installerUtilisation, BIT, FATIGUE } from './utilisation.js';
 import { IA, BUTIN, coupJoueur } from './ia.js';   // creatures `ia: true` (buts du jeu, cibles, combat) ; coup d'epee du joueur (verbe frappe)
+import { ESPECES } from '../creatures/especes.js';   // dimensions des bebes (entites nees pendant la simulation)
 
 export const LARGEUR = 0.6, HAUTEUR = 1.8, HAUTEUR_ACCROUPI = 1.5, OEIL = 1.62, OEIL_ACCROUPI = 1.27;
 export const GRAVITE = 0.08, TRAINEE = 0.98, SAUT = 0.42, PAS = 0.6, FRICTION_AIR = 0.91;
@@ -21,6 +22,8 @@ export const DUREE_BALANCEMENT = 6, DUREE_COFFRE = 40;
 const RAD = Math.PI / 180;
 const norm180 = (a) => { a = (a + 180) % 360; if (a < 0) a += 360; return a - 180; };
 const FACE_3D = ['down', 'up', 'north', 'south', 'west', 'east'];
+// #minecraft:can_breathe_under_water (les morts-vivants, les creatures de l'eau)
+const RESPIRE_SOUS_EAU = new Set(['zombie', 'husk', 'drowned', 'zombie_villager', 'skeleton', 'stray', 'bogged', 'parched', 'wither_skeleton', 'zombified_piglin', 'zoglin', 'phantom', 'wither', 'skeleton_horse', 'zombie_horse', 'axolotl', 'frog', 'turtle', 'guardian', 'elder_guardian', 'dolphin', 'squid', 'glow_squid', 'cod', 'salmon', 'tropical_fish', 'pufferfish', 'tadpole', 'nautilus', 'zombie_nautilus']);
 export const DRAPEAUX = { ACCROUPI: 1, AU_SOL: 2, COURSE: 4, BALANCE: 8, SAUTE: 16, EAU: 32 };
 
 // nombre de ticks du film -> tick du monde (ralenti)
@@ -118,7 +121,29 @@ export class Acteur {
     if (a.opts.objet) this.main = { objet: a.opts.objet, efficacite: 0 };
     T.coups = a.opts.coups ?? Infinity; T.n = 0; T.critique = !!a.opts.critique;
   }
+  // frappe "boule_feu" : attend qu'une boule de feu (pas la sienne) passe a portee (3 blocs de l'oeil), la regarde et la frappe : elle repart
+  // dans la direction du regard (Fireball.hurtServer, deflect)
+  tickRenvoi(T) {
+    const sim = this.sim, [ex, ey, ez] = this.oeil(), P = sim.entites.proj;
+    let best = null, bd = Infinity;
+    for (const e of sim.entites.liste) {
+      if (!e.proj || (e.type !== 'boule_feu' && e.type !== 'petite_boule_feu') || e.proprietaire === this.nom || sim.entites._fini?.has(e)) continue;
+      const cy = e.y + (e.type === 'boule_feu' ? 0.5 : 0.15625), d = Math.hypot(e.x - ex, cy - ey, e.z - ez);
+      if (d < bd) { bd = d; best = { e, cy }; }
+    }
+    if (!best) return;
+    // le regard du joueur donne la direction du renvoi : son regard persistant (verbe regarde, par exemple le ghast) ou la boule elle-meme
+    const R = this.regard?.acteur ? this.g.parNom.get(this.regard.acteur) : null, vise = R ? [R.x, R.y + R.H / 2, R.z] : this.regard ? [this.regard.x, this.regard.y, this.regard.z] : null;
+    if (!vise) this.regardTache = { x: best.e.x, y: best.cy, z: best.e.z };
+    if (bd > 3.2) return;
+    const dir = vise ? [vise[0] - ex, vise[1] - ey, vise[2] - ez] : [best.e.x - ex, best.cy - ey, best.e.z - ez];
+    this.dernierCoup = sim.temps; this.balancer();
+    P.renvoyer(best.e, this, dir);
+    sim.son('entity.player.attack.strong', this.x, this.y, this.z, 1, 1);
+    if (++T.n >= T.coups) this.finirTache('ok', `${T.n} renvoi(s)`);
+  }
   tick_frappe(T) {
+    if (T.acte.cible.acteur === 'boule_feu') return this.tickRenvoi(T);
     const sim = this.sim, o = this.g.parNom.get(T.acte.cible.acteur);
     if (!o) throw new EchecActe('cible inconnue');
     if (o.mort >= 0) { this.finirTache('ok', `${o.nom} est mort`); return; }
@@ -309,14 +334,35 @@ export class Acteur {
 
   // ---------------------------------------------------------------- utilise
   debut_utilise(T, a) {
+    if (a.cible?.acteur) { if (a.opts.objet) this.main = { objet: a.opts.objet, efficacite: 0 }; T.mode = 'interagit'; T.duree = tickDe(a.opts.duree ?? 3, this.sim.replay.ralenti); T.max = tickDe(a.opts.max ?? 20, this.sim.replay.ralenti); return; }   // clic droit sur une creature (villageois : echange ; animal : nourriture -> amour ; allay qui danse : eclat d'amethyste)
     if (a.x === undefined) return this.debutObjet(T, a);
-    if (a.objet !== undefined && a.objet !== null) this.main = { objet: a.objet, efficacite: 0 };
+    const objetU = a.objet ?? a.opts.objet;   // utilise x y z {"objet": "music_disc_cat"} : l'objet en main pour ce clic (disque dans le juke-box)
+    if (objetU !== undefined && objetU !== null) this.main = { objet: objetU, efficacite: 0 };
     const c = [a.x, a.y, a.z];
     if (this.sim.monde.etatEn(...c) < 0) throw new EchecActe('cellule inconnue');
     T.visible = this.main.objet !== 'bucket';           // le seau vide vise aussi les sources d'eau et de lave (rayon de fluide du jeu)
     this.preparerAction(T, a, c, { visible: T.visible });
   }
+  // Mob.interact (Villager.mobInteract) : s'approche a 3 blocs (portee d'interaction avec une entite), regarde la creature, clic droit ;
+  // un villageois sans metier (ou idiot, ou bebe) secoue la tete (40 ticks, son "no"), sinon il echange avec le joueur pendant `duree`
+  tickInteraction(T) {
+    const o = this.g.parNom.get(T.acte.cible.acteur);
+    if (!o || o.mort >= 0) throw new EchecActe('cible absente ou morte');
+    this.regardTache = { x: o.x, y: o.y + o.H * 0.85, z: o.z };
+    const d = Math.hypot(o.x - this.x, o.z - this.z);
+    if (!T.fait) {
+      if (d > 2.5) { const cap = Math.atan2(-(o.x - this.x), o.z - this.z) / RAD; this.entree = { avance: 1, cap, saute: false }; if (this.auSol && this.bute && this.marcheSautable(cap)) this.saut = true; return; }
+      this.balancer(); T.fait = this.sim.temps;
+      // objet en main d'abord (Animal.mobInteract : nourriture -> amour ou croissance ; Allay : eclat d'amethyste pendant la danse) ; sinon l'echange
+      const parObjet = this.main.objet && o.ia?.nourrir ? o.ia.nourrir(this, this.main.objet) : null;
+      if (parObjet) { this.finirTache('ok', parObjet); return; }
+      T.resultat = o.ia?.interagir ? o.ia.interagir(this, T.duree) : 'rien';
+      if (T.resultat !== 'echange') { this.finirTache('ok', T.resultat); return; }
+    }
+    if (this.sim.temps - T.fait >= T.duree) { o.ia?.finEchange?.(this); this.finirTache('ok', 'echange'); }
+  }
   tick_utilise(T) {
+    if (T.mode === 'interagit') return this.tickInteraction(T);
     if (T.mode) return this.tickObjet(T);
     const a = T.acte;
     if (T.etat === 'approche') { if (this.tickApproche(T)) { T.etat = 'vise'; T.vise = 0; this.entree.avance = 0; } return; }
@@ -335,6 +381,7 @@ export class Acteur {
       sim.dernierUtilise = null;
       let res = sim.utiliserBloc(c[0], c[1], c[2], { acteur: this.nom, face, hit, accroupi: this.accroupi, objet: this.main.objet, lacet: this.lacet });
       let ev = sim.dernierUtilise;
+      if (res === 'fait' && ev && ev.nouvelObjet !== undefined) this.main = { objet: ev.nouvelObjet, efficacite: 0 };   // le bloc prend ou rend l'objet (disque du juke-box)
       if (res !== 'fait' && this.main.objet) {          // le bloc ne reagit pas : l'objet tenu agit (seaux, briquet : evenement du monde `objet.utilise`)
         const o = sim.utiliserObjet(c[0], c[1], c[2], { acteur: this.nom, face, hit, accroupi: this.accroupi, objet: this.main.objet, lacet: this.lacet });
         if (o.fait) { res = 'fait'; ev = null; if (o.nouvelObjet !== undefined) this.main = { objet: o.nouvelObjet, efficacite: 0 }; } else if (o.raison) ev = { raison: o.raison };
@@ -415,6 +462,8 @@ export class Acteur {
     if (!sim.api.survitEtat(D[0], D[1], D[2], etat)) throw new EchecActe(`${nom} ne tient pas en ${D.join(',')} (appui manquant)`);
     sim.poser(D[0], D[1], D[2], etat, 11);
     for (const [x, y, z, e2] of aussi) sim.poser(x, y, z, e2, 3);
+    sim.vibrations.emettre('block_place', D[0] + 0.5, D[1] + 0.5, D[2] + 0.5, { source: this.nom });   // GameEvent.BLOCK_PLACE
+    sim.boss.apresPose(D, this);   // WitherSkullBlock.checkSpawn : sable des ames + 3 cranes de wither squelette
     const s = sim.d.son(idEtat);
     sim.son(s.pose, D[0] + 0.5, D[1] + 0.5, D[2] + 0.5, (s.volume + 1) / 2, s.hauteur * 0.8);
     this.balancer();
@@ -433,7 +482,8 @@ export class Acteur {
     const c = [a.x, a.y, a.z], sim = this.sim, e = sim.monde.etatEn(...c);
     if (e < 0 || sim.d.nomBloc(e) === 'air') throw new EchecActe(`rien a casser en ${c.join(',')} (air)`);
     T.ancien = e;
-    const p = progressionParTick(sim.d, e, { outil: this.main.objet, efficacite: this.main.efficacite, auSol: true, multiplicateur: this.regles.valeur('casser.vitesse', 1) });
+    const fat = this.effets.size ? FATIGUE[Math.min(4, this.niveauEffet('mining_fatigue'))] * (1 + 0.2 * this.niveauEffet('haste')) : 1;   // fatigue du gardien ancien, celerite
+    const p = progressionParTick(sim.d, e, { outil: this.main.objet, efficacite: this.main.efficacite, auSol: true, multiplicateur: this.regles.valeur('casser.vitesse', 1) * fat });
     if (p.incassable) throw new EchecActe(`${court(sim.d.nomBloc(e))} est incassable (durete -1)`);
     T.prog = p; T.somme = 0; T.ticksMine = 0;
     this.preparerAction(T, a, c);
@@ -480,7 +530,10 @@ export class Acteur {
     if (sim.reg.a('casse', sim.d.blocDe(e))) sim.reg.lancerBloc('casse', sim.d.blocDe(e), ev, sim.api);
     if (ev.annule) { this.finirTache('echec', 'casse annulee par un gestionnaire'); return; }
     this.fissure(T, -1);
+    const nomCasse = sim.d.nomBloc(e);
     sim.casser(c[0], c[1], c[2], { butin: true, outil: this.main.objet, acteur: this.nom });
+    sim.vibrations.emettre('block_destroy', c[0] + 0.5, c[1] + 0.5, c[2] + 0.5, { source: this.nom });   // GameEvent.BLOCK_DESTROY
+    if (nomCasse === 'beehive' || nomCasse === 'bee_nest') this.g.rucheCassee(c, this);   // BeehiveBlock.playerDestroy : abeilles relachees en urgence et en colere
     this.cassage = -1; this.delaiCassage = this.regles.valeur('casser.delai', 5);
     this.balancer();
     this.regardTache = null;
@@ -550,14 +603,19 @@ export class Acteur {
 
   // ---------------------------------------------------------------- physique (LivingEntity.travel)
   physique() {
+    if (this.typeCreature === 'end_crystal') return;     // cristal de l'End : sans gravite, immobile
+    if (this.ia?.vol && this.ia.physiqueVol()) return;   // creatures volantes (moteur/ia-especes.js : travel du jeu en vol)
+    if (this.ia?.physiqueEau?.()) return;                // nage dirigee (ia-eau.js : travel des poissons, calmars, dauphins, axolotls, gardiens)
     const lec = this.lec, d = this.sim.d;
     const fl = this.fluidesAutour(), enEau = fl.eau, enLave = fl.lave, enFluide = enEau || enLave;
     // courant : le fluide pousse l'acteur (poussee de l'eau 0,014, de la lave 0,0023 : Entity.updateFluidHeightAndDoFluidPushing)
     if (enEau) { this.vx += fl.pousseeEau[0]; this.vy += fl.pousseeEau[1]; this.vz += fl.pousseeEau[2]; }
     if (enLave) { this.vx += fl.pousseeLave[0]; this.vy += fl.pousseeLave[1]; this.vz += fl.pousseeLave[2]; }
     if (enEau && !this.dansEau) this.eclaboussure();
-    this.dansEau = enEau; this.dansLave = enLave;
-    if (this.sim.regles.valeur('vie.actif', true)) this.respirer(fl.tete);
+    this.dansEau = enEau; this.dansLave = enLave; this.teteEau = fl.tete;
+    // Player.updateSwimming : nage (pose de nage) = course dans l'eau, commencee la tete sous l'eau (le dauphin nage avec un joueur qui nage)
+    this.nageant = !this.typeCreature && this.course && enEau && (this.nageant || fl.tete);
+    if (this.sim.regles.valeur('vie.actif', true) && !RESPIRE_SOUS_EAU.has(this.typeCreature)) this.respirer(fl.tete);   // #can_breathe_under_water : les morts-vivants ne se noient pas
     // sol : bloc sous les pieds (friction)
     let friction = 0.6;
     if (this.auSol) {
@@ -603,8 +661,10 @@ export class Acteur {
     this.toucherBlocs();
     if (enFluide) {
       // LivingEntity.travel dans l'eau (x 0,8, gravite / 16) ou la lave (x 0,5, gravite / 4) ; hisse sur la berge (0,3) si un pas libre existe
-      const k = enEau ? 0.8 : 0.5;
-      this.vx *= k; this.vy *= k; this.vz *= k;
+      // Grace du dauphin (Horizon horizon-world/src/living_fluid.rs `travel_in_water`) : ralentissement horizontal 0,96 au lieu de 0,8 dans
+      // l'eau (vitesse limite x 5), le vertical reste x 0,8
+      const k = enEau ? 0.8 : 0.5, kh = enEau && this.effets?.size && this.niveauEffet('dolphins_grace') ? 0.96 : k;
+      this.vx *= kh; this.vy *= k; this.vz *= kh;
       if (enEau) {
         if (this.vy <= 0 && Math.abs(this.vy - 0.005) >= 0.003 && Math.abs(this.vy - GRAVITE / 16) < 0.003) this.vy = -0.003; else this.vy -= GRAVITE / 16;
       } else this.vy -= GRAVITE / 4;
@@ -640,6 +700,10 @@ export class Acteur {
   degats(quantite, source = 'generique') {
     const sim = this.sim;
     if (this.mort >= 0 || this.invulnerable || !sim.regles.valeur('vie.actif', true)) return false;
+    if (this.ia?.esquive?.(source)) return false;   // enderman : un projectile le manque (il se teleporte)
+    if (this.typeCreature === 'end_crystal') return sim.boss.cristalTouche(this, source);   // EndCrystal.hurtServer : il explose
+    if (this.ia?.refuseDegats(source)) return false;   // wither qui charge ou en armure (fleches), warden qui creuse, dragon qui meurt
+    if (this.ia) quantite = this.ia.ajusterDegats(quantite, source);   // dragon : d / 4 + 1 sur le corps, mort differee
     const ev = sim.api.evenement('acteur.degats', { acteur: this.nom, quantite, source });
     if (ev.annule) return false;
     let q = Number(ev.quantite);
@@ -654,10 +718,13 @@ export class Acteur {
     sim.stats.degats = (sim.stats.degats || 0) + q;
     if (this.vie <= 0) this.mourir(source);
     else if (nouveau) sim.son(this.typeCreature ? `entity.${this.typeCreature}.hurt` : 'entity.player.hurt', this.x, this.y, this.z, 1, 1 + (sim.hasard.flottant() - sim.hasard.flottant()) * 0.2);
+    if (this.vie > 0) this.ia?.apresDegats?.(source, q);   // enderman (teleportation), chauve-souris (reveil), abeille (colere)
     return true;
   }
   mourir(source) {
     const sim = this.sim;
+    if (this.ia?.convertirMort?.(source)) return;   // villageois tue par un zombie : il devient zombie villageois (Zombie.killedEntity)
+    this.ia?.surMort?.(source);                      // villageois tue par un joueur : les temoins s'en souviennent (VILLAGER_KILLED)
     this.mort = 0;
     sim.son(this.typeCreature ? `entity.${this.typeCreature}.death` : 'entity.player.death', this.x, this.y, this.z, 1, 1 + (sim.hasard.flottant() - sim.hasard.flottant()) * 0.2);
     sim.stats.morts = (sim.stats.morts || 0) + 1;
@@ -718,13 +785,28 @@ export class Acteur {
     this.demarrerDues();
     this.entree = { avance: 0, cap: this.lacet, saute: false };
     this.tickEffets();
+    if (this.feuJoueur > 0) this.brulerJoueur();
     if (this.ia && !this.tache) this.ia.tick();   // IA : seulement quand aucune intention ecrite ne tourne (les actes l'emportent)
     else { this.tickTache(); if (this.ia) this.ia.ecrire(); }
     this._regard();
+    const x0 = this.x, z0 = this.z;
     this.physique();
+    // pas (Entity.moveDist x 0,6, nextStep) : GameEvent.STEP pour les capteurs de sculk et les wardens (ignore accroupi)
+    if (this.auSol && !this.vole && sim.vibrations.actif()) {
+      this.distPas = (this.distPas ?? 0) + Math.hypot(this.x - x0, this.z - z0) * 0.6;
+      if (this.distPas > (this.prochainPas ?? 1)) { this.prochainPas = Math.floor(this.distPas) + 1; sim.vibrations.emettre('step', this.x, this.y, this.z, { source: this.nom, accroupi: this.accroupi }); }
+    }
     if (this.ramasse && this.mort < 0) sim.entites.ramasser(this);
     this._majBalancement();
     this.ecrire();
+  }
+  // joueur en feu (petite boule de feu du blaze : 5 s) : 1 degat par seconde, flammes ; l'eau l'eteint
+  brulerJoueur() {
+    const sim = this.sim;
+    if (this.dansEau) { this.feuJoueur = 0; return; }
+    this.feuJoueur--;
+    if (this.feuJoueur % 20 === 0) this.degats(1, 'feu');
+    if (this.feuJoueur % 3 === 0) sim.particule('flame', this.x + (sim.hasard.flottant() - 0.5) * 0.6, this.y + 0.3 + sim.hasard.flottant() * 1.4, this.z + (sim.hasard.flottant() - 0.5) * 0.6, 0, 0.02, 0, 1);
   }
   tickMort() {
     const sim = this.sim;
@@ -756,6 +838,15 @@ export class Acteur {
 
 export class EchecActe extends Error {}
 
+// gabarit d'un bebe sans la table des creatures (essais) : dimensions de bebe du jeu (ESPECES[type][5]) ou celles du parent a l'echelle
+function gabaritDe(type, bebe, parent) {
+  const p = parent ?? { l: LARGEUR, h: HAUTEUR, oeil: OEIL, vitesse: 1 };
+  const b = bebe ? ESPECES[type]?.[5] : null;
+  if (b && b.length === 3) return { ...p, l: b[0], h: b[1], oeil: b[2] };
+  if (b && b.length === 1) return { ...p, l: p.l * b[0], h: p.h * b[0], oeil: p.oeil * b[0] };
+  return { ...p };
+}
+
 export class Acteurs {
   // descripteurs : [{ nom, x, y, z, lacet, objet, actes: [{ tick, verbe, ... }] }]
   constructor(sim, descripteurs) {
@@ -766,7 +857,39 @@ export class Acteurs {
     this.parNom = new Map(this.liste.map((a) => [a.nom, a]));
     sim.replay.acteurs = this.liste.map((a) => a.nom);
   }
-  tick() { for (const a of this.liste) a.tick(); }
+  // les acteurs nes pendant ce tick (naitre) ne jouent qu'au tick suivant ; leur premier enregistrement est ecrit a la naissance
+  tick() { const n = this.liste.length; for (let i = 0; i < n; i++) this.liste[i].tick(); }
+
+  // ---------------------------------------------------------------- entites nees pendant la simulation (docs/SIMULATION.md partie 17)
+  // o : { type, variante, bebe, x, y, z, lacet, modele (acteur dont le film reprend les reglages), raison, ia (champs d'IA en plus), nom, gabaritParent }
+  // Plafonds (regles) : `naissances.max` entites nees par scene, `entites.max` acteurs en tout. Rend l'acteur, ou null (plafond atteint).
+  peutNaitre() { const R = this.sim.regles; return (this.nbNes ?? 0) < R.valeur('naissances.max', 16) && this.liste.length < R.valeur('entites.max', 40); }
+  naitre(o) {
+    const sim = this.sim;
+    if (!this.peutNaitre()) { sim.avertir(`plafond des entites atteint (naissances.max ${sim.regles.valeur('naissances.max', 16)}, entites.max ${sim.regles.valeur('entites.max', 40)}) : ${o.type} pas ne`); return null; }
+    this.nbNes = (this.nbNes ?? 0) + 1;
+    let nom = o.nom ?? `${o.modele}_${o.raison === 'reproduction' ? 'bebe' : o.type}`;
+    if (this.parNom.has(nom)) { let k = 2; while (this.parNom.has(`${nom}${k}`)) k++; nom = `${nom}${k}`; }
+    const c = { type: o.type, variante: o.variante ?? null, bebe: !!o.bebe };
+    const cr = this.sim.creatures, st = cr?.stats?.(o.type) ?? null;
+    const gab = cr?.gabarit ? cr.gabarit(c) : gabaritDe(o.type, c.bebe, o.gabaritParent);
+    const gabAdulte = cr?.gabarit ? cr.gabarit({ ...c, bebe: false }) : (o.gabaritParent ?? gab);
+    const d = { nom, x: o.x, y: o.y, z: o.z, lacet: o.lacet ?? 0, objet: o.objet ?? null, vie: o.vie ?? st?.pv, gabarit: gab, typeCreature: o.type, actes: [],
+      ia: { type: o.type, variante: c.variante, bebe: c.bebe, vitesseAttr: st?.v ?? o.vitesseAttr ?? 0.25, vie: o.vie ?? st?.pv ?? 20, gabaritAdulte: gabAdulte, ...(o.ia ?? {}) } };
+    const a = new Acteur(this, this.liste.length, d);
+    this.liste.push(a); this.parNom.set(nom, a); sim.replay.acteurs.push(nom);
+    sim.replay.naissances.push({ tick: sim.temps, nom, pos: [o.x, o.y, o.z].map((v) => Math.round(v * 1000) / 1000), type: o.type, variante: c.variante, bebe: c.bebe, modele: o.modele ?? null, raison: o.raison ?? 'apparition', ...(o.ia?.apprivoise ? { apprivoise: true } : {}), ...(o.colle ? { colle: o.colle } : {}), ...(o.objet ? { objet: o.objet } : {}) });
+    (sim.stats.naissances ??= []).push(`${(sim.temps / 20).toFixed(2)} ${nom} (${o.type}${c.variante ? ' ' + c.variante : ''}${c.bebe ? ', bebe' : ''}, ${o.raison ?? 'apparition'}${o.modele ? ' de ' + o.modele : ''})`);
+    sim.dire(`${nom} apparait (${o.raison ?? 'apparition'})`);
+    sim.api.evenement('creature.nait', { creature: nom, type: o.type, raison: o.raison ?? 'apparition', parent: o.modele ?? null, pos: [o.x, o.y, o.z] });
+    a.ecrire(); if (a.ia) a.ia.ecrire();
+    return a;
+  }
+  // BeehiveBlock.playerDestroy : les abeilles de la ruche sortent en urgence (en colere contre celui qui casse s'il est a 4 blocs), et
+  // angerNearbyBees : toutes les abeilles a 8 x 6 x 8 blocs sans cible le prennent pour cible
+  rucheCassee(pos, joueur) {
+    for (const phase of ['sortie', 'colere']) for (const o of [...this.liste]) if (o.ia && o.mort < 0) o.ia.surRucheCassee?.(pos, joueur, phase);
+  }
   // sol sous le point (x, z) pres de la hauteur `yRef` (ou le plus haut sol de la colonne)
   solAuxCoordonnees(x, z, yRef) {
     const s = solSous(this.lec, x, z, yRef + 4, 0.5, 12);

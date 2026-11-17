@@ -7,9 +7,11 @@ import { chargerScene } from '../rendu/scene.js';
 import { encoderPNG } from '../rendu/png.js';
 import { animer } from './anim.js';
 import { terrainDepuis } from './physique.js';
-import { descripteursActeurs } from './actes.js';   // acteurs a intentions (champ `actes`) pour la simulation
+import { descripteursActeurs, gabaritCreature } from './actes.js';   // acteurs a intentions (champ `actes`) pour la simulation
+import { statsDe } from './creatures.js';
+import { ajouterNaissances } from './naissances.js';   // entites nees pendant la simulation : acteurs de plus
 import { evaluer } from './scene.js';
-import { imageEn, cielEn } from './look.js';
+import { imageEn, cielEn, obscuriteDe } from './look.js';
 import { facteurCielMeteo } from './meteo.js';
 import { Personnage } from '../perso/modele.js';
 import { maillageEtiquette } from '../creatures/etiquette.js';   // etiquette de nom (champ `etiquette`)
@@ -83,7 +85,10 @@ export async function simulerScene({ scene, zonePath, baseDir, env = process.env
   const hp = scene.ciel?.heure;   // l'heure du jour de la scene : lue par le detecteur de lumiere du jour
   const heure = hp ? (t) => evaluer(hp, t)[0] : undefined;
   const typesC = scene.acteurs.some((a) => a.creature && (a.actes || a.creature.ia)) ? (await (await import('../creatures/donnees.js')).donneesCreatures({ env })).types : null;   // creatures a intentions : leur gabarit
-  const r = simuler({ zone, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene, typesC), baseDir, duree: scene.duree, options: { heure, meteo: scene.ciel?.meteo ?? null } });
+  const creatures = typesC ? { gabarit: (c) => gabaritCreature(c, typesC), stats: (t) => { const st = statsDe({ type: t }, typesC); return st ? { v: st.v, pv: st.pv } : null; } } : null;   // entites nees en cours de route
+  const r = simuler({ zone, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene, typesC), baseDir, duree: scene.duree, options: { heure, meteo: scene.ciel?.meteo ?? null, creatures } });
+  ajouterNaissances(scene, r.replay);   // bebes, conversions, golems : des acteurs de plus dans la scene (film/naissances.js)
+  const ob = obscuriteDe(r.replay); if (ob) scene._obscurite = ob;   // Obscurite du warden : l'image s'assombrit (film/look.js)
   return { zone, donnees, replay: r.replay, rapport: r.rapport, notes: [...notesDecor, ...r.replay.avertissements.map((a) => 'monde : ' + a)], secondes: (performance.now() - t0) / 1000 };
 }
 
@@ -112,7 +117,7 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
     if (comp) notes.push(...comp.notes);
     const lumiere = personnages.map(() => null);
     // effets visibles du monde simule (coffres, cloches, fissures, particules) : maillages dynamiques lus dans le replay
-    const effets = sim ? (await import('./effets-monde.js')).creerEffetsMonde({ rs, scene, sim, kit, donnees: sim.donnees, terrain }) : null;
+    const effets = sim ? (await import('./effets-monde.js')).creerEffetsMonde({ rs, scene, sim, kit, donnees: sim.donnees, terrain, creatures }) : null;
     if (effets) notes.push(...effets.notes);
     // une image : personnages (skin du moment, lumiere du lieu), ciel, lumiere globale, puis post-traitement `image`
     const dessiner = async (i, { largeur, hauteur, ssaa = 1, copie = true }) => {

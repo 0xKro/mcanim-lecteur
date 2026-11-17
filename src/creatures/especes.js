@@ -105,12 +105,16 @@ ESPECES.boat = ['boat/oak', 'boat/oak', 'Vehicule', ['', '', ''], null, null];
 ESPECES.chest_boat = ['chest_boat/oak', 'chest_boat/oak', 'Vehicule', ['', '', ''], null, null];
 ESPECES.armor_stand = ['armor_stand', 'armorstand/armorstand', 'Statue', ['', 'armor_stand.hit', 'armor_stand.break'], null, null];
 ESPECES.ender_dragon = ['ender_dragon', 'enderdragon/dragon', 'Dragon', ['ender_dragon.ambient', 'ender_dragon.hurt', 'ender_dragon.death'], null, null];
+ESPECES.end_crystal = ['end_crystal', 'end_crystal/end_crystal', 'Statue', ['', '', ''], null, null];   // cristal de l'End (soigne le dragon, explose)
 
 // Sons de toutes les creatures (groupe de kit a la demande `sons_creatures`) : cri, blessure, mort, pas, et quelques sons d'action.
 export const SONS_EN_PLUS = ['entity.creeper.primed', 'entity.boat.paddle_water', 'entity.boat.paddle_land', 'entity.minecart.riding', 'entity.horse.gallop', 'entity.horse.saddle',
   'entity.iron_golem.attack', 'entity.villager.no', 'entity.villager.yes', 'entity.skeleton.shoot', 'entity.slime.jump', 'entity.slime.squish',
   'entity.wolf.growl', 'entity.cat.purr', 'entity.camel.dash', 'entity.warden.roar', 'entity.warden.sonic_boom', 'entity.breeze.shoot', 'entity.creaking.attack'];
 export const SOUND_EVENTS_CREATURES = [...new Set([...Object.values(ESPECES).flatMap((e) => [...e[3], e[4]].filter(Boolean).map((s) => 'entity.' + s)), ...SONS_EN_PLUS])].sort();
+
+// Parrot.MOB_SOUND_MAP : les mobs que le perroquet imite (entity.parrot.imitate.<type>)
+export const IMITES = new Set(['blaze', 'bogged', 'breeze', 'cave_spider', 'creaking', 'creeper', 'drowned', 'elder_guardian', 'ender_dragon', 'endermite', 'evoker', 'ghast', 'guardian', 'hoglin', 'husk', 'illusioner', 'magma_cube', 'phantom', 'piglin', 'piglin_brute', 'pillager', 'ravager', 'shulker', 'silverfish', 'skeleton', 'slime', 'spider', 'stray', 'vex', 'vindicator', 'warden', 'witch', 'wither', 'wither_skeleton', 'zoglin', 'zombie', 'zombie_villager']);
 
 // ---------------------------------------------------------------- couleurs (DyeColor) et variantes
 export const TEINTURES = ['white', 'orange', 'magenta', 'light_blue', 'yellow', 'lime', 'pink', 'gray', 'light_gray', 'cyan', 'purple', 'blue', 'brown', 'green', 'red', 'black'];

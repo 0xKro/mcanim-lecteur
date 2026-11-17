@@ -45,7 +45,9 @@ export function exploser(sim, x, y, z, opt = {}) {
       const bx = Math.floor(mx), by = Math.floor(my), bz = Math.floor(mz);
       const e = sim.monde.etatEn(bx, by, bz);
       if (e >= 0 && !AIR.test(d.nomBloc(e))) {
-        h -= (d.resistance(e) * facteur + 0.3) * 0.3;
+        // crane bleu du wither (WitherSkull.getBlockExplosionResistance) : la resistance d'un bloc cassable est plafonnee a 0,8
+        const res = opt.plafondResistance !== undefined && d.durete?.(e) >= 0 ? Math.min(opt.plafondResistance, d.resistance(e)) : d.resistance(e);
+        h -= (res * facteur + 0.3) * 0.3;
         if (h > 0 && ev.casseBlocs) { const c = `${bx},${by},${bz}`; if (!detruits.has(c)) detruits.set(c, [bx, by, bz]); }
       } else if (e < 0) h -= (1200 + 0.3) * 0.3;   // cellule inconnue (cachee) : pleine
       mx += dx * 0.3; my += dy * 0.3; mz += dz * 0.3;
@@ -56,6 +58,7 @@ export function exploser(sim, x, y, z, opt = {}) {
   const R = P * 2, touches = [];
   if (sim.acteurs && R > 0) {
     for (const a of sim.acteurs.liste) {
+      if (opt.exclure && a.nom === opt.exclure) continue;   // level.explode(source, ...) : la source n'est pas touchee (wither)
       const b = a.boite(), cx = a.x, cy = a.y + 0.5 * (b[4] - b[1]), cz = a.z;
       const dist = Math.hypot(cx - x, cy - y, cz - z) / R;
       if (dist > 1) continue;
@@ -107,6 +110,7 @@ export function exploser(sim, x, y, z, opt = {}) {
   sim.son('entity.generic.explode', x, y, z, 4, (1 + (sim.hasard.flottant() - sim.hasard.flottant()) * 0.2) * 0.7);
   sim.dire(`explosion p=${P} (${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)}) : ${liste.length} blocs detruits, ${touches.length} entite(s) touchee(s)`);
   sim.stats.explosions = (sim.stats.explosions || 0) + 1; sim.stats.explosionsBlocs = (sim.stats.explosionsBlocs || 0) + liste.length;
+  sim.vibrations?.emettre('explode', x, y, z, { source: opt.exclure ?? null });   // GameEvent.EXPLODE (frequence 15)
   const res = { detruits: liste.length, touches: touches.length, puissance: P, blocs: liste };
   if (sim.reg.aMonde('apresExplosion')) sim.reg.lancerMonde('apresExplosion', evenement({ centre: [x, y, z], puissance: P, blocsDetruits: liste.length, entites: touches }), sim.api);
   return res;

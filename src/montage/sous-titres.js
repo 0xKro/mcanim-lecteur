@@ -5,6 +5,8 @@ export const PAUSE_MAX = 1.2;
 
 // mots : [{ t, mot }] classes par temps. Retourne [{ debut, fin, texte, accent: [numeros de mots de la puce, 0 = premier] }].
 // `accent` : numeros de mots GLOBAUX (0 = premier mot de la liste) a mettre en couleur d'accent.
+// rang dans le texte affiche du j-ieme mot d'une puce (un mot peut porter sa ponctuation isolee : « steve ! » compte pour deux)
+const rang = (p, j) => p.mots.slice(0, j).reduce((n, m) => n + m.mot.split(' ').length, 0);
 export function decouperSousTitres(mots, { par = 2, fin = null, accent = null } = {}) {
   const puces = [];
   let cur = null;
@@ -20,6 +22,6 @@ export function decouperSousTitres(mots, { par = 2, fin = null, accent = null } 
     const dernier = p.mots[p.mots.length - 1].t;
     const suivante = i + 1 < puces.length ? puces[i + 1].mots[0].t : (fin ?? dernier + PAUSE_MAX);
     const f = Math.min(suivante, dernier + PAUSE_MAX, fin ?? Infinity);
-    return { debut, fin: Math.max(f, debut + 0.1), texte: p.mots.map((m) => m.mot).join(' '), accent: A ? p.mots.map((_, j) => p.premier + j).filter((g) => A.has(g)).map((g) => g - p.premier) : [] };
+    return { debut, fin: Math.max(f, debut + 0.1), texte: p.mots.map((m) => m.mot).join(' '), accent: A ? p.mots.map((_, j) => p.premier + j).filter((g) => A.has(g)).map((g) => rang(p, g - p.premier)) : [] };
   });
 }

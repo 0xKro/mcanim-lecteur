@@ -10,7 +10,7 @@ from . import matrices as M
 # ordre : nom, statut, remarque
 TABLE = [
     ("gbufferModelView / gbufferModelViewInverse", "fait", "Rx(tangage) * Ry(lacet+180), camera a l'origine"),
-    ("gbufferProjection / gbufferProjectionInverse", "fait", "perspective, near 0,05, far = 256 (16 chunks)"),
+    ("gbufferProjection / gbufferProjectionInverse", "fait", "perspective, near 0,05, plan lointain 1024 = 4 x far (depthFar du jeu) ; l'uniform far reste 256 (16 chunks)"),
     ("gbufferPreviousModelView / gbufferPreviousProjection", "fait", "matrices de l'image d'avant (M7) ; egales a l'image courante apres une coupure de camera ou a la premiere image"),
     ("shadowModelView / shadowModelViewInverse", "fait", "formules d'Iris (rotX 90, rotZ -angle, rotX sunPathRotation, pas d'intervalle)"),
     ("shadowProjection / shadowProjectionInverse", "fait", "ortho +-shadowDistance, plans -100,05 / 156"),
@@ -44,6 +44,11 @@ TABLE = [
 
 FAR = 256.0
 NEAR = 0.05
+# Plan lointain de gbufferProjection : comme le jeu (Camera.depthFar = 4 x la distance de rendu, Horizon `camera::depth_far`), PAS `far`.
+# Les packs reconstruisent la position d'un pixel de ciel (profondeur 1) avec gbufferProjectionInverse : avec un plan a 256, le ciel
+# etait a 256/cos(angle) blocs, sous le `far + 80` de Bliss (volumetricClouds.glsl) dans un cone de ~40 degres autour de l'axe de vue :
+# Bliss y voyait du terrain et coupait nuages et brume = grand disque bleu pale au crepuscule.
+PROJ_FAR = 4.0 * FAR
 
 
 def angle_ciel_vers_fraction(angle_deg):
@@ -59,7 +64,7 @@ def construire(e, r):
     angle = e.get("angleSoleil", 0.0)    # degres, 0 = midi (convention du jeu)
     tilt = r.get("sunPathRotation", 0.0)
     vue = M.vue_camera(cam.get("lacet", 0.0), cam.get("tangage", 0.0))
-    proj = M.perspective(cam.get("fov", 70.0), W / H, NEAR, FAR)
+    proj = M.perspective(cam.get("fov", 70.0), W / H, NEAR, PROJ_FAR)
     u = {}
     u["gbufferModelView"] = vue
     u["gbufferModelViewInverse"] = M.inverse(vue)

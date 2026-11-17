@@ -17,7 +17,7 @@ import { boiteDe, statsDe } from './creatures.js';
 import { MODIF_FLANERIE as FLANERIE } from '../creatures/especes.js';
 
 export const VERBES = ['va', 'regarde', 'saute', 'accroupi', 'tient', 'attends', 'utilise', 'pose', 'casse', 'lance', 'tire', 'jette', 'prend', 'depose', 'frappe'];
-const EFFETS = ['speed', 'slowness', 'jump_boost', 'invisibility', 'glowing', 'regeneration', 'poison', 'strength', 'night_vision', 'absorption'];
+const EFFETS = ['speed', 'slowness', 'jump_boost', 'invisibility', 'glowing', 'regeneration', 'poison', 'strength', 'night_vision', 'absorption', 'weakness', 'instant_damage', 'instant_health', 'fire_resistance', 'water_breathing'];
 export const MAX_ACTES = 200;
 const VITESSES = ['marche', 'court', 'accroupi'];
 const FACES = ['haut', 'bas', 'nord', 'sud', 'est', 'ouest', 'up', 'down', 'north', 'south', 'east', 'west'];
@@ -113,6 +113,9 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
         a.secondes = args[0]; a.resume = `attends ${a.secondes}`; break;
       }
       case 'utilise': case 'casse': {
+        if (verbe === 'utilise' && args.length === 1 && typeof args[0] === 'string' && noms.has(args[0])) {   // clic droit sur un acteur (villageois : echange ou "non")
+          a.cible = { acteur: args[0] }; a.resume = `utilise ${args[0]}`; break;
+        }
         if (verbe === 'utilise' && (args.length === 0 || (args.length === 1 && typeof args[0] === 'string'))) {   // sans bloc : l'objet en main (manger, boire, lancer)
           if (args.length) { if (!ID_OBJET.test(args[0])) erreur(`${c}[2]`, 'identifiant d objet du jeu attendu'); a.objet = args[0].replace(/^minecraft:/, ''); }
           a.resume = `utilise ${a.objet ?? 'objet en main'}`; break;
@@ -142,6 +145,7 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
       }
       case 'frappe': {   // coup d'epee (Player.attack) : s'approche a 3 blocs, frappe quand l'arme est rechargee, jusqu'a la mort de la cible ou {coups}
         if (!(args.length === 1 && typeof args[0] === 'string')) erreur(c, 'frappe : nom de l acteur vise attendu, par exemple [1, "frappe", "zombie", {"coups": 3, "critique": true}]');
+        if (args[0] === 'boule_feu' && !noms.has('boule_feu')) { a.cible = { acteur: 'boule_feu' }; a.resume = 'frappe boule_feu'; break; }   // renvoie la prochaine boule de feu qui passe a portee
         if (!noms.has(args[0])) erreur(`${c}[2]`, `acteur inconnu ${JSON.stringify(args[0])} (acteurs : ${[...noms].join(', ')})`);
         a.cible = { acteur: args[0] }; a.resume = `frappe ${args[0]}`; break;
       }
@@ -170,7 +174,7 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
 // types (facultatif) : statistiques des creatures ; une creature a intentions recoit son gabarit (boite, yeux, vitesse de marche du type :
 // (movement_speed x flanerie)^2 / 0,098, l'acceleration du joueur au sol etant 0,1 x 0,98)
 export function descripteursActeurs(scene, types = null) {
-  return scene.acteurs.filter((a) => a.actes || a.creature?.ia).map((a) => {
+  return scene.acteurs.filter((a) => a.actes || a.creature?.ia || a.creature?.type === 'end_crystal').map((a) => {   // cristal de l'End : une entite du monde (le dragon s'y soigne)
     const k = a.pos.cles[0];
     const premier = (a.actes ?? []).find((x) => x.verbe === 'va' || x.verbe === 'regarde' && x.cible && x.cible.x !== undefined);
     const but = premier ? (premier.verbe === 'va' ? [premier.x, premier.z] : [premier.cible.x, premier.cible.z]) : null;
@@ -185,7 +189,7 @@ const ARME_IA = { skeleton: 'bow', stray: 'bow', bogged: 'bow', parched: 'bow', 
 // IA d'une creature (moteur/ia.js) : type, comportement, cible forcee, points (garde, maison, travail), creeper charge, casque, vitesse du type
 function iaDe(a, types) {
   const c = a.creature, st = statsDe(c, types);
-  return { type: c.type, comportement: c.comportement ?? null, cible: c.cible ?? null, garde: c.garde ?? null, maison: c.maison ?? null, travail: c.travail ?? null, charge: !!c.charge, casque: !!a.armure?.tete?.cles?.some((k) => k.id), vitesseAttr: st?.v ?? 0.25, vie: st?.pv ?? 20 };
+  return { type: c.type, comportement: c.comportement ?? null, cible: c.cible ?? null, garde: c.garde ?? null, maison: c.maison ?? null, travail: c.travail ?? null, lit: c.lit ?? null, rassemblement: c.rassemblement ?? null, epaule: c.epaule ?? null, ami: c.ami ?? null, laisse: c.laisse ?? null, variante: c.variante ?? null, bebe: !!c.bebe, charge: !!c.charge, apprivoise: !!c.apprivoise, colle: c.colle ?? null, ruche: c.ruche ?? null, nourriture: c.nourriture ?? null, porte: c.porte ?? null, centre: c.centre ?? null, perchoir: c.perchoir ?? null, emerge: !!c.emerge, genes: c.genes ?? null, confiance: !!c.confiance, aOeuf: !!c.aOeuf, enceinte: !!c.enceinte, gabaritAdulte: c.bebe ? gabaritCreature({ ...c, bebe: false }, types) : null, casque: !!a.armure?.tete?.cles?.some((k) => k.id), vitesseAttr: st?.v ?? 0.25, vie: st?.pv ?? 20 };
 }
 
 // gabarit d'une creature pour le moteur : { l, h, oeil, vitesse (facteur de l'acceleration du joueur) }

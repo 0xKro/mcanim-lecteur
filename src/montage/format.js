@@ -254,7 +254,9 @@ export function lireSousTitres(D, brut, duree) {
   liste.forEach((b, i) => {
     const c = Array.isArray(brut) ? `${ch}[${i}]` : ch;
     if (!estObjet(b)) D.err(c, 'un objet est attendu, par exemple {"texte":"I know you stole it","debut":1,"fin":3.5}');
-    champsConnus(D, b, ['texte', 'debut', 'fin', 'mots', 'par', 'style', 'position', 'pop', 'calque', 'opacite', ...CLES_STYLE, ...CLES_MOUVEMENT], c);
+    champsConnus(D, b, ['texte', 'debut', 'fin', 'mots', 'par', 'style', 'position', 'pop', 'calque', 'opacite', 'qui', ...CLES_STYLE, ...CLES_MOUVEMENT], c);
+    // qui : l'acteur qui dit ce bloc (facultatif) : il joue la parole (tete, avant-bras sur les mots en accent), l'autre l'ecoute (montage/jeu.js)
+    if (b.qui !== undefined && (typeof b.qui !== 'string' || !D.noms.has(b.qui))) D.err(`${c}.qui`, `nom de l'acteur qui parle attendu (acteurs : ${[...D.noms].join(', ')})`);
     if (typeof b.texte !== 'string' && !Array.isArray(b.mots)) D.err(c, 'il faut "texte" (avec "debut" et "fin") ou "mots": [[t, "mot"], ...]');
     const par = b.par === undefined ? 2 : b.par;
     if (!Number.isInteger(par) || par < 1 || par > 3) D.err(`${c}.par`, 'nombre de mots par puce : 1, 2 ou 3');
@@ -271,7 +273,8 @@ export function lireSousTitres(D, brut, duree) {
     } else {
       if (!estNombre(b.debut) || b.debut < 0) D.err(`${c}.debut`, 'debut en secondes attendu');
       if (!estNombre(b.fin) || b.fin <= b.debut || b.fin > duree + 1e-9) D.err(`${c}.fin`, `fin en secondes attendue (apres debut, au plus ${duree})`);
-      const ws = b.texte.split(/\s+/).filter(Boolean);
+      // la ponctuation isolee (francais : « Steve ! », « non ? », « : ») reste avec le mot d'avant : jamais de puce faite d'un seul « ! »
+      const ws = b.texte.split(/\s+/).filter(Boolean).reduce((l, w) => { if (l.length && !/[\p{L}\p{N}]/u.test(w)) l[l.length - 1] += ' ' + w; else l.push(w); return l; }, []);
       if (!ws.length) D.err(`${c}.texte`, 'texte vide');
       // sans temps par mot : repartis selon le nombre de lettres (+ une pause apres la ponctuation)
       const poids = ws.map((w) => w.replace(/[^\p{L}\p{N}]/gu, '').length + 2 + (/[.!?]$/.test(w) ? 2 : /[,;:]$/.test(w) ? 1 : 0));
@@ -279,7 +282,9 @@ export function lireSousTitres(D, brut, duree) {
       let t = b.debut; mots = ws.map((w, j) => { const m = { t, mot: w }; t += (b.fin - b.debut) * poids[j] / total; return m; });
     }
     if (!mots.length) D.err(c, 'aucun mot');
-    D.mots?.push(...mots.map((m) => ({ t: m.t, mot: m.mot })));   // pour les gestes "@mot" (montage/jeu.js)
+    const accents = new Set(Array.isArray(b.accent) ? b.accent : Array.isArray(b.style?.accent) ? b.style.accent : []);
+    // pour les gestes "@mot" et la parole de `qui` (montage/jeu.js) : bloc, fin du bloc, mot en accent
+    D.mots?.push(...mots.map((m, j) => ({ t: m.t, mot: m.mot, ...(b.qui ? { qui: b.qui, bloc: i, accent: accents.has(j), fin: estNombre(b.fin) ? b.fin : mots[mots.length - 1].t + 0.5 } : {}) })));
     const fin = estNombre(b.fin) ? b.fin : null;
     if (fin !== null && (fin <= mots[0].t || fin > duree + 1e-9)) D.err(`${c}.fin`, `fin apres le premier mot et au plus ${duree}`);
     const st = b.style !== undefined ? (estObjet(b.style) ? b.style : D.err(`${c}.style`, 'objet de style attendu')) : {};
@@ -314,6 +319,7 @@ const PAR_TYPE = {
   succes: ['titre', 'texte', 'objet'],
   inventaire: ['cases', 'colonnes', 'surligner', 'selection', 'style'],
   coffre: ['titre', 'cases', 'contenu', 'rangees', 'joueur'],
+  marchand: ['titre', 'offres', 'selection'],
   hud: ['coeurs', 'faim', 'xp', 'niveau', 'cases', 'selection', 'viseur'],
   image: ['fichier'],
   carte: ['fond', 'acteurs', 'vue', 'incrustations', 'lumiere'],
@@ -493,6 +499,14 @@ function lireContenu(D, e, o, ch, duree) {
       o.rangees = rangees;
       texte('titre', false); o.titre ??= 'Coffre';
       o.joueur = e.joueur === true;   // true : montre aussi l'inventaire du joueur sous le coffre (comme l'ecran du jeu)
+      break;
+    }
+    case 'marchand': {   // ecran du marchand (MerchantScreen) : offres [prix, prix2 | null, resultat], chacune ["objet", nombre] ou "objet"
+      const obj = (c, k) => (c === null || c === undefined ? null : typeof c === 'string' ? { objet: c.replace(/^minecraft:/, ''), nombre: 1 } : Array.isArray(c) && typeof c[0] === 'string' ? { objet: c[0].replace(/^minecraft:/, ''), nombre: c[1] ?? 1 } : D.err(k, '"objet" ou ["objet", nombre]'));
+      if (!Array.isArray(e.offres) || !e.offres.length || e.offres.length > 10) D.err(`${ch}.offres`, 'liste de 1 a 10 offres attendue : [["emerald", 1], null, ["bread", 6]] (prix, deuxieme prix ou null, resultat)');
+      o.offres = e.offres.map((f, j) => { if (!Array.isArray(f) || f.length !== 3) D.err(`${ch}.offres[${j}]`, '[prix, deuxieme prix ou null, resultat] attendu'); return { a: obj(f[0], `${ch}.offres[${j}][0]`), b: obj(f[1], `${ch}.offres[${j}][1]`), r: obj(f[2], `${ch}.offres[${j}][2]`) }; });
+      o.selection = e.selection === undefined ? 0 : (Number.isInteger(e.selection) && e.selection >= 0 && e.selection < o.offres.length ? e.selection : D.err(`${ch}.selection`, `entier de 0 a ${o.offres.length - 1}`));
+      texte('titre', false); o.titre ??= 'Villageois';
       break;
     }
     case 'hud':

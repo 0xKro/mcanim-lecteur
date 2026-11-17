@@ -9,8 +9,9 @@
 // Visages : les elements non fixes qui ont `evAct` (1 = evite les tetes, 2 = tetes et torses) evitent aussi les boites ecran des acteurs (options.obstacles, voir acteurs-evites.js).
 // Si aucune place n'evite le torse, on essaie sans le torse ; si aucune place n'evite la tete, on garde seulement l'evitement des autres incrustations (jamais masque pour un visage).
 // Ecart : `gap` (pixels) = distance minimale voulue entre cet element et un autre (le plus grand des deux gagne), pour le rythme vertical des textes d'ecran empiles.
+// `gapLegende` (pixels) : ecart minimal de cet element avec une legende (`legende: true`) : un titre n'est jamais colle a une legende.
 //
-// Entree : items [{ id, prio, box: {x, y, w, h}, fixe?, axe? ('v' | 'h' | 'vh'), maxDep? (pixels), force? (plus grand = garde sa place), ordre?, evAct? (0 | 1 | 2), gap? }]
+// Entree : items [{ id, prio, box: {x, y, w, h}, fixe?, axe? ('v' | 'h' | 'vh'), maxDep? (pixels), force? (plus grand = garde sa place), ordre?, evAct? (0 | 1 | 2), gap?, legende?, gapLegende? }]
 //          options { zone: {x0,y0,x1,y1} | null, memo: Map, cle (identifiant du plan), marge (pixels), obstacles: { tetes: [{nom,x,y,w,h}], torses: [...] } | null }
 // Sortie : Map id -> { dx, dy, cache: bool, cause? (id de l'element qui gene) }
 const touche = (a, b, m) => a.x < b.x + b.w + m && b.x < a.x + a.w + m && a.y < b.y + b.h + m && b.y < a.y + a.h + m;
@@ -48,13 +49,16 @@ export function disposer(items, { zone = null, memo = new Map(), cle = '', marge
   for (const it of ordre) {
     const sig = vus.join('|');
     vus.push(it.id);
-    if (it.fixe) { res.set(it.id, { dx: 0, dy: 0, cache: false }); places.push({ id: it.id, box: it.box, gap: it.gap }); continue; }
-    const mg = (p) => Math.max(marge, it.gap ?? 0, p.gap ?? 0);
+    if (it.fixe) { res.set(it.id, { dx: 0, dy: 0, cache: false }); places.push({ id: it.id, box: it.box, gap: it.gap, legende: it.legende }); continue; }
+    const mg = (p) => Math.max(marge, it.gap ?? 0, p.gap ?? 0, p.legende ? it.gapLegende ?? 0 : 0);
     const niveaux = it.evAct && obstacles ? [it.evAct, Math.min(1, it.evAct), 0] : [0];   // du plus strict au plus lache
     const bl = (niv) => (niv ? places.concat(visages(niv)) : places);
     const m = memo.get(it.id);
     let d = null;
-    if (m && m.cle === cle && m.sig === sig) {
+    // dans le meme plan, un element d'ECRAN (titre, compteur, panneau : prio 1 et 2) garde sa place tant qu'elle est libre, MEME si un element
+    // plus fort est parti (test combat v4 : a la fin d'une legende, le titre sautait du haut vers le bas de l'image au milieu du plan) ; un
+    // libelle du monde ou un nom (prio 3, 4) revient pres de son ancre, un element cache est revu, quand les plus forts changent
+    if (m && m.cle === cle && (m.sig === sig || (!m.cache && it.prio <= 2))) {
       if (m.cache) d = m;
       else {
         const b = { ...it.box, x: it.box.x + m.dx, y: it.box.y + m.dy };
@@ -77,7 +81,7 @@ export function disposer(items, { zone = null, memo = new Map(), cle = '', marge
     }
     memo.set(it.id, d);
     res.set(it.id, { dx: d.dx, dy: d.dy, cache: d.cache, cause: d.cause, niv: d.niv });
-    if (!d.cache) places.push({ id: it.id, box: { ...it.box, x: it.box.x + d.dx, y: it.box.y + d.dy }, gap: it.gap });
+    if (!d.cache) places.push({ id: it.id, box: { ...it.box, x: it.box.x + d.dx, y: it.box.y + d.dy }, gap: it.gap, legende: it.legende });
   }
   return res;
 }

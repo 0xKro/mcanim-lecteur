@@ -29,11 +29,15 @@ PROGRAMMES_GEO = [
     ("fissure", ["gbuffers_damagedblock", "gbuffers_terrain", "gbuffers_textured", "gbuffers_basic"]),
     ("particule", ["gbuffers_textured", "gbuffers_textured_lit", "gbuffers_basic"]),
     ("meteo", ["gbuffers_weather", "gbuffers_textured", "gbuffers_textured_lit", "gbuffers_basic"]),   # pluie, neige, foudre (repli d'Iris : weather -> textured)
+    ("yeux", ["gbuffers_spidereyes", "gbuffers_textured", "gbuffers_basic"]),   # yeux qui brillent (araignee, enderman, phantom, dragon : RenderType.eyes)
 ]
+# melange par defaut quand le pack ne dit rien (Iris) : les yeux s'ajoutent a l'image sans toucher l'alpha
+BLEND_DEFAUT = {"yeux": "SRC_ALPHA ONE ZERO ONE"}
 
 
 class PassesMixin:
     _genres_dits = set()
+    _progs_casses = set()
     # ------------------------------------------------------------------ melange (blend)
     def _facteurs(self, texte):
         return [GLB.get(x.upper(), 1) for x in texte.split()]
@@ -138,11 +142,27 @@ class PassesMixin:
         gl.DepthMask(1)
 
     # ------------------------------------------------------------------ acteurs
-    def _passe_acteurs(self, vals, custom, geos, translucide, mv):
+    def _tardif(self, g):
+        """Dessine apres `deferred` ? Comme Iris (Horizon horizon-shaders/src/post.rs, `translucent_late`, `particles_late`) : particules apres
+        deferred sauf `particles.ordering=before` ou `particles.before.deferred=true` ; entites translucides (et yeux) apres deferred seulement
+        avec `separateEntityDraws=true`, sinon avec les autres entites ; le reste : translucide = apres."""
+        props = self.pack.props
+        vrai = lambda k: (props.get(k) or "").strip() == "true"
+        p = g.get("programme", "entites")
+        if p == "particule":
+            o = (props.get("particles.ordering") or "").strip()
+            return (o != "before") if o else not vrai("particles.before.deferred")
+        if p in ("entites", "yeux") and g["mode"] == "melange":
+            return vrai("separateEntityDraws")
+        return g["mode"] == "melange"
+
+    def _passe_acteurs(self, vals, custom, geos, tardif, mv):
         """Acteurs et geometries du monde dans gbuffers_entities (opaques et decoupes) ou gbuffers_entities_translucent (melange) ; les blocs a entite
-        (coffre, cloche) vont dans gbuffers_block, les fissures dans gbuffers_damagedblock, les particules dans gbuffers_textured (repli d'Iris)."""
-        for genre, noms in PROGRAMMES_GEO:
-            liste = [g for g in geos if g.get("programme", "entites") == genre and (g["mode"] == "melange") == translucide]
+        (coffre, cloche) vont dans gbuffers_block, les fissures dans gbuffers_damagedblock, les particules dans gbuffers_textured (repli d'Iris).
+        `tardif` : la passe d'apres `deferred` (voir _tardif)."""
+        for (genre, noms0), translucide in [(x, t) for x in PROGRAMMES_GEO for t in (False, True)]:
+            noms = noms0
+            liste = [g for g in geos if g.get("programme", "entites") == genre and (g["mode"] == "melange") == translucide and self._tardif(g) == tardif]
             if not liste:
                 continue
             if genre == "entites" and translucide:
@@ -153,7 +173,16 @@ class PassesMixin:
                     self._genres_dits.add(genre)
                     self.journal.append("geometries '%s' : aucun programme utilisable dans le pack, non dessinees" % genre)
                 continue
-            self._passe_genre(vals, custom, liste, translucide, mv, nom, genre)
+            if nom in self._progs_casses:
+                continue
+            try:
+                self._passe_genre(vals, custom, liste, translucide, mv, nom, genre)
+            except Exception as ex:    # un programme secondaire (yeux, meteo...) qui ne compile pas : une note, le reste de l'image continue
+                if genre == "entites":
+                    raise
+                self._progs_casses.add(nom)
+                self.journal.append("geometries '%s' : %s inutilisable (%s), non dessinees" % (genre, nom, str(ex).split("\n")[0][:120]))
+                self.gl.DepthMask(1)
 
     def _passe_genre(self, vals, custom, liste, translucide, mv, nom, genre):
         gl = self.gl
@@ -163,7 +192,11 @@ class PassesMixin:
         gl.Enable(0x0B71)
         gl.DepthFunc(0x0203)
         gl.DepthMask(1)
-        self._appliquer_blend(nom, "SRC_ALPHA ONE_MINUS_SRC_ALPHA ONE ONE_MINUS_SRC_ALPHA" if translucide else "off", cib)
+        defaut = BLEND_DEFAUT.get(genre) or ("SRC_ALPHA ONE_MINUS_SRC_ALPHA ONE ONE_MINUS_SRC_ALPHA" if translucide else "off")
+        self._appliquer_blend(nom, defaut, cib)
+        yeux = genre == "yeux"
+        if yeux:
+            gl.DepthMask(0)            # RenderType.eyes : couleur seule, la profondeur reste celle du corps
         id_joueur = self.pack.entites.id("minecraft:player")
         etape = {"entites": 11, "bloc": 9, "fissure": 12, "particule": 13, "meteo": 21}.get(genre, 11)   # 21 : MC_RENDER_STAGE_RAIN_SNOW
         for g in liste:
@@ -174,16 +207,18 @@ class PassesMixin:
                 gl.CullFace(0x0405)
             gl.Enable(0x0BC0)
             gl.AlphaFunc(0x204, 0.1)
-            if g.get("additif"):       # foudre : SRC_ALPHA, ONE quel que soit le melange du pack (RenderType.lightning), sans ecrire la profondeur
+            force = g.get("additif") and not yeux   # foudre, auras : SRC_ALPHA, ONE quel que soit le melange du pack (RenderType.lightning), sans profondeur
+            if force:
                 gl.Enable(0x0BE2)
                 gl.BlendFunc(0x302, 1)
                 gl.DepthMask(0)
             v = self._vals_perso(vals, custom, renderStage=etape)
-            self._tracer_geo(nom, g, v, mv, vals["gbufferProjection"], nom, {"entityId": g["entite"] or (id_joueur if genre == "entites" else 0),
+            self._tracer_geo(nom, g, v, mv, vals["gbufferProjection"], nom, {"entityId": g["entite"] or (id_joueur if genre in ("entites", "yeux") else 0),
                                                                               "entityColor": g["couleurEntite"], "blockEntityId": g["bloc_id"]})
-            if g.get("additif"):
+            if force:
                 gl.DepthMask(1)
-                self._appliquer_blend(nom, "SRC_ALPHA ONE_MINUS_SRC_ALPHA ONE ONE_MINUS_SRC_ALPHA" if translucide else "off", cib)
+                self._appliquer_blend(nom, defaut, cib)
+        gl.DepthMask(1)
         gl.Disable(0x0B44)
         gl.Disable(0x0BC0)
         gl.Disable(0x0BE2)

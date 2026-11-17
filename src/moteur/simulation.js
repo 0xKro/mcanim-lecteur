@@ -28,6 +28,8 @@ import { Contenus } from './contenus.js';
 import { Fours } from './four.js';
 import { Arbres } from './arbres.js';
 import { Meteo } from './meteo.js';
+import { Vibrations } from './vibrations.js';
+import { Boss } from './ia-boss.js';
 
 // Drapeaux de set_block (Block.UPDATE_*)
 export const F = { VOISINS: 1, CLIENTS: 2, INVISIBLE: 4, IMMEDIAT: 8, FORME_CONNUE: 16, SANS_BUTIN: 32, PISTON: 64, SANS_FORME_FIL: 128, SANS_EFFETS_ENTITE: 256, SANS_POSE: 512, TOUS: 3, AUCUN: 260 };
@@ -70,6 +72,10 @@ export class Simulation {
     this.entites = new Entites(this);             // TNT amorce, blocs qui tombent, objets au sol (entites.js)
     this.fileFluides = new FileTicks();           // ticks planifies des fluides (file a part, comme le jeu) : type = famille (1 eau, 2 lave)
     this.nbFluides = 0;                           // ticks de fluide executes (pour le resume)
+    this.jukeboxes = new Map();                   // juke-box qui jouent : 'x,y,z' -> { pos, disque, son, debut, fin, depuis } (familles/musique.js) ; les perroquets et allays les ecoutent
+    this.vibrations = new Vibrations(this);      // vibrations (pas, blocs, projectiles, explosions) : capteurs de sculk et wardens (vibrations.js)
+    this.boss = new Boss(this);                   // cristaux de l'End, nuages de souffle du dragon, motif du wither (ia-boss.js)
+    this.creatures = config.creatures ?? null;    // table des creatures pour les entites nees en cours de route : { gabarit(c), stats(type) } (film/video.js)
   }
 
   // heure du jour de la scene (ciel.heure, 0 a 24 ; midi = 12) au tick courant : le detecteur de lumiere du jour la lit
@@ -486,6 +492,11 @@ export class Simulation {
       foudre: (x, y, z, opt) => { if (!s.meteo) return false; s.meteo.foudre(+x, +z, y === undefined ? undefined : +y, opt || {}); return true; },
       niveauxMeteo: () => (s.meteo ? s.meteo.niveaux() : { pluie: 0, orage: 0 }),
       precipitation: (x, y, z) => (s.meteo ? s.meteo.precipitation(x | 0, y | 0, z | 0) : null),
+      jukeboxes: () => s.jukeboxes,
+      // creatures nees d'un bloc (oeufs de tortue, frai, oeuf de renifleur : familles/oeufs.js) ; biome et heure du monde
+      naitre: (o) => (s.acteurs ? s.acteurs.naitre(o) : null),
+      biome: (x, y, z) => s.zone.biome?.(x | 0, y | 0, z | 0) ?? null,
+      heure: () => s.heureMonde(),
     };
     return api;
   }
@@ -536,6 +547,7 @@ export class Simulation {
     if (this.acteurs) this.acteurs.tick();
     if (this.entites.liste.length) this.entites.tick();
     if (this.meteo) this.meteo.tickEclairs();
+    this.vibrations.tick(); this.boss.tick();
     // 6. blocs a entite qui changent des blocs (pistons en mouvement) : apres les entites ; fours
     if (this.contenus.m.size) this.fours.tick();
     if (this.reg.aMonde('tickBlocsEntites')) this.reg.lancerMonde('tickBlocsEntites', evenement({ tick: t }), this.api);

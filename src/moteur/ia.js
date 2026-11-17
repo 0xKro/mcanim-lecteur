@@ -13,6 +13,12 @@
 import { chercherChemin, blocsOuvrables, segmentLibre } from './navigation.js';
 import { rayonBloc } from './collision.js';
 import { exploser } from './explosion.js';
+import { VOLS, METHODES } from './ia-especes.js';
+import { VIE, declarerReglesVie } from './ia-vie.js';   // age, amour, bebes, abeilles, danse, conversions, golems, blocs de l'enderman
+import { METHODES_BOSS, declarerReglesBoss } from './ia-boss.js';   // wither, dragon de l'Ender
+import { METHODES_EAU } from './ia-eau.js';   // nage dirigee : poissons, bancs, calmars, dauphins, axolotls, tortues, gardiens
+import { METHODES_WARDEN } from './ia-warden.js';   // warden : vibrations, colere, flairer, rugir, onde sonique, creuser
+import { METHODES_OEUFS, declarerReglesOeufs } from './ia-oeufs.js';   // oeufs et reproductions a part : tortue, grenouille, renifleur, panda, ocelot, axolotl, poule
 
 const RAD = Math.PI / 180;
 const norm180 = (a) => { a = (a + 180) % 360; if (a < 0) a += 360; return a - 180; };
@@ -31,17 +37,24 @@ export const PROFILS = {
   bogged: P('squelette', { degats: 2, soleil: true, arc: true, intervalle: [50, 30] }), parched: P('squelette', { degats: 2, arc: true }),
   wither_skeleton: P('zombie', { degats: 5 }),
   creeper: P('creeper'), spider: P('araignee', { degats: 2 }), cave_spider: P('araignee', { degats: 2 }),
-  iron_golem: P('golem', { degats: 15 }), snow_golem: P('neige'),
-  villager: P('villageois'), wandering_trader: P('villageois'),
+  iron_golem: P('golem', { degats: 15, antiRecul: 1 }), snow_golem: P('neige'),
   rabbit: P('lapin', { panique: 2.2 }), cow: P('passif', { panique: 2.0 }), mooshroom: P('passif', { panique: 2.0 }), pig: P('passif', { panique: 1.25 }),
   sheep: P('passif', { panique: 1.25 }), chicken: P('passif', { panique: 1.4 }), goat: P('passif', { panique: 2.0 }), horse: P('passif', { panique: 1.2 }),
   donkey: P('passif', { panique: 1.2 }), mule: P('passif', { panique: 1.2 }), llama: P('passif', { panique: 1.2 }), camel: P('passif', { panique: 4 }),
   fox: P('passif', { panique: 2.2 }), cat: P('passif', { panique: 1.5 }), ocelot: P('passif', { panique: 1.33 }), turtle: P('passif', { panique: 1.2 }),
   armadillo: P('passif', { panique: 2.0 }), frog: P('passif', { panique: 2.0 }), panda: P('passif', { panique: 2.0 }), polar_bear: P('neutre', { degats: 6 }),
-  wolf: P('loup', { degats: 4, panique: 1.5 }), zombified_piglin: P('neutre', { degats: 5, suivi: 35 }), enderman: P('neutre', { degats: 7, suivi: 64 }),
+  wolf: P('loup', { degats: 4, panique: 1.5 }), zombified_piglin: P('neutre', { degats: 5, suivi: 35 }),
   piglin: P('neutre', { degats: 5 }), piglin_brute: P('zombie', { degats: 7, suivi: 16 }), vindicator: P('illageois', { degats: 5, suivi: 12 }),
-  pillager: P('illageois', { arbalete: true, suivi: 32 }), ravager: P('illageois', { degats: 12, suivi: 32 }), hoglin: P('zombie', { degats: 6 }), zoglin: P('zombie', { degats: 6 }),
-  bat: P('volant'), bee: P('volant'), allay: P('volant'), parrot: P('volant'), ghast: P('volant', { suivi: 100 }), happy_ghast: P('volant'), phantom: P('volant', { degats: 2, suivi: 64 }), vex: P('volant', { degats: 9 }),
+  pillager: P('illageois', { arbalete: true, suivi: 32 }), ravager: P('illageois', { degats: 12, suivi: 32, antiRecul: 0.75 }), hoglin: P('zombie', { degats: 6 }), zoglin: P('zombie', { degats: 6 }),
+  // especes a comportement propre (moteur/ia-especes.js) ; attack_damage et follow_range du jeu
+  bat: P('chauve'), bee: P('abeille', { degats: 2, suivi: 48 }), allay: P('allay'), parrot: P('perroquet'), ghast: P('ghast', { suivi: 100, immuniseFeu: true }), happy_ghast: P('ghast', { suivi: 16 }),
+  phantom: P('phantom', { degats: 6, suivi: 64, soleil: true }), vex: P('vex', { degats: 4, immuniseFeu: true }), blaze: P('blaze', { degats: 6, suivi: 48, immuniseFeu: true }),
+  witch: P('sorciere', { suivi: 16 }), enderman: P('enderman', { degats: 7, suivi: 64 }),
+  wither: P('wither', { suivi: 40, immuniseFeu: true }), ender_dragon: P('dragon', { immuniseFeu: true, antiRecul: 1 }), warden: P('warden', { degats: 30, suivi: 24, antiRecul: 1 }),
+  cod: P('poisson', { panique: 1.25 }), salmon: P('poisson', { panique: 1.25 }), tropical_fish: P('poisson', { panique: 1.25 }), pufferfish: P('poisson', { panique: 1.25 }), tadpole: P('poisson', { panique: 1.25 }),
+  squid: P('calmar'), glow_squid: P('calmar'), dolphin: P('dauphin', { degats: 3 }), axolotl: P('axolotl', { degats: 2, panique: 2.0 }),
+  guardian: P('gardien', { degats: 6 }), elder_guardian: P('gardien', { degats: 8 }), sniffer: P('passif', { panique: 2.0 }),
+  villager: P('villageois', { panique: 0.75 }), wandering_trader: P('villageois', { panique: 0.75 }),
 };
 const MONSTRES = new Set(['zombie', 'zombie_villager', 'husk', 'drowned', 'skeleton', 'stray', 'bogged', 'parched', 'wither_skeleton', 'creeper', 'spider', 'cave_spider', 'witch', 'enderman', 'zombified_piglin', 'piglin_brute', 'vindicator', 'pillager', 'evoker', 'ravager', 'vex', 'phantom', 'slime', 'magma_cube', 'blaze', 'ghast', 'silverfish', 'endermite', 'hoglin', 'zoglin', 'guardian', 'elder_guardian', 'warden', 'breeze', 'creaking', 'bogged']);
 export const estMonstre = (t) => MONSTRES.has(t);
@@ -74,7 +87,11 @@ export function declarerRegles(regles) {
   regles.declarer('ia.degats', { def: 1, min: 0, max: 100, doc: 'multiplicateur des degats des creatures' });
   regles.declarer('ia.cassePortes', { def: true, doc: 'les zombies cassent les portes en bois en difficile (240 ticks) ; false : jamais' });
   regles.declarer('ia.explosionCasse', { def: true, doc: 'l\'explosion du creeper casse les blocs (mobGriefing)' });
+  regles.declarer('ia.phantomAncre', { def: 20, min: 2, max: 64, doc: 'hauteur du point d\'ancrage des phantoms au-dessus de leur cible : le jeu 20 + [0, 20[ (le phantom tourne autour, puis pique) ; plus petit : des piques plus courts, plus faciles a cadrer' });
+  regles.declarer('laisse.rupture', { def: 12, min: 0, max: 64, doc: 'distance (blocs, entre les centres) a laquelle la laisse d une creature a IA casse (le jeu 26.3 : 12 ; les versions d avant 1.21.6 : 10 ; 0 : jamais) ; au-dela de 6 elle est tiree' });
+  declarerReglesBoss(regles); declarerReglesOeufs(regles);
   regles.declarer('combat.recul', { def: 1, min: 0, max: 10, doc: 'multiplicateur du recul des coups (0,4 par coup recu, + 0,5 si l\'attaquant court)' });
+  declarerReglesVie(regles);
   regles.declarer('combat.critiques', { def: true, doc: 'coups critiques en tombant (x 1,5)' });
 }
 
@@ -91,6 +108,11 @@ export class IA {
     this.nav = null; this.prochaineAttaque = 0; this.gonfle = 0; this.gonfleDir = -1; this.arc = { voit: 0, attente: -1, tension: 0 };
     this.feu = 0; this.agressif = false; this.attaqueTick = -100; this.porteCassage = null;
     this.regardLibre = null; this.flanerie = null;
+    // especes (ia-especes.js) : vol, dard de l'abeille, epaule du perroquet, joueur aime de l'allay, lit et cloche du villageois
+    this.vol = VOLS[d.type] ?? null; this.dard = true; this.epaule = d.epaule ?? null; this.ami = d.ami ?? null;
+    this.lit = d.lit ?? null; this.rassemblement = d.rassemblement ?? null; this.variante = d.variante ?? null; this.bebe = !!d.bebe;
+    this.tangageCorps = 0; this.laissePiste = d.laisse ?? null;
+    this.charge = !!d.charge; this.initVie(d); this.initBoss(d); this.initEau?.(d); this.initWarden?.(d); this.initOeufs?.(d);
     this.installerButs();
   }
   get sim() { return this.a.sim; }
@@ -101,7 +123,9 @@ export class IA {
   // ---- buts (priorite : plus petit = plus important) ----------------------------------------------------------------
   installerButs() {
     const f = this.pr.fam, c = this.comportement, add = (prio, nom, drap) => this.buts.push({ prio, nom, drap });
-    add(0, 'flotte', 0);
+    if (this.installerEspece(add)) { this.installerVie(add); return; }
+    this.installerVie(add);
+    if (f !== 'zombie' && f !== 'squelette') add(0, 'flotte', 0);   // zombies et squelettes n'ont pas de FloatGoal : ils coulent (le zombie se noie et devient noye)
     if (c === 'fuit') add(1, 'fuitCible', MOVE);
     if (f === 'creeper') add(2, 'gonfle', MOVE);
     if (this.pr.soleil) add(3, 'fuitSoleil', MOVE);
@@ -136,6 +160,7 @@ export class IA {
     switch (f) {
       case 'zombie': return [...joueurs, ...tous.filter((o) => ['villager', 'wandering_trader', 'iron_golem'].includes(this.typeDe(o)))];
       case 'squelette': case 'creeper': return [...joueurs, ...(f === 'squelette' ? tous.filter((o) => this.typeDe(o) === 'iron_golem') : [])];
+      case 'sorciere': case 'blaze': case 'vex': return joueurs;   // NearestAttackableTarget(Player) des especes de ia-especes.js
       case 'araignee': return this.jour() ? [] : joueurs;   // SpiderTargetGoal : seulement dans l'obscurite (nuit)
       case 'illageois': return [...joueurs, ...tous.filter((o) => ['villager', 'wandering_trader', 'iron_golem'].includes(this.typeDe(o)))];
       case 'golem': case 'neige': return tous.filter((o) => estMonstre(this.typeDe(o)) && this.typeDe(o) !== 'creeper');
@@ -159,7 +184,7 @@ export class IA {
     if (this.cible === o) return;
     const ev = this.sim.api.evenement('creature.cible', { creature: this.a.nom, type: this.type, cible: o?.nom ?? null });
     if (ev.annule) return;
-    this.cible = o;
+    this.cible = o; this.cibleDepuis = this.sim.temps;
     if (o) { this.sim.dire(`${this.a.nom} vise ${o.nom}`); this.stat('cibles'); }
   }
   stat(k, n = 1) { const s = (this.sim.stats.ia ??= {}); s[k] = (s[k] || 0) + n; }
@@ -170,9 +195,11 @@ export class IA {
   tick() {
     const a = this.a, sim = this.sim;
     if (!sim.regles.valeur('ia.actif', true)) return;
+    if (this.tickVie()) { a.entree = { avance: 0, cap: a.lacet, saute: false }; a.entreeVol = { zza: 0, yya: 0 }; a.regard = null; this.ecrire(); return; }   // dans une ruche : rien d'autre
     if (this.attaqueTick > sim.temps - 10) a.balancement = a.balancement || 0;
     this.soleil();
-    this.choisirCible();
+    this.avantButs();
+    if (!this.ciblesEspece()) this.choisirCible();
     // selecteur : les buts actifs qui ne peuvent plus continuer s'arretent ; puis par priorite, les drapeaux libres
     for (const b of [...this.actifs]) if (!this['continue_' + b.nom]?.(b) || this.prochainPlusPrioritaire(b)) this.arreter(b);
     for (const b of [...this.buts].sort((x, y) => x.prio - y.prio)) {
@@ -186,8 +213,10 @@ export class IA {
     a.entree = { avance: 0, cap: a.lacet, saute: false };
     a.regard = null;
     for (const b of [...this.actifs].sort((x, y) => x.prio - y.prio)) this['tick_' + b.nom](b);
-    this.suivreChemin();
-    this.agressif = !!this.cible && (this.actifs.has(this.but('melee')) || this.actifs.has(this.but('tir')));
+    this.suivreLaisse();
+    if (this.vol) { a.entree.avance = 0; this.suivreVol(); } else this.suivreChemin();
+    this.apresButs();
+    this.agressif = !!this.cible && ['melee', 'tir', 'volAttaque', 'blazeAttaque', 'sorciereTir', 'vexCharge', 'phantomPique', 'ghastTir', 'witherTir', 'gardienLaser', 'nageAttaque'].some((n) => this.actifs.has(this.but(n)));
     this.ecrire();
   }
   but(nom) { return this.buts.find((b) => b.nom === nom); }
@@ -242,9 +271,10 @@ export class IA {
 
   // PanicGoal : frappe depuis moins de 100 ticks (ou en feu) : court vers un point au hasard (5 blocs, 4 de haut) a `panique`
   peut_panique() { return this.pr.panique && (this.sim.temps - this.blesseTick < 100 || this.feu > 0) && this.comportement !== 'agressif'; }
-  continue_panique() { return !this.navFinie(); }
+  continue_panique() { return this.nage && this.a.dansEau ? !this.nageFinie() : !this.navFinie(); }
   debut_panique() {
     const a = this.a, h = this.h, par = this.blessePar;
+    if (this.nage && a.dansEau) { const p = this.pointNage(5, 4); if (p) this.nageVers(p[0], p[1], p[2], this.pr.panique, 1e9); this.stat('paniques'); return; }   // nageurs : un point d'eau a 5 blocs
     let x = a.x + h.entierBorne(11) - 5, z = a.z + h.entierBorne(11) - 5;
     if (par) { const dx = a.x - par.x, dz = a.z - par.z, L = Math.hypot(dx, dz) || 1; x = a.x + dx / L * 5 + h.entierBorne(5) - 2; z = a.z + dz / L * 5 + h.entierBorne(5) - 2; }
     this.allerVers(x, undefined, z, this.pr.panique, { recalcul: 1e9 });
@@ -262,15 +292,22 @@ export class IA {
       if (f === 'lapin') r = t === 'joueur' ? 8 : t === 'wolf' ? 10 : estMonstre(t) ? 4 : 0;
       else if (f === 'villageois') r = ['zombie', 'zombie_villager', 'husk', 'drowned'].includes(t) ? 8 : ['vindicator', 'pillager', 'evoker', 'ravager', 'vex'].includes(t) ? 12 : 0;
       else if (f === 'squelette') r = t === 'wolf' ? 6 : 0;
+      else if (f === 'poisson') r = t === 'joueur' ? 8 : 0;   // AbstractFish : AvoidEntityGoal(Player, 8, 1,6, 1,4)
+      else if (f === 'dauphin') r = /guardian/.test(t) ? 8 : 0;
       const d = this.dist2(o);
       if (r && d < r * r && d < bd) { bd = d; best = o; }
     }
     return best;
   }
   peut_evite() { this.fuite = this.menace(); return !!this.fuite; }
-  continue_evite() { return !!this.fuite && this.fuite.mort < 0 && !this.navFinie(); }
+  continue_evite() { return !!this.fuite && this.fuite.mort < 0 && (this.nage && this.a.dansEau ? !this.nageFinie() : !this.navFinie()); }
   debut_evite() {
     const a = this.a, o = this.fuite;
+    if (this.nage && a.dansEau) {   // DefaultRandomPos.getPosAway (16, 7) dans l'eau : un point d'eau a l'oppose
+      const dx = a.x - o.x, dz = a.z - o.z, L = Math.hypot(dx, dz) || 1, p = this.pointNage(4, 3, [a.x + dx / L * 8, a.y, a.z + dz / L * 8]);
+      if (p) this.nageVers(p[0], p[1], p[2], this.dist2(o) < 49 ? 1.4 : 1.6, 1e9);
+      this.compterFuite(o); return;
+    }
     // DefaultRandomPos.getPosAway : un point a 16 blocs a l'oppose ; un villageois rentre chez lui s'il a une maison
     if (this.pr.fam === 'villageois' && this.maison) { this.allerVers(this.maison[0], this.maison[1], this.maison[2], VITESSES.villageoisFuite, { ouvrePortes: true, recalcul: 1e9 }); this.compterFuite(o); return; }
     const dx = a.x - o.x, dz = a.z - o.z, L = Math.hypot(dx, dz) || 1, k = this.pr.fam === 'lapin' ? 8 : 10;
@@ -278,7 +315,7 @@ export class IA {
     this.compterFuite(o);
   }
   compterFuite(o) { if (this.fuiteDe !== o) { this.fuiteDe = o; this.stat('fuites'); (this.sim.stats.iaJournal ??= []).push(`${(this.sim.temps / 20).toFixed(2)} ${this.a.nom} fuit ${o.nom}`); } }
-  tick_evite() { const o = this.fuite; if (o) this.a.regard = { acteur: o.nom }; if (this.fuite && this.dist2(this.fuite) < 49) this.a.kVit = (this.attr * (this.pr.fam === 'lapin' ? 2.2 : 1.2)) ** 2 / 0.098; }
+  tick_evite() { if (this.nage && this.a.dansEau) return; const o = this.fuite; if (o) this.a.regard = { acteur: o.nom }; if (this.fuite && this.dist2(this.fuite) < 49) this.a.kVit = (this.attr * (this.pr.fam === 'lapin' ? 2.2 : 1.2)) ** 2 / 0.098; }
 
   // comportement "fuit" : fuit sa cible (ou tout joueur proche)
   peut_fuitCible() { this.fuite = this.cible ?? this.autres().find((o) => this.typeDe(o) === 'joueur' && this.dist2(o) < 256); return !!this.fuite; }
@@ -471,7 +508,10 @@ export class IA {
   tick_garde() {}
 
   // RandomStrollGoal : une chance sur 120 par tick, un point a 10 blocs (7 de haut) ; golem 0,6, villageois 0,5
-  peut_flane() { return this.pr.fam !== 'volant' && this.h.entierBorne(120) === 0; }
+  peut_flane() {
+    if (this.pr.fam === 'villageois') { const act = this.activite(); if ((act === 'travail' && this.travail) || (act === 'repos' && (this.lit || this.maison)) || this.sommeil) return false; }
+    return !this.vol && this.h.entierBorne(120) === 0;
+  }
   continue_flane() { return !this.navFinie(); }
   debut_flane() {
     const a = this.a, h = this.h, base = this.comportement === 'garde' ? this.garde : [a.x, a.y, a.z];
@@ -533,7 +573,11 @@ export class IA {
     if (sim.temps - this.attaqueTick < 10) dr |= 2;
     if (this.arc.tension > 0) dr |= 4;
     if (this.feu > 0) dr |= 8;
-    sim.replay.ia(sim.temps, a.id, dr, this.gonfle / 30, this.arc.tension, sim.temps - this.attaqueTick === 0 ? 1 : 0);
+    dr |= this.drapeauxEspece();
+    // colonnes 7 et 8 : tangage du corps (phantom, volants), direction du lit (villageois endormi)
+    sim.replay.ia(sim.temps, a.id, dr, this.gonfle / 30, this.arc.tension, sim.temps - this.attaqueTick === 0 ? 1 : 0, this.tangageCorps ?? 0, this.sommeil ? this.directionLit : 0);
+    const plus = this.plusBoss() ?? this.plusEau() ?? this.plusWarden();   // colonne en plus (wither, dragon, gardiens, warden, calmars) : rien pour les autres
+    if (plus) sim.replay.iaPlus(sim.temps, a.id, ...plus);
   }
 }
 
@@ -555,3 +599,6 @@ export function coupJoueur(objet, ticksDepuis, { critique = false } = {}) {
   if (crit) q *= 1.5;
   return { degats: q, recharge: s, critique: crit, periode };
 }
+
+// comportements des especes (vol, sorciere, enderman, blaze, cerveau du villageois) : moteur/ia-especes.js
+Object.assign(IA.prototype, METHODES, VIE, METHODES_BOSS, METHODES_EAU, METHODES_WARDEN, METHODES_OEUFS);

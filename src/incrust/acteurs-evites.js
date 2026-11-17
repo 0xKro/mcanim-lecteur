@@ -31,7 +31,12 @@ export function obstaclesActeurs(ctx) {
     parNom.set(b.nom, e);
   }
   const res = { tetes: [], torses: [] };
+  // figurant au loin : une tete minuscule (moins de 4 % de la hauteur ET moins de 40 % de la plus grosse tete du plan) n'est pas un obstacle
+  // (test combat v3 : la petite Kira au fond poussait le compteur et l'icone sur le torse de Steve, au premier plan)
+  const hauteur = (e) => Math.max(0, ...e.tete.map((r) => r.y1 - r.y0));
+  const plusGrosse = Math.max(0, ...[...parNom.values()].map(hauteur));
   for (const [nom, e] of parNom) {
+    if (parNom.size > 1 && hauteur(e) < 0.04 * ctx.H && hauteur(e) < 0.4 * plusGrosse) continue;
     if (e.tete.length) res.tetes.push({ nom, ...unir(e.tete) });
     if (e.torse.length) res.torses.push({ nom, ...unir(e.torse) });
   }

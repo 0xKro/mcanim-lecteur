@@ -250,6 +250,7 @@ export function validerScene(s) {
   if (s.sons !== undefined) {
     if (!estObjet(s.sons)) err('sons', 'un objet est attendu, par exemple {"pas": true}');
     if (s.sons.pas !== undefined) { if (typeof s.sons.pas !== 'boolean') err('sons.pas', 'true ou false attendu'); sons.pas = s.sons.pas; }
+    if (s.sons.ambiance !== undefined) { if (typeof s.sons.ambiance !== 'boolean') err('sons.ambiance', 'true ou false attendu (sons d ambiance du monde : eau qui coule, lave, feu, pres de la camera)'); if (s.sons.ambiance) sons.ambiance = true; }
     if (s.sons.volume !== undefined) {
       if (!estNombre(s.sons.volume) || s.sons.volume < 0 || s.sons.volume > 4) err('sons.volume', 'nombre de 0 a 4 attendu (1 = normal)');
       sons.volume = s.sons.volume;
@@ -300,7 +301,7 @@ export function validerScene(s) {
 }
 
 // ---------------------------------------------------------------- monde (simulation)
-export const MONDE_CLES = ['graine', 'regles', 'mods', 'blocs', 'cmd', 'lumiere', 'moteur', 'contenus'];
+export const MONDE_CLES = ['graine', 'regles', 'mods', 'blocs', 'cmd', 'lumiere', 'moteur', 'contenus', 'fontaine'];
 export const MAX_BLOCS_MONDE = 2000, MAX_MODS = 8;
 const MOTEUR_ECRITURE = 1;   // version du moteur de simulation (moteur/simulation.js : MOTEUR)
 
@@ -313,6 +314,7 @@ function lireMonde(m, duree) {
   if (m.moteur !== undefined && m.moteur !== MOTEUR_ECRITURE) err('monde.moteur', `scene ecrite pour le moteur ${JSON.stringify(m.moteur)}, ce lecteur est le moteur ${MOTEUR_ECRITURE} : regenere la scene`);
   if (m.graine !== undefined) { if (!Number.isInteger(m.graine) || m.graine < 0 || m.graine > 2147483647) err('monde.graine', 'entier entre 0 et 2147483647 attendu'); o.graine = m.graine; }
   if (m.lumiere !== undefined) { if (typeof m.lumiere !== 'boolean') err('monde.lumiere', "true ou false attendu (false : lumiere du rendu d'avant, sans lumiere de blocs)"); o.lumiere = m.lumiere; }
+  if (m.fontaine !== undefined && m.fontaine !== null) { if (!Array.isArray(m.fontaine) || m.fontaine.length !== 3 || !m.fontaine.every(estNombre)) err('monde.fontaine', 'point [x, y, z] attendu : la fontaine de l End, centre des cercles du dragon'); o.fontaine = m.fontaine; }
   if (m.regles !== undefined) { if (!estObjet(m.regles)) err('monde.regles', 'un objet est attendu, par exemple {"monde": {"ticksAleatoires": 0}} (mcanim regles --liste)'); o.regles = m.regles; }
   if (m.mods !== undefined) {
     if (!Array.isArray(m.mods)) err('monde.mods', 'liste de fichiers .js attendue, par exemple ["tnt-ville.js"]');

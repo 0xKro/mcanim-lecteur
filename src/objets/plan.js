@@ -1,6 +1,7 @@
 // Ce que la scene demande en objets et en armure : groupes de kit a recuperer, controle des identifiants (erreur d'une ligne, rien n'est
 // rendu), et UNE ligne de notes (objets en plaque de repli, types non geres). Sert a mcanim (rendre, apercu) et a `mcanim objets`.
 import { idsDeScene } from '../film/objets-scene.js';
+import { evenementsDeScene } from '../creatures/scene.js';
 import { listeObjets, groupePresent } from './fichiers.js';
 import { objetPourNotes } from './habillage.js';
 import { nomMateriau, couchesTexture, materiauxDuKit, EMPLACEMENTS } from './armure.js';
@@ -10,7 +11,7 @@ export function groupesDeScene(scene) {
   const { objets, armures } = idsDeScene(scene);
   const m = groupesMontage(scene);   // textes et incrustations : groupe `interface` (police, sprites) ; icones d'objets : `objets`
   // une scene avec monde peut lacher des objets au sol (butin des blocs casses ou detruits) : leur modele vient du groupe `objets`
-  return [...(objets.size || m.objets || scene.monde || scene.acteurs.some((a) => a.creature?.echange) ? ['objets'] : []), ...(armures.size ? ['armures'] : []), ...(m.interface || scene.acteurs.some((a) => a.etiquette) ? ['interface'] : []), ...(scene.monde ? ['projectiles'] : []), ...(scene.acteurs.some((a) => a.creature) ? ['entites', 'sons_creatures'] : [])];   // creatures : textures et sons du jeu
+  return [...(objets.size || m.objets || scene.monde || scene.acteurs.some((a) => a.creature?.echange) ? ['objets'] : []), ...(armures.size ? ['armures'] : []), ...(m.interface || scene.acteurs.some((a) => a.etiquette) ? ['interface'] : []), ...(scene.monde ? ['projectiles'] : []), ...(scene.acteurs.some((a) => a.creature) ? ['entites', 'sons_creatures'] : evenementsDeScene(scene) ? ['sons_creatures'] : [])];   // creatures : textures et sons du jeu ; sons du monde a la demande (ambiance, sons nommes hors du kit de base)
 }
 
 // Groupes de kit dont le montage a besoin : { interface, objets }.

@@ -9,13 +9,16 @@ const DT = 1 / 30;
 export function sonsDuReplay({ replay, images, sons, evenements, gel = [], remap = null }) {
   const S = replay.sons, n = S.length / 7;
   const absents = new Set();
+  const musiques = new Map();   // juke-box : 'x,y,z' -> evenement de la musique en cours ; '!stop' (familles/musique.js) la coupe a son instant
   const reel = (w) => { let t = w; for (const [a, b] of gel) if (t > a) t += b - a; return t; };
   for (let i = 0; i < n; i++) {
     const tick = S[i * 7], nom = replay.noms[S[i * 7 + 1]], x = S[i * 7 + 2], y = S[i * 7 + 3], z = S[i * 7 + 4], vol = S[i * 7 + 5], hauteur = S[i * 7 + 6];
-    const liste = sons.fichiers(nom);
-    if (!liste.length) { absents.add(nom); continue; }
     let t = reel(tick / (20 * replay.ralenti));
     if (remap) t = remap.filmDe(t);
+    const cle = `${x},${y},${z}`;
+    if (nom === '!stop') { const m = musiques.get(cle); if (m) { m.duree = Math.max(0, t - m.t); musiques.delete(cle); } continue; }
+    const liste = sons.fichiers(nom);
+    if (!liste.length) { absents.add(nom); continue; }
     if (t < 0 || !images.length) continue;
     const im = images[Math.min(images.length - 1, Math.max(0, Math.round(t / DT)))];
     const cam = im.camera, dx = x - cam.x, dy = y - cam.y, dz = z - cam.z, d = Math.hypot(dx, dy, dz);
@@ -24,7 +27,9 @@ export function sonsDuReplay({ replay, images, sons, evenements, gel = [], remap
     if (gain < 0.01) continue;
     const psi = (cam.lacet * Math.PI) / 180, fx = -Math.sin(psi), fz = Math.cos(psi), dh = Math.hypot(dx, dz);
     const pan = dh > 0.3 ? Math.max(-1, Math.min(1, (dx * -fz + dz * fx) / dh)) : 0;
-    evenements.push({ t, fichier: choisir(liste, `monde|${nom}|${i}`), gain, pan, hauteur });
+    const ev = { t, fichier: choisir(liste, `monde|${nom}|${i}`), gain, pan, hauteur };
+    if (nom.startsWith('music_disc.')) musiques.set(cle, ev);
+    evenements.push(ev);
   }
   return absents.size ? [`sons du monde absents du kit, ignores : ${[...absents].join(', ')}`] : [];
 }

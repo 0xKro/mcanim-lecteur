@@ -38,7 +38,7 @@ export const FAMILLES = Object.fromEntries([
   ...T('Horse', 'horse', 'horse_baby', 'horse_armor', 'donkey', 'donkey_baby', 'mule', 'mule_baby', 'skeleton_horse',
     'skeleton_horse_baby', 'zombie_horse', 'zombie_horse_baby', 'undead_horse_armor'),
   ...T('Drowned', 'drowned', 'drowned_baby'), ...T('Guardian', 'guardian', 'elder_guardian'), ...T('Enderman', 'enderman'),
-  ...T('Silverfish', 'silverfish', 'endermite'), ...T('Defaut', 'ender_dragon'),
+  ...T('Silverfish', 'silverfish', 'endermite'), ...T('Defaut', 'ender_dragon'), ...T('Cristal', 'end_crystal'),
   ...T('Illager', 'evoker', 'illusioner', 'pillager', 'vindicator'), ...T('Fox', 'fox', 'fox_baby'), ...T('Frog', 'frog'),
   ...T('Ghast', 'ghast'), ...T('HumanoidZombie', 'giant'), ...T('Squid', 'squid', 'squid_baby', 'glow_squid', 'glow_squid_baby'),
   ...T('Goat', 'goat', 'goat_baby'),
@@ -740,6 +740,7 @@ export function poser(type, P, s, m, anims) {
       }
       break;
     }
+    case 'Cristal': poserCristal(P, s); break;
     default:
       if (type === 'ender_dragon') { poserDragon(P, s, m); break; }
       if (P.has('head')) tete(P, s);
@@ -776,6 +777,25 @@ function poserDragon(P, s, m) {
     q[4] = PI; q[3] = p; q[5] = 0; q[0] = x; q[1] = y; q[2] = z;
     y += sin(q[3]) * 10; z -= cos(q[4]) * cos(q[3]) * 10; x -= sin(q[4]) * cos(q[3]) * 10;
   }
+}
+
+// EndCrystalModel.setupAnim : la vitre exterieure monte de getY x 16 / 2 (getY = (f^2 + f) x 0,4 - 1,4, f = sin(age x 0,2) / 2 + 0,5) et tourne
+// de Ry(age x 3) . R(60 degres autour de (sin 45, 0, sin 45)) ; la vitre interieure et le cube : R(60, axe) . Ry(age x 3), chacun dans le parent
+function poserCristal(P, s) {
+  const age = s.age, f0 = sin(age * 0.2) / 2 + 0.5, y = ((f0 * f0 + f0) * 0.4 - 1.4) * 16, a = rad(age * 3);
+  const axe = rotAxe(PI / 3, [Math.SQRT1_2, 0, Math.SQRT1_2]), ry = rotY(a);
+  const o = P.get('outer_glass'); o[1] += y / 2; poserMatrice(o, mul3(ry, axe));
+  for (const n of ['inner_glass', 'cube']) poserMatrice(P.get(n), mul3(axe, ry));
+}
+const mul3 = (A, B) => { const C = new Array(9).fill(0); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) C[i * 3 + j] += A[i * 3 + k] * B[k * 3 + j]; return C; };
+const rotY = (a) => [cos(a), 0, sin(a), 0, 1, 0, -sin(a), 0, cos(a)];
+function rotAxe(a, [x, y, z]) { const c = cos(a), s0 = sin(a), t = 1 - c; return [t * x * x + c, t * x * y - s0 * z, t * x * z + s0 * y, t * x * y + s0 * z, t * y * y + c, t * y * z - s0 * x, t * x * z - s0 * y, t * y * z + s0 * x, t * z * z + c]; }
+// R = Rz . Ry . Rx (ordre de ModelPart) -> angles [x, y, z] de la partie
+function poserMatrice(p, R) {
+  const ry = Math.asin(Math.max(-1, Math.min(1, -R[6])));
+  let rx, rz;
+  if (Math.abs(R[6]) < 0.99999) { rx = Math.atan2(R[7], R[8]); rz = Math.atan2(R[3], R[0]); } else { rx = Math.atan2(-R[5], R[4]); rz = 0; }
+  p[3] = rx; p[4] = ry; p[5] = rz;
 }
 
 function tentacules(P, s) { // GhastModel.animateTentacles
@@ -1258,8 +1278,10 @@ function poserEquide(P, s, m, type, bebe, partial) { // AbstractEquineModel.setu
     P.get('left_hind_leg')[1] = y; P.get('right_hind_leg')[1] = lerp(db, y, -0.3);
   }
   const k = bebe ? 0.5 : 1;
+  // queue : comme le jeu (Horizon) : repos a 30 degres (PI/6), levee de vitesse x 0,75 rad (73 degres au galop).
+  // Regle du proprietaire : tout comme le jeu. La queue presque horizontale au galop est donc voulue.
   P.xrot('tail', queue + PI / 6 + sp * 0.75);
-  const t = P.get('tail'); t[1] += sp * k; t[2] += sp * 2 * k;
+  const t = P.get('tail'); t[1] += sp * 0.5 * k; t[2] += sp * k;
   P.yrot('tail', m.anim.v[3] > 0 ? cos(s.age * 0.7) : 0);
   if (bebe && ane) {
     const h2 = -30 * (PI / 180), b2 = (1 - Math.max(db, mg)) * (PI / 6 + h2 + bouche * sin(s.age) * 0.05);

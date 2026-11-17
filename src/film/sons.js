@@ -90,6 +90,54 @@ export function choisir(liste, graine) {
 // ---------------------------------------------------------------- planification
 // images : sortie de animer(). zone : objet Zone (bloc(x,y,z)). Retourne { evenements, notes, nbPas }.
 // evenement : { t, fichier, gain, pan (-1 gauche .. +1 droite) }
+// ---------------------------------------------------------------- ambiance du monde (sons.ambiance : true)
+// Le jeu (ClientLevel.animateTick) tire chaque tick 667 cellules au hasard a 16 blocs de la camera et 667 a 32 ; chaque bloc tire joue
+// son animateTick : eau qui coule (pas une source, pas une chute) 1 sur 64 -> block.water.ambient (volume 0,75..1, hauteur 0,5..1,5) ;
+// lave sous de l'air 1 sur 100 -> block.lava.pop, 1 sur 200 -> block.lava.ambient (volume 0,2..0,4, hauteur 0,9..1,05) ; feu 1 sur 24 ->
+// block.fire.ambient (volume 1..2, hauteur 0,3..1). Les blocs sont ceux de la zone ; le hasard est tire d'une graine fixe (deterministe).
+export function sonsAmbiance({ images, zone, sons, gainPan, evenements }) {
+  const DT = 1 / 30, absents = new Set(), sources = new Map();
+  let g = 0x9e3779b9;
+  const alea = () => { g = (Math.imul(g, 1664525) + 1013904223) >>> 0; return g / 4294967296; };
+  const nom = (e) => String(e || '').replace(/^minecraft:/, '');
+  // sources : une fois par seconde de film, les blocs a 32 blocs de la camera (eau qui coule, lave a l'air libre, feu)
+  for (let i = 0; i < images.length; i += 30) {
+    const c = images[i].camera, X = Math.floor(c.x), Y = Math.floor(c.y), Z = Math.floor(c.z);
+    for (let y = Y - 12; y <= Y + 12; y++) for (let z = Z - 32; z <= Z + 32; z++) for (let x = X - 32; x <= X + 32; x++) {
+      const k = `${x},${y},${z}`; if (sources.has(k)) continue;
+      const e = nom(zone.bloc(x, y, z));
+      if (!e || e === 'air') continue;
+      let t = null;
+      if (/^water\[/.test(e) && !/level=0\b/.test(e) && !/level=(8|9|1[0-5])\b/.test(e)) t = 'eau';
+      else if (/^lava/.test(e) && /^(air|cave_air)/.test(nom(zone.bloc(x, y + 1, z)))) t = 'lave';
+      else if (/^(fire|soul_fire)(\[|$)/.test(e)) t = 'feu';
+      if (t) sources.set(k, { t, p: [x + 0.5, y + 0.5, z + 0.5] });
+    }
+  }
+  if (!sources.size) return { absents, n: 0 };
+  const liste = [...sources.values()], nt = Math.floor((images.length - 1) * DT * 20);
+  const p16 = 667 / 33 ** 3, p32 = 667 / 65 ** 3;
+  let n = 0;
+  const jouer = (evt, t, pos, vol, haut, cle) => {
+    const f = sons.fichiers(evt);
+    if (!f.length) { absents.add(evt); return; }
+    const im = images[Math.min(images.length - 1, Math.round(t / DT))], gp = gainPan(pos, im.camera);
+    evenements.push({ t, fichier: choisir(f, cle), gain: Math.min(1, gp.gain * vol), pan: gp.pan, hauteur: Math.round(haut * 50) / 50 }); n++;
+  };
+  for (let j = 0; j < nt; j++) {
+    const t = j / 20, c = images[Math.min(images.length - 1, Math.round(t / DT))].camera;
+    for (const s of liste) {
+      const d = Math.max(Math.abs(s.p[0] - c.x), Math.abs(s.p[1] - c.y), Math.abs(s.p[2] - c.z));
+      if (d > 32) continue;
+      if (alea() >= (d <= 16 ? p16 + p32 : p32)) continue;   // tire par animateTick ce tick
+      if (s.t === 'eau') { if (alea() * 64 < 1) jouer('block.water.ambient', t, s.p, alea() * 0.25 + 0.75, alea() + 0.5, `amb|${j}|${s.p}`); }
+      else if (s.t === 'lave') { if (alea() * 100 < 1) jouer('block.lava.pop', t, s.p, 0.2 + alea() * 0.2, 0.9 + alea() * 0.15, `pop|${j}|${s.p}`); if (alea() * 200 < 1) jouer('block.lava.ambient', t, s.p, 0.2 + alea() * 0.2, 0.9 + alea() * 0.15, `lav|${j}|${s.p}`); }
+      else if (alea() * 24 < 1) jouer('block.fire.ambient', t, s.p, 1 + alea(), alea() * 0.7 + 0.3, `feu|${j}|${s.p}`);
+    }
+  }
+  return { absents, n };
+}
+
 export function planifierSons({ scene, images, zone, sons, sims = null, remap = null }) {
   const evenements = [], notes = [];
   let nbPas = 0;
@@ -168,7 +216,7 @@ export function planifierSons({ scene, images, zone, sons, sims = null, remap = 
     const absents = new Set();
     const ajouter = (evt, t, pos, gain, graine, hauteur = 1) => {
       const liste = sons.fichiers(evt);
-      if (!liste.length) { absents.add(evt); return false; }
+      if (!liste.length) { if (sons.defs[evt]?.sounds?.length !== 0) absents.add(evt); return false; }   // evenement muet dans le jeu (poissons : sounds vide) : rien a dire
       const im = images[Math.min(images.length - 1, Math.max(0, Math.round(t / DT)))], gp = gainPan(pos, im.camera);
       evenements.push({ t, fichier: choisir(liste, graine), gain: Math.min(1, gp.gain * gain), pan: gp.pan, ...(hauteur !== 1 ? { hauteur: Math.round(hauteur * 50) / 50 } : {}) });
       return true;
@@ -177,6 +225,7 @@ export function planifierSons({ scene, images, zone, sons, sims = null, remap = 
     scene.acteurs.forEach((a, k) => { if (a.creature) nbPas += sonsCreature({ a, k, images, sons, ajouter, blocSous, pasAuto: !!scene.sons.pas }); });
     if (absents.size) notes.push(`sons de creatures absents du kit, ignores : ${[...absents].slice(0, 6).join(', ')}`);
   }
+  if (scene.sons.ambiance && zone) { const r = sonsAmbiance({ images, zone, sons, gainPan, evenements }); if (r.absents.size) notes.push(`sons d'ambiance absents du kit, ignores : ${[...r.absents].join(', ')}`); }
   for (const s of scene.sons.liste) {
     const liste = sons.fichiers(s.nom);
     if (!liste.length) { notes.push(`son "${s.nom}" absent du kit : ignore`); continue; }
@@ -208,7 +257,7 @@ export function mixer({ evenements, duree, sons, volume = VOLUME_MIXAGE }) {
     const debut = Math.round(e.t * FREQUENCE);
     const angle = ((e.pan + 1) * Math.PI) / 4;     // puissance constante
     const gl = Math.cos(angle) * e.gain * volume * 1.4142, gd = Math.sin(angle) * e.gain * volume * 1.4142;
-    const fin = Math.min(n, debut + pcm.length);
+    const fin = Math.min(n, debut + pcm.length, e.duree !== undefined ? debut + Math.round(e.duree * FREQUENCE) : Infinity);   // duree : musique du juke-box coupee
     for (let i = debut; i < fin; i++) {
       const v = pcm[i - debut] / 32768;
       mix[2 * i] += v * gl; mix[2 * i + 1] += v * gd;

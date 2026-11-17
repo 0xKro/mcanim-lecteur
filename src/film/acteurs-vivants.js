@@ -14,8 +14,8 @@ export function creerVivant(replay, nom) {
   const lignes = [];
   for (let i = 0; i < n; i++) if (R[i * 16 + 1] === id) lignes.push(i * 16);
   if (!lignes.length) return null;
-  const K = lignes.length;
-  const ligne = (k) => lignes[Math.max(0, Math.min(K - 1, k))];
+  const K = lignes.length, t0 = R[lignes[0]];   // t0 : premier tick de la trace (une entite nee en cours de route commence plus tard)
+  const ligne = (k) => lignes[Math.max(0, Math.min(K - 1, k - t0))];
   const noms = replay.noms;
   return {
     id, ticks: K,

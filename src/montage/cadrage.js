@@ -59,7 +59,13 @@ export function lireCadre(D, c, ch) {
 // Camera d'un cadrage pour un acteur : p = pose { x, y (pieds), z, lacet }.
 function camSur(p, o) {
   const T = PLANS_CADRAGE[o.plan];
-  const tete = o.tete ?? T.tete, yeux = o.yeux ?? T.yeux;
+  let tete = o.tete ?? T.tete, yeux = o.yeux ?? T.yeux;
+  // place pour un titre en haut de l'image (reserverTitres) : le haut de la boite de tete (1 tete au-dessus des yeux) passe sous le titre,
+  // et le bas du torse (1,84 tete sous les yeux) reste au-dessus de la bande des legendes (60 %) : le sujet est un peu plus petit (70 % au moins).
+  if (o.titreBas && o.yeux === undefined) {
+    if (o.tete === undefined) tete = Math.max(0.7 * tete, Math.min(tete, (0.6 - o.titreBas - 0.02) / 2.94));
+    yeux = Math.max(T.yeux, Math.min(0.46, o.titreBas + 1.1 * tete));   // 1,1 tete : la boite de tete evitee par les incrustations (cheveux, +10 %)
+  }
   const V = 0.5 / tete, d = V / (2 * Math.tan((o.fov * RAD) / 2));
   const ye = p.y + 1.62;
   const a = (p.lacet + o.de) * RAD, f = [-Math.sin(a), Math.cos(a)], r = [-f[1], f[0]];
@@ -100,16 +106,67 @@ export function cameraDeCadre(c, poseAu, i0, i1, dec, noms = []) {
     return cam;
   };
   const calc = (i, o) => (cad.epaule ? camEpaule(poseAu(i, cad.epaule[0]), poseAu(i, cad.epaule[1]), o) : cad.deux ? camDeux(poseAu(i, cad.deux[0]), poseAu(i, cad.deux[1]), o)   : calcSur(i, o));
-  const base = cad.epaule ? { fov: cad.fov, cote: cad.cote, derriere: cad.derriere, haut: cad.haut } : cad.deux ? { fov: cad.fov, tete: cad.tete, cote: cad.cote, rotation: cad.rotation, haut: cad.haut } : { fov: cad.fov, plan: cad.plan, de: cad.de, haut: cad.haut, lateral: cad.lateral, decale: cad.decale, yeux: cad.yeux, tete: cad.tete };
-  const A = calc(i0, base);
+  const base = cad.epaule ? { fov: cad.fov, cote: cad.cote, derriere: cad.derriere, haut: cad.haut } : cad.deux ? { fov: cad.fov, tete: cad.tete, cote: cad.cote, rotation: cad.rotation, haut: cad.haut } : { fov: cad.fov, plan: cad.plan, de: cad.de, haut: cad.haut, lateral: cad.lateral, decale: cad.decale, yeux: cad.yeux, tete: cad.tete, titreBas: cad.titreBas };
   const iFin = Math.max(i0, i1 - 1);
-  const B = calc(iFin, cad.vers ? { ...base, ...cad.vers, ...(cad.vers.plan && !cad.deux ? { yeux: undefined, tete: cad.vers.tete } : {}) } : base);
+  const finale = cad.vers ? { ...base, ...cad.vers, ...(cad.vers.plan && !cad.deux ? { yeux: undefined, tete: cad.vers.tete } : {}) } : base;
   const t0 = i0 * DT - dec, t1 = Math.max(t0 + DT, iFin * DT - dec);
   const cle = (t, k, l = null) => ({ t, v: [...k], l });
+  // Sujet qui se DEPLACE pendant le plan (plus de 0,5 bloc) : avant, seuls les cadrages du debut et de la fin etaient calcules, le sujet
+  // sortait du cadre au milieu d'un trajet courbe (test combat v4, plan 7). On recalcule le cadrage toutes les 6 images en gardant l'angle de
+  // camera du debut du plan dans le monde (sinon la camera tournerait autour du sujet quand il se retourne).
+  const suivis = cad.sur ? [cad.sur] : cad.epaule ?? cad.deux ?? [];
+  const bouge = suivis.some((n) => { let m = 0; const a = poseAu(i0, n); for (let i = i0; i <= iFin; i += 3) { const b = poseAu(i, n); m = Math.max(m, Math.hypot(b.x - a.x, b.z - a.z)); } return m > 0.5; });
+  if (bouge && iFin - i0 >= 12) {
+    const lacet0 = cad.sur ? poseAu(i0, cad.sur).lacet : 0;
+    const poseFixe = (i, n) => (n === cad.sur ? { ...poseAu(i, n), lacet: lacet0 } : poseAu(i, n));
+    const calcFixe = (i, o) => (cad.sur ? (() => { let cam = camSur(poseFixe(i, cad.sur), o); if (!noms.length || libre(i, cam, cad.sur)) return cam; for (const d of [30, -30, 60, -60, 90, -90, 120, -120]) { const c2 = camSur(poseFixe(i, cad.sur), { ...o, de: o.de + d }); if (libre(i, c2, cad.sur)) return c2; } return cam; })() : calc(i, o));
+    const P = { arite: 3, cles: [] }, C = { arite: 3, cles: [] }, F = { arite: 1, cles: [] };
+    const lisse = (u) => u * u * (3 - 2 * u);
+    for (let i = i0; ; i = Math.min(iFin, i + 6)) {
+      const u = lisse((i - i0) / Math.max(1, iFin - i0)), a = calcFixe(i, base), b = cad.vers ? calcFixe(i, finale) : a;
+      const m = (x, y) => x.map((v, k) => v + (y[k] - v) * u), t = i === iFin ? t1 : i * DT - dec;
+      P.cles.push(cle(t, m(a.pos, b.pos))); C.cles.push(cle(t, m(a.cible, b.cible))); F.cles.push(cle(t, [a.fov + (b.fov - a.fov) * u]));
+      if (i === iFin) break;
+    }
+    return { mode: 'libre', effets: c.effets, pos: P, cible: C, fov: F };
+  }
+  const A = calc(i0, base);
+  const B = calc(iFin, finale);
   return {
     mode: 'libre', effets: c.effets,
     pos: { arite: 3, cles: [cle(t0, A.pos), cle(t1, B.pos, 'd')] },
     cible: { arite: 3, cles: [cle(t0, A.cible), cle(t1, B.cible, 'd')] },
     fov: { arite: 1, cles: [cle(t0, [A.fov]), cle(t1, [B.fov], 'd')] },
   };
+}
+
+// Titres en haut de l'image (test combat v3) : un titre, un compteur, une icone ou un panneau de coffre ancre a l'ecran en haut, sur un
+// gros plan, tombait sur la tete ; la disposition le poussait alors sous le visage, colle a la legende. Le cadrage lui fait de la place :
+// pour chaque plan `cadre.sur` (sans `yeux` impose) pendant lequel un tel element du haut (y <= 0,4 de la zone sure) est a l'ecran au moins
+// 30 % du plan, `titreBas` = bas de l'element (part de la hauteur de l'image, avec l'ecart des incrustations) ; camSur baisse alors les yeux
+// du sujet (0,46 au plus) et le rapetisse un peu s'il le faut.
+// zone : rectangle sur (x0, y0, w, h en pixels) ; W, H : taille de l'image. Modifie scene.plans[].camera.cadre (valeur recalculee a chaque appel).
+export const HAUTS = new Set(['texte', 'compteur', 'icone', 'coffre']);
+export function hauteurElement(e, zone, U) {   // hauteur approchee a l'ecran (pixels)
+  if (e.type === 'coffre') return e.taille !== undefined ? Math.max(0.6, e.taille) * U * ((e.rangees ?? 3) * 18 + 24) / 176 : Math.min(zone.w, 0.9 * U) * ((e.rangees ?? 3) * 18 + 24 + (e.joueur ? 89 : 0)) / 176;
+  if (e.type === 'icone') return Math.max(0.05, e.taille ?? 0.12) * U;
+  return 1.3 * Math.max(0.05, e.taille ?? 0.06) * U;
+}
+export function reserverTitres(scene, zone, W, H) {
+  if (!scene.plans || !scene.incrustations?.length) return;
+  const U = Math.min(W, H);
+  const titres = scene.incrustations.filter((e) => HAUTS.has(e.type) && !e.legende && Array.isArray(e.ecran) && e.monde === undefined && e.acteur === undefined && e.ecran[1] <= 0.4);
+  for (const p of scene.plans) {
+    const cad = p.camera?.cadre;
+    if (!cad || !cad.sur || cad.yeux !== undefined) continue;
+    let bas = 0;
+    for (const e of titres) {
+      const recouvre = Math.min(p.a, e.t[1]) - Math.max(p.de, e.t[0]);
+      if (recouvre < 0.3 * (p.a - p.de)) continue;
+      const h = hauteurElement(e, zone, U), yc = zone.y0 + e.ecran[1] * zone.h;
+      const b = Math.min(zone.y0 + zone.h, Math.max(yc + h / 2, zone.y0 + h));   // ramene dans la zone sure comme a l'image
+      bas = Math.max(bas, (b + 0.045 * U) / H);
+    }
+    if (bas > 0) cad.titreBas = bas; else delete cad.titreBas;
+  }
 }

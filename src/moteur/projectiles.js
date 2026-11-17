@@ -8,6 +8,7 @@
 //   trident : gravite 0,05, vitesse 2,5, degats 8
 // Le hasard vient du monde (moteur/aleatoire.js) : meme graine, memes tirs.
 import { boitesLocales } from './collision.js';
+import { exploser } from './explosion.js';
 
 const RAD = Math.PI / 180;
 const CUBE = [[0, 0, 0, 1, 1, 1]];
@@ -20,6 +21,13 @@ export const TYPES = {
   perle: { g: 0.03, eau: 0.8, boite: 0.25, objet: 'ender_pearl' },
   potion: { g: 0.05, eau: 0.8, boite: 0.25, objet: 'splash_potion' },
   trident: { g: 0.05, eau: 0.99, boite: 0.5, objet: 'trident' },
+  // boules de feu (AbstractHurtingProjectile : sans gravite, acceleration 0,1 le long de la vitesse, inertie 0,95 (0,8 dans l'eau) ; LargeFireball 1 x 1,
+  // SmallFireball 0,3125 ; dessinees comme une charge de feu x 3 et x 0,75, pleine lumiere)
+  boule_feu: { g: 0, eau: 0.8, boite: 1.0, objet: 'fire_charge', feu: true, echelle: 3 },
+  petite_boule_feu: { g: 0, eau: 0.8, boite: 0.3125, objet: 'fire_charge', feu: true, echelle: 0.75 },
+  // crane du wither (WitherSkull : 0,3125, inertie 0,95, bleu 0,73) ; boule de feu du dragon (DragonFireball : 1 x 1, trainee de souffle)
+  crane: { g: 0, eau: 0.8, boite: 0.3125, feu: true, sansFeu: true },
+  boule_dragon: { g: 0, eau: 0.8, boite: 1.0, feu: true, sansFeu: true },
 };
 // objet tenu -> type de projectile lance (clic droit dans l'air, verbe `lance`)
 export const LANCABLES = { snowball: 'boule', egg: 'oeuf', ender_pearl: 'perle', splash_potion: 'potion', lingering_potion: 'potion', trident: 'trident' };
@@ -155,6 +163,7 @@ export class Projectiles {
         return true;
       }
     }
+    if (P.feu) return this.tickFeu(e);
     const g = P.g * R.valeur('projectiles.gravite', 1);
     const p0 = [e.x, e.y, e.z], p1 = [e.x + e.vx, e.y + e.vy, e.z + e.vz];
     // blocs puis acteurs : le plus proche des deux
@@ -184,6 +193,74 @@ export class Projectiles {
     return true;
   }
 
+  // ------------------------------------------------------------ boules de feu (AbstractHurtingProjectile.tick, LargeFireball, SmallFireball)
+  // contact (blocs puis acteurs, le lanceur une fois quitte), deplacement, inertie (v + v/|v| x acceleration) x 0,95, trainee de fumee.
+  // Grande : 6 de degats au touche puis explosion de puissance `puissance` (1 pour le ghast) avec feu (mobGriefing) ; petite : 5 de degats et
+  // 5 s de feu sur l'acteur, ou un feu pose devant le bloc touche.
+  tickFeu(e) {
+    const s = this.sim, P = TYPES[e.type], lec = this.lec(), demi = P.boite / 2;
+    const c0 = [e.x, e.y + demi, e.z], d = [e.vx, e.vy, e.vz], c1 = [c0[0] + d[0], c0[1] + d[1], c0[2] + d[2]];
+    const bloc = coupeBlocs(lec, c0, c1);
+    const prop = s.acteurs?.parNom.get(e.proprietaire) ?? null;
+    const coupe = (a) => { const b = a.boite(); return tranche([b[0] - demi, b[1] - demi, b[2] - demi, b[3] + demi, b[4] + demi, b[5] + demi], c0, d); };
+    if (!e.quitte && (!prop || !coupe(prop))) e.quitte = true;
+    let cible = null;
+    for (const a of s.acteurs ? s.acteurs.liste : []) {
+      if (a.mort >= 0 || (a === prop && !e.quitte)) continue;
+      const r = coupe(a);
+      if (r && r.t <= (bloc ? bloc.t : 1) && (!cible || r.t < cible.t)) cible = { ...r, acteur: a };
+    }
+    if (cible || bloc) {
+      const t = cible ? cible.t : bloc.t, pos = [c0[0] + d[0] * t, c0[1] + d[1] * t, c0[2] + d[2] * t];
+      const evt = s.api.evenement('projectile.touche', { type: e.type, cible: cible?.acteur.nom ?? null, proprietaire: e.proprietaire });
+      if (!evt.annule) { this.finFeu(e, pos, cible?.acteur ?? null, bloc && !cible ? bloc : null); this.E._fini.add(e); return false; }
+    }
+    e.x += e.vx; e.y += e.vy; e.z += e.vz;
+    const eau = s.fluide(Math.floor(e.x), Math.floor(e.y + demi), Math.floor(e.z)).type === 'water';
+    const k = eau ? P.eau : e.type === 'crane' && e.dangereux ? 0.73 : 0.95, L = Math.hypot(e.vx, e.vy, e.vz) || 1e-9, acc = e.acc ?? 0.1;
+    e.vx = (e.vx + e.vx / L * acc) * k; e.vy = (e.vy + e.vy / L * acc) * k; e.vz = (e.vz + e.vz / L * acc) * k;
+    s.replay.particule(s.temps, eau ? 'bubble' : e.type === 'boule_dragon' ? 'dragon_breath' : 'smoke', e.x, e.y + demi + 0.5, e.z, 0, 0, 0, 1);
+    if (e.type === 'boule_feu' && e.age % 2 === 0) s.replay.particule(s.temps, 'flame', e.x, e.y + demi, e.z, 0, 0, 0, 1);
+    if (e.y < -80 || e.age > 1200) { this.E._fini.add(e); return false; }
+    this.ecrire(e);
+    return true;
+  }
+  finFeu(e, pos, acteur, hit) {
+    const s = this.sim, R = this.R, griefing = R.valeur('ia.explosionCasse', true);
+    const [x, y, z] = pos;
+    if (e.type === 'crane') return craneTouche(s, e, pos, acteur, griefing);
+    if (e.type === 'boule_dragon') { if (acteur && acteur.nom === e.proprietaire) return; s.boss.nuageBoule(pos, e); return; }
+    if (e.type === 'boule_feu') {
+      if (acteur) { acteur.frappe(6, 'boule_feu', x - acteur.x, z - acteur.z, 0); s.dire(`boule de feu touche ${acteur.nom} : 6 degats`); }
+      s.stats.boulesFeu = (s.stats.boulesFeu || 0) + 1;
+      (s.stats.iaJournal ??= []).push(`${(s.temps / 20).toFixed(2)} boule de feu explose (puissance ${e.puissance ?? 1})${acteur ? ' sur ' + acteur.nom : ''} en ${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)}${e.renvoyee ? ' (renvoyee)' : ''}`);
+      s.dire(`boule de feu : explosion de puissance ${e.puissance ?? 1}`);
+      exploserFeu(s, x, y, z, e.puissance ?? 1, griefing);
+      return;
+    }
+    // petite boule de feu
+    s.stats.petitesBoulesFeu = (s.stats.petitesBoulesFeu || 0) + 1;
+    if (acteur) {
+      const ok = acteur.frappe(5, 'petite_boule_feu', x - acteur.x, z - acteur.z, 0);
+      if (ok || acteur.mort < 0) allumerActeur(acteur, 100);
+      (s.stats.iaJournal ??= []).push(`${(s.temps / 20).toFixed(2)} petite boule de feu touche ${acteur.nom}`);
+    } else if (hit && griefing) {
+      const c = hit.cellule, f = hit.face ?? [0, 1, 0], fx = c[0] + f[0], fy = c[1] + f[1], fz = c[2] + f[2];   // la face d'entree (normale sortante du bloc) : la cellule devant
+      const n = s.monde.etatEn(fx, fy, fz);
+      if (n >= 0 && /^(air|cave_air)$/.test(s.d.nomBloc(n))) s.api.poser(fx, fy, fz, 'minecraft:fire');
+    }
+  }
+  // Fireball.hurtServer -> deflect (AIM_DEFLECT) : la boule repart dans la direction du regard de celui qui frappe (vitesse 1), acceleration 0,1,
+  // et change de proprietaire (elle peut alors toucher le ghast).
+  renvoyer(e, acteur, dir) {
+    const L = Math.hypot(...dir) || 1;
+    e.vx = dir[0] / L; e.vy = dir[1] / L; e.vz = dir[2] / L; e.acc = 0.1;
+    e.proprietaire = acteur.nom; e.quitte = false; e.renvoyee = true;
+    const s = this.sim;
+    s.stats.renvois = (s.stats.renvois || 0) + 1;
+    (s.stats.iaJournal ??= []).push(`${(s.temps / 20).toFixed(2)} ${acteur.nom} renvoie la boule de feu`);
+  }
+
   // segment contre la boite de l'acteur, elargie de la marge de contact (0,3 pour une fleche)
   coupeActeur(a, p0, d) {
     const b = a.boite(), m = 0.3;
@@ -204,10 +281,12 @@ export class Projectiles {
       s.stats.plantees = (s.stats.plantees || 0) + 1;
       s.dire(`${e.type} plantee en ${hit.cellule.join(',')} (vitesse ${vit.toFixed(2)})`);
       s.api.evenement('projectile.bloc', { type: e.type, pos: hit.cellule, proprietaire: e.proprietaire });
+      s.vibrations.emettre('projectile_land', e.x, e.y, e.z, { proprietaire: e.proprietaire });   // GameEvent.PROJECTILE_LAND
       this.ecrire(e);
       return true;
     }
     // objets lances : ils s'arretent ; effet selon le type
+    s.vibrations.emettre('projectile_land', nx, ny, nz, { proprietaire: e.proprietaire });
     this.effetFin(e, [nx, ny, nz], null, hit);
     E._fini.add(e);
     return false;
@@ -255,6 +334,14 @@ export class Projectiles {
       if (acteur) { const dx = x - acteur.x, dz = z - acteur.z; acteur.frappe(0, e.type, dx, dz, 0.4 * R.valeur('projectiles.recul', 1)); s.stats.touches = (s.stats.touches || 0) + 1; s.dire(`${e.type} touche ${acteur.nom}`); }
       for (let i = 0; i < 8; i++) s.replay.particule(s.temps, 'item|' + TYPES[e.type].objet, x, y, z, (s.hasard.flottant() - 0.5) * 0.2, s.hasard.flottant() * 0.2, (s.hasard.flottant() - 0.5) * 0.2, 1);
       s.son(e.type === 'oeuf' ? 'entity.egg.throw' : 'block.snow.break', x, y, z, 0.5, 1);
+      // ThrownEgg.onHit : 1 chance sur 8 qu'un poussin naisse (et 1 sur 32 alors : quatre), age -24000 ; regle `oeufs.poussins`
+      if (e.type === 'oeuf' && R.valeur('oeufs.poussins', true) && s.acteurs && s.hasard.entierBorne(8) === 0) {
+        const n = s.hasard.entierBorne(32) === 0 ? 4 : 1;
+        for (let i = 0; i < n; i++) {
+          const b = s.acteurs.naitre({ type: 'chicken', variante: e.variante ?? null, bebe: true, x, y: Math.floor(y + 0.01), z, lacet: e.lacet0 ?? 0, modele: prop?.nom ?? null, raison: 'oeuf', nom: `poussin`, gabaritParent: { l: 0.4, h: 0.7, oeil: 0.644, vitesse: 1 }, ia: {} });
+          if (b) (s.stats.iaJournal ??= []).push(`${(s.temps / 20).toFixed(2)} un poussin sort de l oeuf : ${b.nom}`);
+        }
+      }
     } else if (e.type === 'perle') {
       for (let i = 0; i < 32; i++) s.replay.particule(s.temps, 'portal', x, y + s.hasard.reel() * 2, z, s.hasard.gaussien(), 0, s.hasard.gaussien(), 1);
       if (prop && prop.mort < 0) {
@@ -284,6 +371,9 @@ export class Projectiles {
         const d2 = (a.x - x) ** 2 + (a.y + 0.9 - y) ** 2 + (a.z - z) ** 2;
         if (d2 >= 16) continue;
         const force = a === acteur ? 1 : 1 - Math.sqrt(d2) / 4;
+        // degats instantanes (InstantenousMobEffect : (int)(force x (6 << niveau) + 0,5)) ; soin instantane : 4 << niveau
+        if (effet.id === 'instant_damage') { const q = Math.floor(force * (6 << (effet.niveau ?? 0)) + 0.5); if (q > 0) a.degats(q, 'magie'); continue; }
+        if (effet.id === 'instant_health') { a.vie = Math.min(a.vieMax, a.vie + Math.floor(force * (4 << (effet.niveau ?? 0)) + 0.5)); continue; }
         a.appliquerEffet(effet.id, Math.floor(force * effet.ticks + 0.5), effet.niveau ?? 0);
       }
     } else if (e.type === 'trident') {
@@ -308,9 +398,38 @@ export class Projectiles {
     if (e.type === 'fleche' || e.type === 'trident') {
       const h = Math.hypot(vx, vz), lacet = Math.atan2(-vx, vz) / RAD, tangage = -Math.atan2(vy, h) / RAD;
       rp.entite(s.temps, e.id, e.plantee ? e.type + '_plantee' : e.type, e.x, e.y, e.z, lacet, tangage);
-    } else rp.entite(s.temps, e.id, 'lance', e.x, e.y, e.z, 0, rp.nom(e.objet));
+    } else if (e.type === 'crane') {   // WitherSkullRenderer : la tete du wither (cube 8 px), tournee selon la vitesse ; bleue si dangereuse
+      const h = Math.hypot(vx, vz);
+      rp.entite(s.temps, e.id, e.dangereux ? 'crane_bleu' : 'crane', e.x, e.y + 0.15625, e.z, Math.atan2(-vx, vz) / RAD, -Math.atan2(vy, h) / RAD);
+    } else if (e.type === 'boule_dragon') rp.entite(s.temps, e.id, 'boule_dragon', e.x, e.y + 0.5, e.z, 2, -1);   // DragonFireballRenderer : sprite x 2
+    else if (TYPES[e.type]?.feu) rp.entite(s.temps, e.id, 'boule_feu', e.x, e.y + TYPES[e.type].boite / 2, e.z, TYPES[e.type].echelle, rp.nom('fire_charge'));   // centre de la boule, echelle du dessin
+    else rp.entite(s.temps, e.id, 'lance', e.x, e.y, e.z, 0, rp.nom(e.objet));
   }
 }
 
+// explosion d'une grande boule de feu (LargeFireball.onHit : explode(puissance, feu = mobGriefing))
+function exploserFeu(sim, x, y, z, puissance, griefing) { exploser(sim, x, y, z, { puissance, feu: griefing, casseBlocs: griefing, source: 'boule_feu' }); }
+// WitherSkull.onHitEntity / onHit (Horizon game/wither.rs, MIT) : 8 degats `wither_skull` si le lanceur vit encore (5 de magie sinon), puis
+// Fletrissement II 10 s (normal) ou 40 s (difficile) sur une cible qui survit ; le lanceur regagne 5 s'il tue ; enfin une explosion de
+// puissance 1 (mobGriefing), qui plafonne la resistance des blocs a 0,8 pour un crane bleu (il casse la pierre, l'obsidienne...).
+function craneTouche(s, e, pos, acteur, griefing) {
+  const prop = s.acteurs?.parNom.get(e.proprietaire) ?? null, vivant = !!prop && prop.mort < 0;
+  const dif = { paisible: 0, peaceful: 0, facile: 1, easy: 1, normal: 2, difficile: 3, hard: 3 }[s.regles.valeur('monde.difficulte', 'normal')] ?? 2;
+  const fl = dif === 2 ? 200 : dif === 3 ? 800 : 0;
+  if (acteur && !(prop?.ia?.type === 'wither' && /^(zombie|husk|drowned|zombie_villager|skeleton|stray|bogged|parched|wither_skeleton|zombie_horse|skeleton_horse|phantom|zombified_piglin|zoglin|wither)$/.test(acteur.ia?.type ?? acteur.typeCreature ?? ''))) {
+    const q = vivant ? 8 : 5, ok = acteur.frappe(q, vivant ? 'crane_wither' : 'magie', pos[0] - acteur.x, pos[2] - acteur.z, 0);
+    if (ok && acteur.mort < 0 && fl > 0 && acteur.typeCreature !== 'wither') acteur.appliquerEffet('wither', fl, 1);
+    if (ok && acteur.mort >= 0 && vivant) prop.vie = Math.min(prop.vieMax, prop.vie + 5);
+    (s.stats.iaJournal ??= []).push(`${(s.temps / 20).toFixed(2)} crane${e.dangereux ? ' bleu' : ''} touche ${acteur.nom} : ${q}${fl && acteur.mort < 0 ? `, fletrissement II ${fl / 20} s` : ''}`);
+  }
+  s.stats.cranes = (s.stats.cranes || 0) + 1;
+  exploser(s, pos[0], pos[1], pos[2], { puissance: 1, casseBlocs: griefing, source: 'crane', ...(e.dangereux ? { plafondResistance: 0.8 } : {}) });
+}
+// met un acteur en feu `ticks` ticks (Entity.igniteForSeconds) : une creature a IA brule par son IA, un joueur par le compteur `feuJoueur` (acteurs.js)
+export function allumerActeur(a, ticks) {
+  if (a.ia) { if (!a.ia.pr.immuniseFeu) a.ia.feu = Math.max(a.ia.feu, ticks); return; }
+  a.feuJoueur = Math.max(a.feuJoueur ?? 0, ticks);
+}
+
 // couleur (teinte 0..1) des particules d'un effet de potion : sert a `effet` du rendu
-export const COULEURS_EFFETS = { speed: 0.55, slowness: 0.62, jump_boost: 0.35, invisibility: 0.8, glowing: 0.15, regeneration: 0.95, poison: 0.28, strength: 0.0, night_vision: 0.7 };
+export const COULEURS_EFFETS = { speed: 0.55, slowness: 0.62, jump_boost: 0.35, invisibility: 0.8, glowing: 0.15, regeneration: 0.95, poison: 0.28, strength: 0.0, night_vision: 0.7, weakness: 0.66, instant_damage: 0.98, instant_health: 0.02, fire_resistance: 0.08, water_breathing: 0.6, absorption: 0.12 };

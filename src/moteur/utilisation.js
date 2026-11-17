@@ -14,7 +14,11 @@ const RAD = Math.PI / 180;
 export const EFFETS = {
   speed: { ticks: 3600 }, slowness: { ticks: 1800 }, jump_boost: { ticks: 3600 }, invisibility: { ticks: 3600 }, glowing: { ticks: 200 },
   regeneration: { ticks: 900 }, poison: { ticks: 900 }, strength: { ticks: 3600 }, night_vision: { ticks: 3600 }, absorption: { ticks: 2400 },
+  wither: { ticks: 200 }, darkness: { ticks: 260 }, mining_fatigue: { ticks: 6000 }, haste: { ticks: 3600 },
+  dolphins_grace: { ticks: 100 },   // donnee par un dauphin qui nage avec le joueur (moteur/ia-eau.js) ; dans l'eau : ralentissement 0,96
 };
+// MobEffects.DIG_SLOWDOWN (fatigue) : vitesse de minage x 0,3 / 0,09 / 0,0027 / 0,00081 ; DIG_SPEED (celerite) : x (1 + 0,2 x niveau)
+export const FATIGUE = [1, 0.3, 0.09, 0.0027, 0.00081];
 export const BIT = { INVISIBLE: 1 << 21, LUEUR: 1 << 22 };
 
 export function installerUtilisation(Acteur, EchecActe) {
@@ -36,6 +40,8 @@ export function installerUtilisation(Acteur, EchecActe) {
     const actuel = this.effets.get(id);
     const fin = sim.temps + ticks;
     if (!actuel || actuel.niveau < niveau || (actuel.niveau === niveau && actuel.fin < fin)) this.effets.set(id, { fin, niveau });
+    if (id === 'darkness' && !this.typeCreature) sim.replay.obscurite.push({ debut: sim.temps, fin, acteur: this.nom });   // le film assombrit la vue (film/look.js)
+    if (actuel && actuel.fin > sim.temps && id === 'dolphins_grace') return;   // la grace rendue 1 fois sur 6 par tick : une seule ligne
     sim.dire(`${this.nom} : effet ${id} ${niveau + 1} pendant ${(ticks / 20).toFixed(0)} s`);
     sim.stats.effets = (sim.stats.effets || 0) + 1;
   };
@@ -54,6 +60,8 @@ export function installerUtilisation(Acteur, EchecActe) {
       // regeneration : 1 coeur toutes les 50 >> niveau ticks ; poison : 1 de degats toutes les 25 >> niveau ticks sans jamais tuer
       if (id === 'regeneration') { const k = 50 >> e.niveau; if (k > 0 && restant % k === 0 && this.vie < this.vieMax && this.mort < 0) this.vie = Math.min(this.vieMax, this.vie + 1); }
       if (id === 'poison') { const k = 25 >> e.niveau; if (k > 0 && restant % k === 0 && this.vie > 1 && this.mort < 0) this.degats(1, 'poison'); }
+      // fletrissement (WitherMobEffect) : 1 de degats toutes les 40 >> niveau ticks, il peut tuer (le wither y est insensible)
+      if (id === 'wither') { const k = 40 >> e.niveau; if (k > 0 && restant % k === 0 && this.mort < 0 && this.typeCreature !== 'wither') this.degats(1, 'fletrissement'); }
     }
     // FoodData.tick : la vie remonte seule (regle faim.regeneration, coupee par defaut)
     if (this.mort < 0 && this.vie < this.vieMax && sim.regles.valeur('faim.regeneration', false)) {
@@ -84,6 +92,7 @@ export function installerUtilisation(Acteur, EchecActe) {
   };
   // LivingEntity.knockback : (dx, dz) pointe vers l'attaquant ; la vitesse est divisee par 2 puis reculee de `force`
   P.recul = function (force, dx, dz) {
+    force *= 1 - (this.ia?.pr.antiRecul ?? 0);   // attribut knockback_resistance (golem de fer 1, ravageur 0,75...)
     if (!(force > 0)) return;
     let L = Math.hypot(dx, dz);
     if (L < 1e-6) { const a = this.sim.hasard.flottant() * 2 * Math.PI; dx = Math.sin(a); dz = Math.cos(a); L = 1; }

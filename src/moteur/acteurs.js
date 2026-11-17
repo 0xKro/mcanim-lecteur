@@ -46,10 +46,13 @@ export class Acteur {
     this.vieMax = d.vie ?? 20; this.vie = this.vieMax; this.invulnerable = !!d.invulnerable; this.ramasse = d.ramasse === true; this.sac = new Map();
     this.hurtTime = 0; this.invulTemps = 0; this.derniereBlessure = 0; this.mort = -1; this.distanceChute = 0; this.air = 300; this.dansEau = false; this.dansLave = false;
     this.initUtilisation(d);
+    // creature (champ `type`) : sa boite, ses yeux et sa vitesse (film/actes.js, gabarit) ; joueur sinon
+    const gb = d.gabarit ?? null;
+    this.L = gb?.l ?? LARGEUR; this.H = gb?.h ?? HAUTEUR; this.O = gb?.oeil ?? OEIL; this.kVit = gb?.vitesse ?? 1;
   }
 
-  boite(x = this.x, y = this.y, z = this.z) { const h = this.accroupi ? HAUTEUR_ACCROUPI : HAUTEUR; return [x - LARGEUR / 2, y, z - LARGEUR / 2, x + LARGEUR / 2, y + h, z + LARGEUR / 2]; }
-  oeil() { return [this.x, this.y + (this.accroupi ? OEIL_ACCROUPI : OEIL), this.z]; }
+  boite(x = this.x, y = this.y, z = this.z) { const h = this.accroupi ? HAUTEUR_ACCROUPI : this.H, L = this.L; return [x - L / 2, y, z - L / 2, x + L / 2, y + h, z + L / 2]; }
+  oeil() { return [this.x, this.y + (this.accroupi ? OEIL_ACCROUPI : this.O), this.z]; }
   get lec() { return this.g.lec; }
   get regles() { return this.sim.regles; }
   portee() { return this.regles.valeur('joueur.portee', 4.5); }
@@ -176,7 +179,8 @@ export class Acteur {
   // une marche de 1 bloc (au plus) devant : la boite relevee de 1 passe, avec le plafond libre
   marcheSautable(cap) {
     const a = cap * RAD, dx = -Math.sin(a) * 0.4, dz = Math.cos(a) * 0.4, y = this.y + 1.2;
-    return !coupe(this.lec, [this.x + dx - LARGEUR / 2, y + 1e-3, this.z + dz - LARGEUR / 2, this.x + dx + LARGEUR / 2, y + HAUTEUR, this.z + dz + LARGEUR / 2]) && !coupe(this.lec, [this.x - LARGEUR / 2, this.y + HAUTEUR, this.z - LARGEUR / 2, this.x + LARGEUR / 2, y + HAUTEUR, this.z + LARGEUR / 2]);
+    const L = this.L, H = this.H;
+    return !coupe(this.lec, [this.x + dx - L / 2, y + 1e-3, this.z + dz - L / 2, this.x + dx + L / 2, y + H, this.z + dz + L / 2]) && !coupe(this.lec, [this.x - L / 2, this.y + H, this.z - L / 2, this.x + L / 2, y + H, this.z + L / 2]);
   }
   depasse(T, w) {   // le point est derriere nous : le prochain est plus proche
     const n = T.chemin[T.i + 1]; if (!n) return false;
@@ -542,7 +546,7 @@ export class Acteur {
     // on avance seulement quand le corps est a peu pres tourne vers la route
     if (av > 0 && Math.abs(norm180(this.entree.cap - this.lacet)) > 50) av = 0;
     if (this.accroupi) av *= FACTEUR_ACCROUPI;
-    const vit = enFluide ? 0.02 : this.auSol ? (this.course ? VITESSE_COURSE : VITESSE_MARCHE) * this.facteurVitesse() * (0.21600002 / (friction * friction * friction)) : (this.course ? 0.026 : 0.02);
+    const vit = enFluide ? 0.02 : this.auSol ? (this.course ? VITESSE_COURSE : VITESSE_MARCHE) * this.kVit * this.facteurVitesse() * (0.21600002 / (friction * friction * friction)) : (this.course ? 0.026 : 0.02);
     if (av > 0) {
       const dx = av * vit, a = this.lacet * RAD;     // entree (0, av) tournee de `lacet`
       this.vx += -Math.sin(a) * dx; this.vz += Math.cos(a) * dx;
@@ -646,7 +650,7 @@ export class Acteur {
   // Player.maybeBackOffFromEdge : accroupi, on ne quitte pas le bord (pas de chute possible a 0,6)
   sansTomber(mx, mz) {
     const lec = this.lec, step = 0.05;
-    const surBord = (dx, dz) => !coupe(lec, [this.x + dx - LARGEUR / 2, this.y - PAS, this.z + dz - LARGEUR / 2, this.x + dx + LARGEUR / 2, this.y - 1e-6, this.z + dz + LARGEUR / 2]);
+    const surBord = (dx, dz) => !coupe(lec, [this.x + dx - this.L / 2, this.y - PAS, this.z + dz - this.L / 2, this.x + dx + this.L / 2, this.y - 1e-6, this.z + dz + this.L / 2]);
     while (mx !== 0 && surBord(mx, 0)) mx = Math.abs(mx) <= step ? 0 : mx - Math.sign(mx) * step;
     while (mz !== 0 && surBord(0, mz)) mz = Math.abs(mz) <= step ? 0 : mz - Math.sign(mz) * step;
     while (mx !== 0 && mz !== 0 && surBord(mx, mz)) { mx = Math.abs(mx) <= step ? 0 : mx - Math.sign(mx) * step; mz = Math.abs(mz) <= step ? 0 : mz - Math.sign(mz) * step; }

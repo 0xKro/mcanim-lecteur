@@ -48,9 +48,12 @@ function fichiersIncrustations(liste) {
 // tables de donnees du jeu (moteur/donnees-empreinte.json : SHA-256 du fichier) et de la version du moteur ; un changement de donnees
 // invalide donc les jetons deja emis (comme un mod modifie).
 export function lignesVirtuelles(brut) {
-  if (brut?.monde === undefined && brut?.decor === undefined) return [];   // un decor depend aussi des tables de blocs du jeu (etats, formes)
+  // creatures (champ d'acteur `type`) : la table des modeles et animations (creatures/donnees-empreinte.json) change l'image
+  const creatures = Array.isArray(brut?.acteurs) && brut.acteurs.some((a) => typeof a?.type === 'string' && a.type !== 'joueur');
+  const lc = creatures ? (() => { const c = JSON.parse(fs.readFileSync(new URL('../creatures/donnees-empreinte.json', import.meta.url), 'utf8')); return [{ role: 'creatures', chemin: `creatures v${c.v}`, sha: c.sha256 }]; })() : [];
+  if (brut?.monde === undefined && brut?.decor === undefined) return lc;   // un decor depend aussi des tables de blocs du jeu (etats, formes)
   const d = JSON.parse(fs.readFileSync(new URL('../moteur/donnees-empreinte.json', import.meta.url), 'utf8'));
-  const lignes = [{ role: 'moteur', chemin: `donnees-jeu v${d.v}`, sha: d.sha256 }];
+  const lignes = [{ role: 'moteur', chemin: `donnees-jeu v${d.v}`, sha: d.sha256 }, ...lc];
   if (brut?.decor !== undefined) lignes.push({ role: 'decor-version', chemin: 'decor v1', sha: null });   // version du langage de decor : un changement de regle change l'image
   return lignes;
 }

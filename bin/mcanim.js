@@ -22,6 +22,7 @@ import { lireScene } from '../src/film/scene.js';
 import { empreinte } from '../src/film/empreinte.js';
 import { empreinteComplete } from '../src/film/empreinte-fichiers.js';
 import { groupesDeScene, planifier as planifierHabillage, chercherObjets } from '../src/objets/plan.js';   // objets tenus et armure (kit a la demande, controles, note)
+import { evenementsDeScene } from '../src/creatures/scene.js';   // sons des creatures de la scene (kit a la demande)
 import { materiauxDuKit } from '../src/objets/armure.js';   // empreinte = scene + contenu des fichiers cites + options (CONCEPTION.md partie 4)
 import { verifierJeton } from '../src/film/jeton.js';
 import { noteSkinsDeRepli } from '../src/perso/skin.js';
@@ -65,6 +66,7 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   mcanim shader --extraire pack.zip [--sortie dossier]   resume court des reglages d'un pack .zip (profils, options, const) ; memes noms pour --profil / --option
   mcanim shader --diagnostic          peut-on rendre avec un VRAI pack de shaders ici ? (moteur OpenGL logiciel, version, limites ; 4 lignes)
   mcanim shader --exemples            ou sont shader-leger.json et shader-tout.json
+  mcanim creatures --liste [mot]     CREATURES (champ d'acteur type) : types, variantes, animations nommees, parties, vitesses (30 lignes au plus) ; gratuit
   mcanim objets --cherche <mot>       identifiants d'objets du jeu (20 au plus) pour les champs objet / objetG ; --armures : materiaux du champ armure
   mcanim simuler <scene.json>         simule le jeu (champ monde : blocs poses, regles, mods) AVANT de payer le rendu ; gratuit, resume court (blocs changes, avertissements)
   (acteur.actes [[t,"verbe",..]] : un joueur SIMULE par le jeu : va x z | regarde | saute | accroupi | tient "objet" | attends s | utilise x y z (porte, bouton, levier, coffre, cloche...) | pose x y z "bloc" | casse x y z | utilise (manger, boire) | lance x y z|"acteur" (boule de neige, oeuf, perle, potion, trident) | tire x y z|"acteur" (arc, arbalete) | jette n | prend|depose x y z "objet" n ; options {va, ouvrePortes, duree, max, effet, niveau, secondes, charge} ; portee 4.5 ; mcanim simuler dit les echecs ; fiches actions, blocs_interactifs, casser_poser, objets_utiliser, arcs_projectiles)
@@ -81,7 +83,7 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   acteur : fige [[debut,fin]] (cet acteur seul s'arrete, pose tenue ; les autres continuent) figeSauf ["tete",...] (pistes qui continuent) ; boucle : phase0 (0..1, demarre a cette phase) ; sons : {pas, volume 0..4, liste [[t,"son",volume,cible]]} cible {"acteur":"nom"} ou [x,y,z]
   montage (facultatif, 1 a 180 s, fichier 64 Ko max) : plans [{de,a,camera,transition,vitesse,arret,image}] (une camera par plan, coupes) ; sousTitres {texte,debut,fin|mots,par,couleurs} et textes [[debut,fin,"texte"]] ;
   incrustations [{type: texte compteur fleche ligne icone equation coeurs faim horloge nom bulle chat succes inventaire coffre hud carte image, t:[debut,fin], ecran|monde|acteur}] ; camera : roulis secousse coupZoom flouFile flouRadial profondeurChamp ; sons.fichiers [[t,"voix.mp3",volume,{voix,sousVoix,fondu,boucle}]] (fiches du site)
-  champs de scene facultatifs : monde {graine, regles, mods, blocs [[t,x,y,z,"bloc"]], cmd, contenus, lumiere} (simulation du jeu ; lumiere des blocs), image, ciel, gel, textures, shader, packShader (pack .zip, chemin relatif a la scene) ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui, objet objetG [t,"id"|null] (objet tenu en main droite / gauche ; mcanim objets --cherche mot), armure {tete,torse,jambes,pieds} (fiches du site)
+  champs de scene facultatifs : monde {graine, regles, mods, blocs [[t,x,y,z,"bloc"]], cmd, contenus, lumiere} (simulation du jeu ; lumiere des blocs), image, ciel, gel, textures, shader, packShader (pack .zip, chemin relatif a la scene) ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui, objet objetG [t,"id"|null] (objet tenu en main droite / gauche ; mcanim objets --cherche mot), armure {tete,torse,jambes,pieds} (fiches du site) ; CREATURES : type (zombie, cow, horse, boat... : mcanim creatures --liste), variante, bebe, taille, charge, selle, armureCheval, colle, coffre, tondu, gonfle, agressif, anim [[t,nom]], regarde, parties ; monture (cavalier), etiquette (fiches creatures, creatures_anim, montures)
   hauteur automatique (physique du jeu : saut 0.42, gravite 0.08, pas de 0.6, chute, eau, echelle) a partir de pos [t,x,z] ; acteur : bascule [t,deg] roulis [t,deg]
   (corps entier autour des hanches, 90 = a plat) hauteur [t,blocs] (decalage vertical) reactions:false (coupe les reactions automatiques du corps)
   membres libres : brasD brasG jambeD jambeG [t,avant,cote,torsion] (cote < 0 : croise le corps ; torsion > 0 : rotation interne), tete [t,lacet,tangage,roulis],
@@ -304,7 +306,7 @@ async function commandeRendre(argv) {
   // 2. zone, kit, pack
   const zone = await obtenirZone(scene.zone, { zh: charge.zh });
   verifier({ zoneSha256: zone.sha256 });
-  let kit = await trouverKit({ groupes: groupesDeScene(scene) });
+  let kit = await trouverKit({ groupes: groupesDeScene(scene), evenementsCreatures: evenementsDeScene(scene) });
   if (opt.pack) kit = await appliquerPack(kit, path.resolve(opt.pack));
   const habillage = planifierHabillage(scene, kit);   // objets et armure : identifiants controles AVANT le rendu
   if (habillage.erreur) throw new Usage(habillage.erreur);
@@ -385,7 +387,7 @@ async function commandeApercu(argv) {
   const reel = await controlerPackShader(scene, baseDir, opt, dire);
   if (reel) dire(`apercu avec un vrai pack de shaders : ${path.basename(reel.chemin)}${reel.resume.length ? ', ' + reel.resume.join(' ') : ''} ; non gere : ${reel.nonGere.join(' ; ')}`);
   const zone = await obtenirZone(scene.zone);
-  let kit = await trouverKit({ groupes: groupesDeScene(scene) });
+  let kit = await trouverKit({ groupes: groupesDeScene(scene), evenementsCreatures: evenementsDeScene(scene) });
   if (opt.pack) kit = await appliquerPack(kit, path.resolve(opt.pack));
   const habillage = planifierHabillage(scene, kit);
   if (habillage.erreur) throw new Usage(habillage.erreur);
@@ -414,7 +416,7 @@ async function commandePlanche(argv) {
   verifierFichiers(scene, baseDir, surcharges);
   const shader = controlerShader(scene, baseDir, opt.shader);
   const zone = await obtenirZone(scene.zone);
-  let kit = await trouverKit({ groupes: groupesDeScene(scene) });
+  let kit = await trouverKit({ groupes: groupesDeScene(scene), evenementsCreatures: evenementsDeScene(scene) });
   if (opt.pack) kit = await appliquerPack(kit, path.resolve(opt.pack));
   const habillage = planifierHabillage(scene, kit);
   if (habillage.erreur) throw new Usage(habillage.erreur);
@@ -465,7 +467,8 @@ async function commandeSimuler(argv) {
     if (scene.decor) { const { zoneAvecDecor } = await import('../src/decor/index.js'); const r0 = await zoneAvecDecor({ zone: zoneS, scene, baseDir, donnees }); zoneS = r0.zone; r0.notes.forEach(dire); }
     const hp = scene.ciel?.heure;
     const { evaluer } = await import('../src/film/scene.js');
-    const r = simuler({ zone: zoneS, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene), baseDir, duree: scene.duree, options: { heure: hp ? (t) => evaluer(hp, t)[0] : undefined, meteo: scene.ciel?.meteo ?? null } });
+    const typesC = scene.acteurs.some((a) => a.creature && a.actes) ? (await (await import('../src/creatures/donnees.js')).donneesCreatures({})).types : null;
+    const r = simuler({ zone: zoneS, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene, typesC), baseDir, duree: scene.duree, options: { heure: hp ? (t) => evaluer(hp, t)[0] : undefined, meteo: scene.ciel?.meteo ?? null } });
     dire(r.rapport);
   } catch (e) { if (e instanceof ErreurMonde) throw new Usage(e.message); throw e; }
 }
@@ -570,6 +573,7 @@ async function main() {
     case 'shader': return commandeShader(reste);
     case 'kit': return commandeKit();
     case 'objets': return commandeObjets(reste);
+    case 'creatures': return (await import('../src/creatures/liste.js')).commandeCreatures(reste, { lireArgs, dire, Usage });
     case 'simuler': return commandeSimuler(reste);
     case 'regles': return commandeRegles(reste);
     case 'mods': return commandeMods(reste);

@@ -13,6 +13,8 @@
 //   jette [n] [{objet}]                                                           laisse tomber n objets devant soi (vitesse du jeu, ramassables apres 40 ticks)
 //   prend|depose x y z ["objet"] [n] [{va, fente}]                                  transfert avec un coffre, un tonneau, un entonnoir, un four (fente : entree, combustible, sortie)
 import { voulaisTu } from '../moteur/util.js';
+import { boiteDe, statsDe } from './creatures.js';
+import { MODIF_FLANERIE as FLANERIE } from '../creatures/especes.js';
 
 export const VERBES = ['va', 'regarde', 'saute', 'accroupi', 'tient', 'attends', 'utilise', 'pose', 'casse', 'lance', 'tire', 'jette', 'prend', 'depose'];
 const EFFETS = ['speed', 'slowness', 'jump_boost', 'invisibility', 'glowing', 'regeneration', 'poison', 'strength', 'night_vision', 'absorption'];
@@ -158,13 +160,22 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
 }
 
 // Acteurs commandes par la simulation (champ `actes`) : nom, depart, direction, objet en main, intentions
-export function descripteursActeurs(scene) {
+// types (facultatif) : statistiques des creatures ; une creature a intentions recoit son gabarit (boite, yeux, vitesse de marche du type :
+// (movement_speed x flanerie)^2 / 0,098, l'acceleration du joueur au sol etant 0,1 x 0,98)
+export function descripteursActeurs(scene, types = null) {
   return scene.acteurs.filter((a) => a.actes).map((a) => {
     const k = a.pos.cles[0];
     const premier = a.actes.find((x) => x.verbe === 'va' || x.verbe === 'regarde' && x.cible && x.cible.x !== undefined);
     const but = premier ? (premier.verbe === 'va' ? [premier.x, premier.z] : [premier.cible.x, premier.cible.z]) : null;
     const lacet = a.lacet ? a.lacet.cles[0].v[0] : but && Math.hypot(but[0] - k.x, but[1] - k.z) > 0.5 ? Math.atan2(-(but[0] - k.x), but[1] - k.z) * 180 / Math.PI : 0;
-    return { nom: a.nom, pos: Number.isFinite(k.y) ? [k.x, k.y, k.z] : [k.x, k.z], lacet, objet: a.objetD?.cles?.[0]?.id ?? null, actes: a.actes, vie: a.vie, invulnerable: a.invulnerable, ramasse: a.ramasse, faim: a.faim, sac: a.sac };
+    return { nom: a.nom, pos: Number.isFinite(k.y) ? [k.x, k.y, k.z] : [k.x, k.z], lacet, objet: a.objetD?.cles?.[0]?.id ?? null, actes: a.actes, vie: a.vie, invulnerable: a.invulnerable, ramasse: a.ramasse, faim: a.faim, sac: a.sac, ...(a.creature ? { gabarit: gabaritCreature(a.creature, types) } : {}) };
   });
 }
 
+
+// gabarit d'une creature pour le moteur : { l, h, oeil, vitesse (facteur de l'acceleration du joueur) }
+export function gabaritCreature(c, types) {
+  const b = boiteDe(c, types), st = statsDe(c, types);
+  const v = (st?.v ?? 0.1) * (FLANERIE[c.type] ?? 1);
+  return { l: b.l, h: b.h, oeil: b.y, vitesse: Math.round(v * v / 0.098 * 1000) / 1000 };
+}

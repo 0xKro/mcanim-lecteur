@@ -93,12 +93,13 @@ export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {
   let hote = null;
   try {
     const rapport = exporterZone(rs, path.join(tmp, 'maillage'));
-    const { personnages, parRef, infos } = await preparerPersonnages(scene, { kitDir: kit, surcharges, baseDir });
+    const creatures = scene.acteurs.some((a) => a.creature) ? await (await import('../creatures/donnees.js')).donneesCreatures({ env }) : null;
+    const { personnages, parRef, infos } = await preparerPersonnages(scene, { kitDir: kit, surcharges, baseDir, creatures });
     // scene avec monde : terrain vivant (portes, murs poses...) et acteurs a `actes` lus dans le replay, comme dans le rendu de base ; les effets visibles
     // (couvercles de coffre, cloche, fissures, particules, objets au sol, blocs qui tombent, TNT : film/effets-monde.js) sont envoyes a l'hote comme des
     // geometries dynamiques (programme choisi selon leur genre, voir GENRES)
     const terrain = sim ? (await import('../film/terrain-vivant.js')).creerTerrainVivant({ rs, replay: sim.replay, donnees: sim.donnees }) : terrainDepuis(rs);
-    const anim = animer(scene, terrain, sim ? { replay: sim.replay } : null);
+    const anim = animer(scene, terrain, sim ? { replay: sim.replay } : null, creatures ? { creatures } : {});
     const effets = sim ? (await import('../film/effets-monde.js')).creerEffetsMonde({ rs, scene, sim, kit, donnees: sim.donnees, terrain }) : null;
     const W = scene.largeur, H = scene.hauteur;
     const rw = Math.max(16, Math.round(W * echelle)), rh = Math.max(16, Math.round(H * echelle));
@@ -210,13 +211,19 @@ export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {
             lumiere[k] = l;
           }
           const perso = p.skin ? parRef[k].get(p.skin) : personnages[k];
-          const m = perso.maillage({ ...p, age: im.tm * 20 }, l, true);
-          const spec = { pos: b64(m.positions), uv: b64(m.uvs), col: null, nor: b64(m.normales), idx: b64(m.indices), tex: await idTexture(m.texture), mode: m.mode, deuxFaces: !!m.deuxFaces, ciel: l * 15, entite: 0 };
-          if (m.masque) { spec.masque = await idMasque(m.masque); spec.kM = Math.max(0, Math.min(1, m.forceMasque ?? 1)); }
-          if (m.exempt) spec.exempt = true;
-          if (p.absent) continue;                                    // mort depuis plus d'une seconde : plus dessine
-          if (p.teinte) spec.couleurEntite = [1, 0, 0, 0.3];         // rougeur des degats : l'entityColor du jeu (hurt)
-          e.acteurs.push(spec);
+          const ms = perso.maillage({ ...p, age: im.tm * 20, camera: im.camera }, l, true);
+          for (const m of Array.isArray(ms) ? ms : [ms]) {   // une creature : un maillage par couche
+            const spec = { pos: b64(m.positions), uv: b64(m.uvs), col: null, nor: b64(m.normales), idx: b64(m.indices), tex: await idTexture(m.texture), mode: m.mode, deuxFaces: !!m.deuxFaces, ciel: l * 15, entite: 0 };
+            if (m.masque) { spec.masque = await idMasque(m.masque); spec.kM = Math.max(0, Math.min(1, m.forceMasque ?? 1)); }
+            if (m.exempt) spec.exempt = true;
+            if (p.absent) continue;                                    // mort depuis plus d'une seconde : plus dessine
+            if (p.teinte) spec.couleurEntite = [1, 0, 0, 0.3];         // rougeur des degats : l'entityColor du jeu (hurt)
+            if (m.genre === 'creature') {                              // creature : entityId du pack (entity.properties), teinte de la couche (laine, collier), yeux emissifs
+              spec.entiteNom = m.entite; spec.col = b64(m.couleurs);
+              if (m.emissif) { spec.additif = true; spec.bloc = 15; }
+            }
+            e.acteurs.push(spec);
+          }
         }
         if (effets) for (const m of effets.maillages(im.tm, im.camera)) e.acteurs.push(await specMonde(m));
         e.veutMasque = !!image && e.acteurs.some((a) => a.exempt || a.masque);

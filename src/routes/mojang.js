@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { RangeRefused } from '../net.js';
 import { FileSource, HttpSource, readCentralDirectory, extractWanted } from '../zip.js';
-import { jarWanted, JAR_GROUPS, SOUND_EVENTS, resolveSoundNames, sha1, pool } from '../kit.js';
+import { jarWanted, JAR_GROUPS, SOUND_EVENTS, SOUND_EVENTS_CREATURES, resolveSoundNames, sha1, pool } from '../kit.js';
 
 export const MANIFEST = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json';
 export const OBJECTS = 'https://resources.download.minecraft.net';
@@ -52,7 +52,7 @@ async function fromJar(ctx, client, wantedGroups) {
   } finally { try { fs.unlinkSync(tmp); } catch { /* absent */ } }
 }
 
-async function fromAssets(ctx, assetIndex) {
+async function fromAssets(ctx, assetIndex, events = ctx.opts.soundEvents || SOUND_EVENTS, tolerant = false) {
   const { net, put, log } = ctx;
   const body = (await net.buffer(assetIndex.url, { gzip: true })).body;
   check(body, assetIndex.sha1, 'index des assets');
@@ -68,7 +68,7 @@ async function fromAssets(ctx, assetIndex) {
   };
   const sj = await getObj('minecraft/sounds.json');
   put('assets/minecraft/sounds.json', sj);
-  const names = resolveSoundNames(JSON.parse(sj.toString('utf8')), ctx.opts.soundEvents || SOUND_EVENTS);
+  const names = resolveSoundNames(JSON.parse(sj.toString('utf8')), events, tolerant);
   await pool(names, 8, async (n) => put(`assets/minecraft/sounds/${n}.ogg`, await getObj(`minecraft/sounds/${n}.ogg`)));
   log(`sons: ${names.length} fichiers .ogg`);
   return { sounds: names.length };
@@ -89,6 +89,7 @@ export async function run(ctx) {
   const notes = {};
   if (jarGroups.size) tasks.push(fromJar(ctx, client, jarGroups).then((r) => { notes.jar = r; }));
   if (groups.has('sons')) tasks.push(fromAssets(ctx, vj.assetIndex).then((r) => { notes.assets = r; }));
+  if (groups.has('sons_creatures')) tasks.push(fromAssets(ctx, vj.assetIndex, ctx.opts.evenementsCreatures || SOUND_EVENTS_CREATURES, true).then((r) => { notes.sonsCreatures = r; }));
   await Promise.all(tasks);
   return { notes: { ...notes, jarSize: client.size, jarSha1: client.sha1, assetIndex: vj.assetIndex.id } };
 }

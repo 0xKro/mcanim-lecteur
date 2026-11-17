@@ -3,6 +3,7 @@
 // La hauteur vient de la physique du jeu (physique.js : saut, marche d'escalier, chute, eau, echelle) ; les reactions automatiques
 // du corps (reactions.js) s'ajoutent aux pistes et boucles de l'acteur.
 import { evaluer, evaluerPhase, poidsBoucle } from './scene.js';
+import { appliquerCreatures, boiteDe } from './creatures.js';   // creatures (champ `type`) et montures
 import { planifierCameraSuivi, planifierCameraLibre } from './camera.js';
 import { compensationAppui, descenteBascule, decalageYeux } from '../perso/modele.js';
 import { simulerActeur, creerSol, lisser01 } from './physique.js';
@@ -111,7 +112,7 @@ function skinEn(a, t) {
 // et pas de collision). bloc et eauEn servent aux dalles, escaliers, echelles et a l'eau (physique.js).
 // Retourne { images: [...], corrections (nombre d'images ou la camera a ete corrigee), notes, camera (stat des corrections), trajets }.
 // monde (facultatif) : { replay } d'une scene avec simulation ; terrain vivant : voir terrain-vivant.js (le monde de chaque instant).
-export function animer(scene, terrain = {}, monde = null) {
+export function animer(scene, terrain = {}, monde = null, extra = {}) {   // extra.creatures : table des creatures (stats) quand la scene en a
   const estLibre = terrain.estLibre ?? (() => true);
   // solide pour la camera : seulement les blocs pleins (voir rendu/scene.js, estSolidePourCamera) ; a defaut, tout ce qui n'est pas libre
   const solide = terrain.solide ?? ((x, y, z) => !estLibre(x, y, z));
@@ -152,7 +153,9 @@ export function animer(scene, terrain = {}, monde = null) {
   const remap = carteTemps(scene);   // null sans `plans` avec vitesse/arret : le temps d'action est alors le temps du film, comme avant
   // physique verticale de chaque acteur (physique.js) : saut, marche d'escalier, chute, eau, echelle ; la piste pos donne l'horizontale
   const figes = acteurs.map((a) => creerFige(a, gel));   // acteurs figes seuls (champ fige) : null pour les autres, calcul inchange
-  const sims = acteurs.map((a, k) => simulerActeur({ piste: pistePos(a), terrain, duree: scene.duree, gel: figes[k] ? figes[k].simGel : gel, tempsPos: figes[k]?.simTemps ?? null }));
+  // creatures : boite et hauteur de marche du type (physique) ; rien de change pour les joueurs
+  const boites = acteurs.map((a) => (a.creature ? boiteDe(a.creature, extra.creatures?.types) : null));
+  const sims = acteurs.map((a, k) => simulerActeur({ piste: pistePos(a), terrain, duree: scene.duree, gel: figes[k] ? figes[k].simGel : gel, tempsPos: figes[k]?.simTemps ?? null, ...(boites[k] ? { rayon: boites[k].l / 2, pas: Math.max(0.6, boites[k].pas) } : {}) }));
   for (let i = 0; i < n; i++) {
     const t = remap ? remap.tw[i] : i * DT;
     const { tw, fige } = horloge.etat(t);
@@ -210,7 +213,7 @@ export function animer(scene, terrain = {}, monde = null) {
         brasD: membre(a, 'brasD', T('brasD'), H('brasD'), fB), brasG: membre(a, 'brasG', T('brasG'), H('brasG'), fB), jambeD: membre(a, 'jambeD', T('jambeD'), H('jambeD'), fJ), jambeG: membre(a, 'jambeG', T('jambeG'), H('jambeG'), fJ),
       };
       if (R) { pose.brasD[0] += R.bras; pose.brasG[0] += R.bras; pose.jambeD[0] += R.jambe; pose.jambeG[0] += R.jambe; }
-      if (vs) { V.membres(vs, pose); if (vs.objet && !a.objetD) pose.objetD = vs.objet; }   // balancement du jeu, coup du bras, objet tenu
+      if (vs) { if (!a.creature) V.membres(vs, pose); if (vs.objet && !a.objetD) pose.objetD = vs.objet; }   // une creature a sa propre marche (film/creatures.js)   // balancement du jeu, coup du bras, objet tenu
       // articulations libres (additif) : torsion des membres, roulis de la tete, haut du corps entier ; rien n'est ajoute sans elles
       for (const [nom, f] of [['brasD', fB], ['brasG', fB], ['jambeD', fJ], ['jambeG', fJ]]) {
         const tors = (a[nom] ? (evaluer(a[nom], T(nom))[2] ?? 0) : 0) + sommeBoucles(a, nom, t, 3, H(nom))[2] * f;
@@ -281,11 +284,14 @@ export function animer(scene, terrain = {}, monde = null) {
       for (const [champ, piste] of [['objetD', a.objetD], ['objetG', a.objetG]]) { const id = piste ? valeurObjet(piste, T(champ)) : null; if (id) pose[champ] = id; }
       if (a.armure) { let arm = null; for (const [e, piste] of Object.entries(a.armure)) { const id = valeurObjet(piste, T('armure')); if (id) (arm ??= {})[e] = id; } if (arm) pose.armure = arm; }
       // montage : vie au repos (respiration, regard) et gestes sur mots cles, ajoutes a la pose (rien sans `jeu` ni `gestes`)
-      if (a.gestes?.length || (scene.jeu && a.jeu?.actif)) ajouterJeu(pose, { t, a, vie: !!scene.jeu && a.jeu.actif, marche: Math.hypot(dx, dz) / DT > 0.5 || !auSol || !!st.eau, posDe: posDeImage, lacet });
+      if (a.gestes?.length || (scene.jeu && a.jeu?.actif && !a.creature)) ajouterJeu(pose, { t, a, vie: !!scene.jeu && a.jeu.actif, marche: Math.hypot(dx, dz) / DT > 0.5 || !auSol || !!st.eau, posDe: posDeImage, lacet });
       if (FG && etU.fige) pose.figee = true;   // cet acteur est fige : pas de bruits de pas (pas.js, sons.js)
       return pose;
     }));
   }
+
+  // creatures et montures (film/creatures.js) : etat d'animation du jeu, cavaliers sur leur siege ; rien sans elles
+  if (acteurs.some((a) => a.creature || a.monture)) notes.push(...appliquerCreatures(scene, parImage, { DT, terrain, types: extra.creatures?.types }));
 
   if (terrain.fin) terrain.fin();   // monde vivant : la camera planifie dans le monde de la fin de la scene (murs poses, trous faits)
 
@@ -294,6 +300,7 @@ export function animer(scene, terrain = {}, monde = null) {
   // A ZERO (cap, hauteur lissee, collisions : rien ne se propage d'un plan a l'autre, pas d'interpolation a travers une coupe) ; les temps des pistes
   // de camera d'un plan sont relatifs a son debut.
   const yeux = (p) => {
+    if (p.oeil !== undefined) return [p.x, p.y + p.oeil, p.z];   // creature : ses yeux (statistiques du type)
     if (!p.bascule && !p.roulis && !p.hauteur && !p.troncComplet) return [p.x, p.y + 1.62 - 0.35 * p.accroupi, p.z];   // corps droit : la formule d'avant, au bit pres
     const [ox, oy, oz] = decalageYeux(p);
     return [p.x + ox, p.y + oy, p.z + oz];

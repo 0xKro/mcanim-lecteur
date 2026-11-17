@@ -63,6 +63,7 @@ mesh = {
 - Cache des textures : une texture est envoyee aux workers la premiere fois qu'on voit son tableau `rgba` (identite de l'objet). Pour changer les pixels, donner un NOUVEAU tableau.
 - Cout : les tableaux sont copies a chaque image ; viser quelques dizaines de milliers de triangles par image.
 - Test z : les maillages dynamiques se cachent correctement avec le terrain.
+- Creatures (`src/creatures/rendu.js`) : un maillage par couche du modele (corps, laine, selle, yeux...), `deuxFaces: true` (rendu `entityCutoutNoCull` du jeu) sauf les couches translucides ; champs en plus `genre: 'creature'`, `entite: 'minecraft:<type>'` (entityId du vrai pack de shaders, `src/pack/film.js`) ; yeux et aura : `mode: 'melange'`, `additif: true`, `emissif: true`, couleurs a 1 (pleine lumiere). Les couleurs portent la teinte de la couche (laine, collier) : le chemin GPU les envoie (`col`).
 
 ### Couleur selective et post-traitement `image`
 - But : un film peut griser (ou teinter) toute l'image tout en gardant la couleur de certains pixels (cheveux, yeux...).

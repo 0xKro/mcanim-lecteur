@@ -77,11 +77,11 @@ export function terrainDepuis(rs) {
 }
 
 // Sol de l'acteur : dessus du bloc le plus haut sous la boite (4 coins et centre), fin pour les dalles et escaliers.
-export function creerSol(terrain) {
+export function creerSol(terrain, R = RAYON_PIED) {   // R : demi-largeur de la boite (creatures : celle du type)
   const solEn = terrain.solEn ?? (() => 0);
   const bloc = terrain.bloc ?? null;
   if (terrain.solFinEn) {   // monde VIVANT (scene avec `monde`) : sol et obstacles venus des boites de collision du jeu, autour de la hauteur `yr` des pieds
-    const PTS = [[0, 0], [-RAYON_PIED, -RAYON_PIED], [RAYON_PIED, -RAYON_PIED], [-RAYON_PIED, RAYON_PIED], [RAYON_PIED, RAYON_PIED]];
+    const PTS = [[0, 0], [-R, -R], [R, -R], [-R, R], [R, R]];
     const fin = (x, z, yr) => terrain.solFinEn(x, z, yr);
     const sous = (x, z, yr) => { let m = null; for (const [dx, dz] of PTS) { const y = fin(x + dx, z + dz, yr); if (y !== null && (m === null || y > m.y)) m = { y, x: x + dx, z: z + dz }; } return m; };
     return { sous, solFin: fin };
@@ -94,7 +94,7 @@ export function creerSol(terrain) {
     const etat = bloc(bx, s - 1, bz);
     return etat ? s - 1 + hauteurDuBloc(etat, x - bx, z - bz) : s;
   };
-  const POINTS = [[0, 0], [-RAYON_PIED, -RAYON_PIED], [RAYON_PIED, -RAYON_PIED], [-RAYON_PIED, RAYON_PIED], [RAYON_PIED, RAYON_PIED]];
+  const POINTS = [[0, 0], [-R, -R], [R, -R], [-R, R], [R, R]];
   // { y, x, z } du point le plus haut, ou null
   const sous = (x, z) => {
     let m = null;
@@ -114,8 +114,8 @@ const lisser01 = (u) => { u = Math.min(1, Math.max(0, u)); return u * u * (3 - 2
 // Retourne { ticks, x, z, y, vy, sol (booleens), air, eau, echelle, imp (hauteur imposee par pos), horizModifie, evenementsBruts,
 //   decollages: [{ k, t }], atterrissages: [{ k, t, impact (blocs/tick), chute (blocs) }], etatA(tm), temps(k) }.
 // tempsPos (facultatif) : fonction qui decale le temps de lecture de la piste (acteur fige seul, fige.js) ; sans elle, le temps du film.
-export function simulerActeur({ piste, terrain = {}, duree, gel = [], tempsPos = null }) {
-  const sol = creerSol(terrain);
+export function simulerActeur({ piste, terrain = {}, duree, gel = [], tempsPos = null, rayon = RAYON_PIED, pas: pasMax = HAUTEUR_PAS }) {   // rayon, pas : boite et hauteur de marche (creatures)
+  const sol = creerSol(terrain, rayon);
   const eauEn = terrain.eauEn ?? (() => null);
   const bloc = terrain.bloc ?? (() => null);
   const monde = (x) => { let g = 0; for (const [a, b] of gel) if (x > a) g += Math.min(x, b) - a; return x - g; };
@@ -165,7 +165,7 @@ export function simulerActeur({ piste, terrain = {}, duree, gel = [], tempsPos =
       const g = gAt(X[k + j], Z[k + j], yp);
       if (g === null) continue;
       const r = g - yp;
-      if (r > HAUTEUR_PAS + 1e-6) {
+      if (r > pasMax + 1e-6) {
         if (r > SAUT_MAX - 0.004) return null;            // trop haut : mur (signale par l'obstacle)
         let n = 1;
         while (n < SAUT.length && SAUT[n - 1] < r + 0.002) n++;
@@ -252,7 +252,7 @@ export function simulerActeur({ piste, terrain = {}, duree, gel = [], tempsPos =
     // ground plus haut que les pieds (apres le mouvement vertical si on monte) : marche de moins de 0,6 = on monte sans sauter ; sinon mur
     let r = gd - Math.max(y, ny);
     if (r > 1e-6) {
-      if (r <= HAUTEUR_PAS + 1e-9) {
+      if (r <= pasMax + 1e-9) {
         ny = gd; if (vy < 0) vy = 0;
         if (etaitAuSol && r > 0.02) PAS[k] = r;
       } else {                                                    // mur : le deplacement horizontal est bloque

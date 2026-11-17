@@ -12,6 +12,7 @@ import { evaluer } from './scene.js';
 import { imageEn, cielEn } from './look.js';
 import { facteurCielMeteo } from './meteo.js';
 import { Personnage } from '../perso/modele.js';
+import { maillageEtiquette } from '../creatures/etiquette.js';   // etiquette de nom (champ `etiquette`)
 import { resoudreSkin } from '../perso/skin.js';
 import { lireMasque } from '../perso/masque.js';
 import { Sons, planifierSons, mixer, FREQUENCE, VOLUME_MIXAGE } from './sons.js';
@@ -32,9 +33,16 @@ export function fichierShader(scene, baseDir, option) {
 // Prepare les skins de tous les acteurs. `surcharges` : { nomActeur: "fichier.png" } (option --skin).
 // Retourne { personnages (le skin de base de chaque acteur), parRef (par acteur : Map "reference de skin" -> Personnage, pour la
 // piste `skins`), infos }. Le masque de couleur selective (champ `masque`) est lu une fois par acteur et partage par tous ses skins.
-export async function preparerPersonnages(scene, { kitDir, surcharges = {}, baseDir, resoudre = resoudreSkin }) {
+export async function preparerPersonnages(scene, { kitDir, surcharges = {}, baseDir, resoudre = resoudreSkin, creatures = null }) {
   const personnages = [], parRef = [], infos = [];
   for (const a of scene.acteurs) {
+    if (a.creature) {   // creature (champ `type`) : modele et textures du jeu (creatures/rendu.js), pas de skin
+      const { Creature } = await import('../creatures/rendu.js');
+      const c = new Creature({ ...a.creature, armure: armureFixe(a) }, creatures, kitDir);
+      personnages.push(c); parRef.push(new Map());
+      infos.push({ acteur: a.nom, modele: a.creature.type, origine: 'creature', detail: c.notes.join(' ; ') || null, repli: false });
+      continue;
+    }
     const masque = a.masque ? lireMasque(a.masque, baseDir) : null;
     const r = await resoudre({ description: a.skin, modele: a.modele, kitDir, surcharge: surcharges[a.nom], baseDir });
     personnages.push(new Personnage({ rgba: r.rgba, modele: r.modele, masque }));
@@ -52,6 +60,14 @@ export async function preparerPersonnages(scene, { kitDir, surcharges = {}, base
   return { personnages, parRef, infos };
 }
 
+// armure d'une creature : la premiere valeur de chaque emplacement (les creatures gardent leur armure toute la scene)
+function armureFixe(a) {
+  if (!a.armure) return null;
+  const o = {};
+  for (const [e, p] of Object.entries(a.armure)) { const k = p.cles?.find((x) => x.id); if (k) o[e] = k.id; }
+  return o;
+}
+
 // Simulation du jeu d'une scene avec un champ `monde` : { zone, donnees, replay, rapport, notes, secondes }. Gratuit (pas de jeton) : meme calcul pour
 // `mcanim simuler`, `apercu` et `rendre` (graine fixee : memes blocs a chaque fois).
 export async function simulerScene({ scene, zonePath, baseDir, env = process.env }) {
@@ -66,7 +82,8 @@ export async function simulerScene({ scene, zonePath, baseDir, env = process.env
   if (scene.decor) { const r0 = await (await import('../decor/index.js')).zoneAvecDecor({ zone, scene, baseDir, donnees }); zone = r0.zone; notesDecor = r0.notes; }
   const hp = scene.ciel?.heure;   // l'heure du jour de la scene : lue par le detecteur de lumiere du jour
   const heure = hp ? (t) => evaluer(hp, t)[0] : undefined;
-  const r = simuler({ zone, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene), baseDir, duree: scene.duree, options: { heure, meteo: scene.ciel?.meteo ?? null } });
+  const typesC = scene.acteurs.some((a) => a.creature && a.actes) ? (await (await import('../creatures/donnees.js')).donneesCreatures({ env })).types : null;   // creatures a intentions : leur gabarit
+  const r = simuler({ zone, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene, typesC), baseDir, duree: scene.duree, options: { heure, meteo: scene.ciel?.meteo ?? null } });
   return { zone, donnees, replay: r.replay, rapport: r.rapport, notes: [...notesDecor, ...r.replay.avertissements.map((a) => 'monde : ' + a)], secondes: (performance.now() - t0) / 1000 };
 }
 
@@ -85,10 +102,12 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
     rs.definirShader(sh);
     const notes = sh ? [...sh.notes] : [];
     if (sim) notes.push(...sim.notes);
-    const { personnages, parRef, infos } = await preparerPersonnages(scene, { kitDir: kit, surcharges, baseDir });
+    const creatures = scene.acteurs.some((a) => a.creature) ? await (await import('../creatures/donnees.js')).donneesCreatures({ env }) : null;   // table des creatures (relais), seulement si la scene en a
+    const { personnages, parRef, infos } = await preparerPersonnages(scene, { kitDir: kit, surcharges, baseDir, creatures });
     // scene avec simulation : le terrain est le monde VIVANT (blocs poses, portes ouvertes, collisions des boites du jeu), instant par instant
     const terrain = sim ? (await import('./terrain-vivant.js')).creerTerrainVivant({ rs, replay: sim.replay, donnees: sim.donnees }) : terrainDepuis(rs);
-    const anim = animer(scene, terrain, sim ? { replay: sim.replay } : null);
+    const anim = animer(scene, terrain, sim ? { replay: sim.replay } : null, creatures ? { creatures } : {});
+    const etiquettes = scene.acteurs.some((a) => a.etiquette) ? await (await import('../creatures/etiquette.js')).preparerEtiquettes(scene, kit) : null;   // noms au-dessus des tetes
     const comp = await creerComposition({ scene, kit, baseDir, rs, anim });   // null sans plans, textes, incrustations ni effets de camera
     if (comp) notes.push(...comp.notes);
     const lumiere = personnages.map(() => null);
@@ -123,8 +142,10 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
           lumiere[k] = l;
         }
         const perso = p.skin ? parRef[k].get(p.skin) : personnages[k];
-        return perso.maillage({ ...p, age: im.tm * 20 }, l);
-      });
+        const m = perso.maillage({ ...p, age: im.tm * 20, camera: im.camera }, l);
+        const et = !carte && etiquettes && scene.acteurs[k].etiquette && !p.absent ? maillageEtiquette(etiquettes, scene.acteurs[k].etiquette, p, p.hautBoite ?? 1.8, im.camera) : null;
+        return et ? [m, et].flat() : m;
+      }).flat();   // une creature donne un maillage par couche ; etiquette de nom en plus
       if (effets && !carte) maillages.push(...effets.maillages(im.tm, im.camera));
       const ciel = sim ? cielM : cielEn(scene, im.t);
       const veutProf = comp ? comp.veutProfondeur(i) : false;

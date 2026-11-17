@@ -13,6 +13,7 @@ export const FLEXION_MAX = 150;
 // Orientation du corps entier : bascule et roulis en degres (voir perso/modele.js, inclinaison), hauteur : decalage vertical en blocs.
 export const BASCULE_MAX = 180, HAUTEUR_MAX = 10;
 // Articulations libres : angles a 3 valeurs (epaule, hanche, tete, tronc), cibles de mains et de pieds ; plafond absurde +-360 (limites.js, cibles.js).
+import { lireCreature, VERBES_CREATURES } from '../creatures/scene.js';   // champs des creatures (type, variante, monture...)
 import { PLAFOND } from './limites.js';
 import { lireCibles, MEMBRES_CIBLES } from './cibles.js';
 import { lireMontage, lireEffetsCamera } from '../montage/format.js';   // plans, textes, sousTitres, incrustations, effets de camera (facultatifs)
@@ -153,10 +154,14 @@ export function validerScene(s) {
   if (!estNombre(s.duree) || s.duree < 1 || s.duree > DUREE_MAX) err('duree', `entre 1 et ${DUREE_MAX} secondes attendu, pas ${JSON.stringify(s.duree)}`);
   if (typeof s.zone !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(s.zone)) err('zone', 'identifiant de zone attendu (22 caracteres : lettres, chiffres, - et _)');
   if (!Array.isArray(s.acteurs) || s.acteurs.length < 1) err('acteurs', 'au moins un acteur est attendu');
-  if (s.acteurs.length > 10) err('acteurs', 'dix acteurs au maximum');
+  // dix joueurs au plus ; les creatures (champ `type`) s'y ajoutent, jusqu'a 24 acteurs en tout
+  const nbJoueurs = s.acteurs.filter((a) => !(a && typeof a.type === 'string' && a.type !== 'joueur')).length;
+  if (nbJoueurs > 10) err('acteurs', 'dix acteurs au maximum (les creatures en plus, 24 acteurs en tout)');
+  if (s.acteurs.length > 24) err('acteurs', '24 acteurs au maximum en comptant les creatures (dix joueurs au plus)');
 
   const noms = new Set();
   const tousNoms = new Set(s.acteurs.map((a) => a?.nom));   // les gestes peuvent viser un acteur declare plus loin
+  const typesActeurs = new Map(s.acteurs.map((a) => [a?.nom, typeof a?.type === 'string' && a.type !== 'joueur' ? a.type : undefined]));
   const acteurs = s.acteurs.map((a, i) => {
     const ch = `acteurs[${i}]`;
     if (!estObjet(a)) err(ch, 'un objet est attendu');
@@ -204,6 +209,8 @@ export function validerScene(s) {
     if (a.reactions !== undefined && typeof a.reactions !== 'boolean') err(`${ch}.reactions`, 'true ou false attendu (false : coupe les reactions automatiques du corps au saut, a la chute et a l atterrissage)');
     o.reactions = a.reactions !== false;
     Object.assign(o, lireJeuActeur({ err, noms: tousNoms }, a, ch));   // jeu (vie au repos) et gestes
+    lireCreature(a, o, ch, err, { duree: s.duree, noms: tousNoms, typesActeurs });   // creatures (type, variante...) et monture ; rien sans ces champs
+    if (o.creature && o.actes) { const x = o.actes.find((v) => !VERBES_CREATURES.includes(v.verbe)); if (x) err(`${ch}.actes`, `une creature ne fait que ${VERBES_CREATURES.join(', ')} (pas "${x.verbe}")`); }
     if (a.accroupi !== undefined) o.accroupi = lirePiste(a.accroupi, `${ch}.accroupi`, { minArite: 1, maxArite: 1 });
     for (const m of MEMBRES) if (a[m] !== undefined) o[m] = borner(lirePiste(a[m], `${ch}.${m}`, { minArite: 1, maxArite: 3 }), `${ch}.${m}`, -PLAFOND, PLAFOND);
     for (const m of ARTICULATIONS) if (a[m] !== undefined) o[m] = borner(lirePiste(a[m], `${ch}.${m}`, { minArite: 1, maxArite: 1 }), `${ch}.${m}`, 0, FLEXION_MAX);

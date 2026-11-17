@@ -30,6 +30,8 @@ export const SOUND_EVENTS_MONDE = [
   'weather.rain', 'weather.rain.above', 'entity.lightning_bolt.thunder', 'entity.lightning_bolt.impact', 'block.furnace.fire_crackle', 'item.bucket.fill_powder_snow',
 ];
 export const SOUND_EVENTS = [...new Set([...SOUND_EVENTS_PAS, ...SOUND_EVENTS_MONDE])];
+// Sons des creatures (groupe a la demande `sons_creatures`) : cris, blessure, mort, pas de chaque type (src/creatures/especes.js)
+export { SOUND_EVENTS_CREATURES } from './creatures/especes.js';
 // Version de chaque groupe du kit : un cache plus ancien (kit.json) est complete la prochaine fois (sons du monde, textures de coffre et de cloche, particules)
 export const GROUP_VERSIONS = { sons: 4, textures: 2 };
 
@@ -49,24 +51,30 @@ export const GROUPS = {
   armures: ['assets/minecraft/equipment/', 'assets/minecraft/textures/entity/equipment/'],                    // armure portee (champ `armure`)
   projectiles: ['assets/minecraft/textures/entity/projectiles/'],                                            // fleche, trident, fleche spectrale, charge de vent... (monde simule)
   // interface (montage : textes, incrustations) : police du jeu (fournisseurs + textures), sprites de l'interface (coeurs, barre d'objets, infobulle, succes...), fonds de conteneurs
+  // creatures (champ d'acteur `type`) : textures des entites (0,4 Mo) et sons des creatures (evenements de SOUND_EVENTS_CREATURES seulement)
+  entites: ['assets/minecraft/textures/entity/'],
+  sons_creatures: ['assets/minecraft/sounds/mob/', 'assets/minecraft/sounds/entity/'],
   interface: ['assets/minecraft/font/', 'assets/minecraft/textures/font/', 'assets/minecraft/textures/gui/sprites/', 'assets/minecraft/textures/gui/container/'],
 };
 // Hors de DEFAULT_GROUPS : le premier lancement reste leger. `trouverKit({ groupes })` (film/cache.js) les ajoute quand la scene en a besoin.
-export const GROUPES_A_LA_DEMANDE = ['objets', 'armures', 'interface', 'projectiles'];
+export const GROUPES_A_LA_DEMANDE = ['objets', 'armures', 'interface', 'projectiles', 'entites', 'sons_creatures'];
 export const DEFAULT_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'environnement', 'sons'];
-export const JAR_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'environnement', 'worldgen', 'objets', 'armures', 'interface', 'projectiles'];
+export const JAR_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'environnement', 'worldgen', 'objets', 'armures', 'interface', 'projectiles', 'entites'];
 
+// Groupe d'un chemin : le prefixe le plus LONG l'emporte (textures/entity/player/ = skins, le reste de textures/entity/ = entites ;
+// sounds/mob/ = sons_creatures, le reste de sounds/ = sons).
 export function groupOf(rel) {
+  let best = null, n = -1;
   for (const [g, prefixes] of Object.entries(GROUPS)) {
-    for (const p of prefixes) if (p.endsWith('/') ? rel.startsWith(p) : rel === p) return g;
+    for (const p of prefixes) if ((p.endsWith('/') ? rel.startsWith(p) : rel === p) && p.length > n) { best = g; n = p.length; }
   }
-  return null;
+  return best;
 }
 // Pour les groupes du jar (hors sons): le chemin est-il voulu ?
 export function jarWanted(name, groups) {
   if (name.endsWith('/')) return false;
   const g = groupOf(name);
-  return !!g && g !== 'sons' && groups.has(g);
+  return !!g && g !== 'sons' && g !== 'sons_creatures' && groups.has(g);
 }
 
 export function normGroups(groups) {
@@ -83,12 +91,12 @@ export function safeRel(rel) {
 }
 
 // sounds.json -> liste des noms de sons (ex. "step/grass1") pour des evenements donnes
-export function resolveSoundNames(soundsJson, events = SOUND_EVENTS) {
+export function resolveSoundNames(soundsJson, events = SOUND_EVENTS, tolerant = false) {   // tolerant : un evenement absent est ignore (sons des creatures)
   const out = new Set(); const seen = new Set();
   const visit = (ev) => {
     if (seen.has(ev)) return; seen.add(ev);
     const e = soundsJson[ev];
-    if (!e) { if (SOUND_EVENTS_MONDE.includes(ev) && !SOUND_EVENTS_PAS.includes(ev)) return; throw new Error(`evenement de son absent de sounds.json: ${ev}`); }   // un son du monde simule absent est ignore (kit de test, version du jeu)
+    if (!e) { if (tolerant) return; if (SOUND_EVENTS_MONDE.includes(ev) && !SOUND_EVENTS_PAS.includes(ev)) return; throw new Error(`evenement de son absent de sounds.json: ${ev}`); }   // un son du monde simule absent est ignore (kit de test, version du jeu)
     for (const s of e.sounds || []) {
       const o = typeof s === 'string' ? { name: s } : s;
       const name = o.name.replace(/^minecraft:/, '');

@@ -8,11 +8,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
-import { GROUPS, SOUND_EVENTS, resolveSoundNames, listKitFiles, pool } from '../kit.js';
+import { GROUPS, SOUND_EVENTS, SOUND_EVENTS_CREATURES, resolveSoundNames, listKitFiles, pool } from '../kit.js';
 
 export const DEPOT = 'https://github.com/misode/mcmeta';
 const RAW = 'https://raw.githubusercontent.com/misode/mcmeta';
-const GROUPES_ASSETS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'environnement', 'objets', 'armures', 'interface', 'projectiles'];
+const GROUPES_ASSETS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'environnement', 'objets', 'armures', 'interface', 'projectiles', 'entites'];
 
 const erreur = (message, court) => Object.assign(new Error(message), { court });
 
@@ -87,11 +87,11 @@ function copier(ctx, dir, groupes) {
   return n;
 }
 
-async function sonsParRaw(ctx, version) {
+async function sonsParRaw(ctx, version, events = ctx.opts.soundEvents || SOUND_EVENTS, tolerant = false) {
   const { net } = ctx;
   const raw = (p) => `${RAW}/${version}-assets/assets/minecraft/${p}`;
   const sj = (await net.buffer(raw('sounds.json'))).body;
-  const names = resolveSoundNames(JSON.parse(sj.toString('utf8')), ctx.opts.soundEvents || SOUND_EVENTS);
+  const names = resolveSoundNames(JSON.parse(sj.toString('utf8')), events, tolerant);
   const oggs = new Map();
   await pool(names, 8, async (nm) => oggs.set(nm, (await net.buffer(raw(`sounds/${nm}.ogg`))).body));
   ctx.put('assets/minecraft/sounds.json', sj);
@@ -99,14 +99,14 @@ async function sonsParRaw(ctx, version) {
   return names.length;
 }
 
-async function sonsParGit(ctx, version) {
+async function sonsParGit(ctx, version, events = ctx.opts.soundEvents || SOUND_EVENTS, tolerant = false) {
   return avecClone(ctx, `${version}-assets`, ['/assets/minecraft/sounds.json'], async (dir, etendre) => {
     const sj = fs.readFileSync(path.join(dir, 'assets', 'minecraft', 'sounds.json'));
-    const names = resolveSoundNames(JSON.parse(sj.toString('utf8')), ctx.opts.soundEvents || SOUND_EVENTS);
+    const names = resolveSoundNames(JSON.parse(sj.toString('utf8')), events, tolerant);
     await etendre(names.map((n) => `/assets/minecraft/sounds/${n}.ogg`));
     for (const nm of names) if (!fs.existsSync(path.join(dir, 'assets', 'minecraft', 'sounds', ...`${nm}.ogg`.split('/')))) throw erreur(`son absent du depot : ${nm}`, 'son absent');
     ctx.put('assets/minecraft/sounds.json', sj);
-    copier(ctx, dir, ['sons']);
+    copier(ctx, dir, ['sons', 'sons_creatures']);   // sounds/mob/ est classe dans sons_creatures (prefixe le plus long)
     return names.length;
   });
 }
@@ -131,7 +131,7 @@ export async function run(ctx) {
   const tags = [];
   if (assets.length) tags.push(tagAssets);
   if (donnees.length) tags.push(tagDonnees);
-  if (groups.has('sons')) tags.push(`${version}-assets`);
+  if (groups.has('sons') || groups.has('sons_creatures')) tags.push(`${version}-assets`);
   // prise de contact rapide : un site bloque (403) ou muet echoue en quelques secondes, avant tout telechargement
   const refs = await git(['ls-remote', '--tags', depot, ...tags.map((t) => `refs/tags/${t}`)], { timeout: delaiGit });
   for (const t of tags) if (!refs.includes(`refs/tags/${t}`)) throw erreur(`etiquette ${t} absente de ${depot}`, `etiquette ${t} absente`);
@@ -144,11 +144,13 @@ export async function run(ctx) {
   if (donnees.length) {
     taches.push(avecClone(ctx, tagDonnees, donnees.flatMap(prefixeSparse), async (dir) => { nots.donnees = copier(ctx, dir, donnees); }));
   }
-  if (groups.has('sons')) {
+  for (const [g, evs, tol] of [['sons', ctx.opts.soundEvents || SOUND_EVENTS, false], ['sons_creatures', ctx.opts.evenementsCreatures || SOUND_EVENTS_CREATURES, true]]) {
+    if (!groups.has(g)) continue;
+    const cle = g === 'sons' ? 'sons' : 'sonsCreatures';
     taches.push((async () => {
-      try { nots.sons = await sonsParRaw(ctx, version); nots.sonsVia = 'raw.githubusercontent.com'; } catch (e) {
+      try { nots[cle] = await sonsParRaw(ctx, version, evs, tol); nots[cle + 'Via'] = 'raw.githubusercontent.com'; } catch (e) {
         ctx.log(`sons par raw impossibles (${e.message}) : repli par git`);
-        nots.sons = await sonsParGit(ctx, version); nots.sonsVia = 'git';
+        nots[cle] = await sonsParGit(ctx, version, evs, tol); nots[cle + 'Via'] = 'git';
       }
     })());
   }

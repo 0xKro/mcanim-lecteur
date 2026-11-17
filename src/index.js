@@ -39,6 +39,12 @@ export async function ensureKit({ version = '26.3', cacheDir = '.kit-cache', rou
   const kitDir = path.resolve(cacheDir, version);
   const info = readInfo(kitDir) || { version, groups: {} };
   const need = new Set([...want].filter((g) => !info.groups[g] || (info.groups[g].v ?? 1) < (GROUP_VERSIONS[g] ?? 1)));   // groupe absent ou d'une version plus ancienne
+  // sons des creatures : on ne prend que les evenements des types de la scene (opts.evenementsCreatures) ; il en manque -> on recupere le manque
+  const dejaCreatures = info.groups.sons_creatures?.evenements ?? [];
+  if (want.has('sons_creatures') && opts.evenementsCreatures) {
+    const manque = opts.evenementsCreatures.filter((e) => !dejaCreatures.includes(e));
+    if (manque.length) { need.add('sons_creatures'); opts.evenementsCreatures = manque; } else need.delete('sons_creatures');
+  }
   const report = { version, route: null, complete: false, partial: false, missing: [], files: 0, bytesDownloaded: 0, requests: 0, seconds: 0, groups: {}, hash: null, attempts: [], notes: {} };
 
   if (need.size === 0) {
@@ -83,7 +89,8 @@ export async function ensureKit({ version = '26.3', cacheDir = '.kit-cache', rou
     err.report = { ...report, seconds: (Date.now() - t0) / 1000 };
     throw err;
   }
-  if (!report.partial) for (const [g, s] of Object.entries(best.writer.byGroup)) info.groups[g] = { files: s.files, bytes: s.bytes, route: best.r, ...(GROUP_VERSIONS[g] ? { v: GROUP_VERSIONS[g] } : {}) };
+  if (!report.partial) for (const [g, s] of Object.entries(best.writer.byGroup)) if (need.has(g)) info.groups[g] = { files: s.files + (g === 'sons_creatures' ? info.groups[g]?.files ?? 0 : 0), bytes: s.bytes + (g === 'sons_creatures' ? info.groups[g]?.bytes ?? 0 : 0), route: best.r, ...(GROUP_VERSIONS[g] ? { v: GROUP_VERSIONS[g] } : {}), ...(g === 'sons_creatures' ? { evenements: [...new Set([...dejaCreatures, ...(opts.evenementsCreatures ?? [])])].sort() } : {}) };
+  if (!report.partial && need.has('sons_creatures') && !best.writer.byGroup.sons_creatures) info.groups.sons_creatures = { files: info.groups.sons_creatures?.files ?? 0, bytes: info.groups.sons_creatures?.bytes ?? 0, route: best.r, evenements: [...new Set([...dejaCreatures, ...(opts.evenementsCreatures ?? [])])].sort() };
   info.updated = new Date().toISOString();
   if (!report.partial) writeInfo(kitDir, info);
   const done = new Set([...want].filter((g) => info.groups[g] || (report.partial && best.writer.byGroup[g])));

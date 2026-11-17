@@ -219,3 +219,24 @@ Reecrit en JavaScript a partir de Horizon (MIT), aucun fichier copie :
 |---|---|---|
 | Forme de l'eclair (`LightningBoltRenderer.submit`) : 8 segments de 16 blocs, deux branches de 3 segments (ecart `nextInt(31) - 15`), 4 couches de largeur `0,1 + 0,2 x couche`, 4 quads par segment, couleur blanc bleute 0,45 0,45 0,5 a 0,3 d'opacite, dessin additif | `crates/horizon-client-render/src/gfx/lightning.rs` (`geometry`) | `src/film/meteo-rendu.js` (`bolt`), additif dans `src/rendu/raster.js` |
 | Colonnes de pluie et de neige (`WeatherEffectRenderer`) : opacite `(max + t x (0,5 - max)) x intensite`, pluie max 1, neige 0,8, couleur de sommet blanche | `crates/horizon-client-render/src/weather.rs` (`column_quad`) | `src/film/meteo-rendu.js` |
+
+## Creatures (`src/creatures/`, `src/film/creatures.js`) : portage depuis Horizon (MIT) et tables numeriques du jeu
+
+Code reecrit en JavaScript a partir de Horizon (MIT, `_ref/horizon/crates/horizon-client/src/mobs/`). Aucun code de Mojang n'est
+decompile ni copie. Les MODELES (polygones cuits, pivots, UV), les animations a images cles et les statistiques sont des tables
+numeriques extraites des donnees du jeu du proprietaire (`outils/extraire-creatures.mjs` -> `relais/d/creatures-1.json.gz`, servi par
+le relais, jamais dans le paquet). Les TEXTURES et les SONS ne sont jamais livres : ils viennent des fichiers du jeu chez le client
+(groupes de kit a la demande `entites` et `sons_creatures`).
+
+| Ce qui est porte | Fichier d'origine (Horizon) | Ou chez nous |
+|---|---|---|
+| Arbre de parties, nommage (racine "root" imbriquee, premier nom garde), poses par nom, parties cachees / sautees | `mobs/model.rs` (`Part::parse`), `mobs/anim.rs` (`Poses`) | `src/creatures/poses.js` |
+| Animations a images cles (echantillonnage, catmullrom, boucle, `applyWalk`), etats d'animation | `mobs/keyframes.rs` | `src/creatures/images-cles.js` |
+| Animations de code de toutes les familles (`setupAnim` : humanoides, bras, arc, arbalete, zombie, nage, quadrupedes, araignee, creeper, poule, villageois, golems, illageois, piglins, sorciere, loup, chat, chevaux, slime, enderman, blaze, ghast, poissons, calamar, dauphin, chameau, breeze, sniffer, warden, creaking, allay, phantom, gardien, vex, ravageur, shulker, wither, golem de cuivre, happy ghast, nautilus, et `body_anim.rs`) ; horloges par tick (ailes, ecrasement du slime, tentacules, queue, tete qui dit non, attaque du golem...) | `mobs/anim.rs`, `body_anim.rs`, `villager.rs`, `golem.rs`, `illager.rs`, `piglin.rs`, `witch.rs`, `tame.rs`, `equine.rs`, `cube.rs`, `enderman.rs`, `nether.rs`, `aquatic.rs`, `camel.rs`, `breeze.rs`, `sniffer.rs`, `warden.rs`, `creaking.rs`, `allay.rs`, `phantom.rs`, `guardian.rs`, `vex.rs`, `ravager.rs`, `shulker.rs`, `wither.rs`, `copper_golem.rs`, `happy_ghast.rs`, `nautilus.rs` | `src/creatures/anim.js` |
+| Table des especes (modele, texture, famille d'animation, sons, dimensions des bebes) | `mobs/species.rs` (`ALL`) | `src/creatures/especes.js` (`ESPECES`) |
+| Textures et couches par type et variante (corps, bebes, laine et sous-laine teintes, collier, selles, armure de cheval, marques, tapis de lama, metiers / biomes / niveaux des villageois et chapeaux `.mcmeta`, yeux emissifs, couches externes, charge du creeper, armure des humanoides) ; couleurs des teintures et de la laine | `mobs/render.rs` (`body`, `layers`, `humanoid_armor`), `equine.rs`, `llama.rs`, `tame.rs`, `panda.rs`, `villager_hats.rs`, `horizon-client-render/src/pack_palette.rs` | `src/creatures/rendu.js` (`couchesDe`), `especes.js` |
+| Chaine de matrices d'un mob (`180 - lacet`, symetrie (-1,-1,1), -1,501, `translateAndRotate` Z.Y.X, echelle de partie), gonflement du creeper et clignotement blanc, ecrasement du slime, balancement du golem de fer ; bateau (0,375, rotation de 90 degres, pagaies) | `mobs/render.rs` (`base_transform_at`, `species_scale`, `posed`), `mobs/cube.rs`, `game/boats.rs` | `src/creatures/rendu.js`, `src/film/creatures.js` |
+| Objet tenu par un mob (main, `ItemInHandLayer`) | `mobs/render.rs` (`hand_base`, `held_item_transform`) | `src/creatures/rendu.js` (meme chaine que `src/objets/placement.js`) |
+| Marche des pattes (`WalkAnimationState` : min(distance x 4, 1) a 0,4 par tick, bebes x 3 ; chameau x 6 a 0,2) | `mobs/anim.rs` (`walk_position`), `mobs/camel.rs` (`walk_target`) | `src/film/creatures.js` |
+| Montures : points d'attache des passagers par type, decalage du cavalier (0,6 joueur, 0,7 zombies et squelettes...), rotation avec la monture, pose assise | `mobs/riders.rs` (`passenger_attachment`, `vehicle_attachment`, `seat`), `mobs/camel.rs`, `game/boats.rs` (`seat`), `mobs/anim.rs` (`humanoid`, passager) | `src/creatures/especes.js` (`SIEGES`), `src/film/creatures.js` |
+| Etiquette de nom (hauteur de boite + 0,5, fond noir 25 %, 0,025 bloc par pixel) | `EntityRenderer.renderNameTag` (fait du jeu, decrit par Horizon `render.rs`) | `src/creatures/etiquette.js` |

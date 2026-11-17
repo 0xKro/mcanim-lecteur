@@ -32,9 +32,9 @@ export function dossierCache(env = process.env) {
 // Retourne le dossier du kit (<cache>/kit/26.3). MCANIM_KIT : dossier de kit deja pret (essais).
 // `groupes` : groupes A LA DEMANDE en plus de ceux de base (kit.js, GROUPES_A_LA_DEMANDE : 'objets', 'armures') ; seuls les manquants
 // sont telecharges, une fois, dans le meme cache.
-export async function trouverKit({ env = process.env, log = () => {}, groupes = [] } = {}) {
+export async function trouverKit({ env = process.env, log = () => {}, groupes = [], evenementsCreatures = null } = {}) {   // evenementsCreatures : sons des creatures de la scene
   if (env.MCANIM_KIT) return dossierKit(env.MCANIM_KIT);
-  const { dir, report } = await ensureKit({ cacheDir: path.join(dossierCache(env), 'kit'), route: 'auto', log, ...(groupes.length ? { groups: [...DEFAULT_GROUPS, ...groupes] } : {}) });
+  const { dir, report } = await ensureKit({ cacheDir: path.join(dossierCache(env), 'kit'), route: 'auto', log, ...(groupes.length ? { groups: [...DEFAULT_GROUPS, ...groupes] } : {}), ...(evenementsCreatures ? { evenementsCreatures: [...evenementsCreatures] } : {}) });
   if (!report.complete) throw new Error(`kit de base incomplet (manque : ${(report.missing || []).slice(0, 3).join(', ')}...)`);
   return dir;
 }

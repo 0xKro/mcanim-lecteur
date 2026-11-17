@@ -4,7 +4,7 @@
 import zlib from 'node:zlib';
 import { Transform } from 'node:stream';
 import { readTar } from '../tar.js';
-import { jarWanted, SOUND_EVENTS, resolveSoundNames, pool } from '../kit.js';
+import { jarWanted, SOUND_EVENTS, SOUND_EVENTS_CREATURES, resolveSoundNames, pool } from '../kit.js';
 
 const REPO = 'misode/mcmeta';
 
@@ -22,18 +22,19 @@ export async function run(ctx) {
   const { net, version, groups } = ctx;
   const notes = {};
   const tasks = [];
-  const assetGroups = new Set([...groups].filter((g) => ['blockstates', 'models', 'textures', 'colormap', 'skins', 'environnement', 'objets', 'armures', 'interface', 'projectiles'].includes(g)));
+  const assetGroups = new Set([...groups].filter((g) => ['blockstates', 'models', 'textures', 'colormap', 'skins', 'environnement', 'objets', 'armures', 'interface', 'projectiles', 'entites'].includes(g)));
   if (assetGroups.size) tasks.push(fromTarball(ctx, `${version}-assets-tiny`, assetGroups).then((n) => { notes.tarballAssetsTiny = n; }));
   const dataGroups = new Set([...groups].filter((x) => x === 'worldgen' || x === 'biomes'));
   if (dataGroups.size) tasks.push(fromTarball(ctx, `${version}-${ctx.opts.dataTag || "data-json"}`, dataGroups).then((n) => { notes.tarballDataJson = n; }));
-  if (groups.has('sons')) {
+  for (const [g, evs, tol] of [['sons', ctx.opts.soundEvents || SOUND_EVENTS, false], ['sons_creatures', ctx.opts.evenementsCreatures || SOUND_EVENTS_CREATURES, true]]) {
+    if (!groups.has(g)) continue;
     tasks.push((async () => {
       const raw = (p) => `https://raw.githubusercontent.com/${REPO}/${version}-assets/assets/minecraft/${p}`;
       const sj = (await net.buffer(raw('sounds.json'))).body;
       ctx.put('assets/minecraft/sounds.json', sj);
-      const names = resolveSoundNames(JSON.parse(sj.toString('utf8')), ctx.opts.soundEvents || SOUND_EVENTS);
+      const names = resolveSoundNames(JSON.parse(sj.toString('utf8')), evs, tol);
       await pool(names, 8, async (nm) => ctx.put(`assets/minecraft/sounds/${nm}.ogg`, (await net.buffer(raw(`sounds/${nm}.ogg`))).body));
-      notes.sounds = names.length;
+      notes[g === 'sons' ? 'sounds' : 'sonsCreatures'] = names.length;
     })());
   }
   await Promise.all(tasks);

@@ -1,5 +1,6 @@
 // Sons : bruits de pas selon le bloc et la distance parcourue, sons ponctuels du jeu, mixage en PCM.
 // Les fichiers .ogg viennent du kit ; ffmpeg les decode, le melange est fait ici (simple et sur).
+import { sonsCreature } from './creatures.js';   // sons des creatures
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -115,6 +116,7 @@ export function planifierSons({ scene, images, zone, sons, sims = null, remap = 
   if (scene.sons.pas) {
     const manquantes = new Set();
     scene.acteurs.forEach((a, k) => {
+      if (a.creature) return;   // creatures : leurs propres pas (plus bas)
       let mouvement = 0, suivant = 1, n = 0;
       // Jambes animees : un pas a chaque contact d'un pied avec le sol (film/pas.js), avec le bloc sous CE pied.
       let nbContacts = 0;
@@ -160,6 +162,20 @@ export function planifierSons({ scene, images, zone, sons, sims = null, remap = 
     });
     if (sims) { const absents = new Set(); sonsDeTrajet({ scene, images, zone, sons, sims, evenements, gainPan, manquantes: absents, remap }); if (absents.size) notes.push(`sons de la physique absents du kit, ignores : ${[...absents].join(', ')}`); }
     if (manquantes.size) notes.push(`sons de pas absents du kit : ${[...manquantes].join(', ')} (herbe utilisee)`);
+  }
+  // creatures (champ `type`) : pas, cris, blessures, amorce du creeper, pagaies (film/creatures.js)
+  if (scene.acteurs.some((a) => a.creature)) {
+    const absents = new Set();
+    const ajouter = (evt, t, pos, gain, graine, hauteur = 1) => {
+      const liste = sons.fichiers(evt);
+      if (!liste.length) { absents.add(evt); return false; }
+      const im = images[Math.min(images.length - 1, Math.max(0, Math.round(t / DT)))], gp = gainPan(pos, im.camera);
+      evenements.push({ t, fichier: choisir(liste, graine), gain: Math.min(1, gp.gain * gain), pan: gp.pan, ...(hauteur !== 1 ? { hauteur: Math.round(hauteur * 50) / 50 } : {}) });
+      return true;
+    };
+    const blocSous = (p) => evenementPas(familleDeBloc(zone ? zone.bloc(Math.floor(p.x), Math.floor(p.sol - 0.2), Math.floor(p.z)) : null));
+    scene.acteurs.forEach((a, k) => { if (a.creature) nbPas += sonsCreature({ a, k, images, sons, ajouter, blocSous, pasAuto: !!scene.sons.pas }); });
+    if (absents.size) notes.push(`sons de creatures absents du kit, ignores : ${[...absents].slice(0, 6).join(', ')}`);
   }
   for (const s of scene.sons.liste) {
     const liste = sons.fichiers(s.nom);

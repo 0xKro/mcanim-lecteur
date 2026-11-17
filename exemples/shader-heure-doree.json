@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "nom": "Heure doree (exemple du lecteur)",
+  "origine": "exemple ecrit pour le lecteur : lumiere chaude et rasante de fin d'apres-midi, ombres longues, lueur, brume doree (le look des videos de reference)",
+  "performance": { "echellePost": 0.5, "cuisson": 1 },
+  "lumiere": {
+    "soleil": { "12": [1, 0.96, 0.88], "16": [1, 0.88, 0.7], "17.5": [1, 0.8, 0.52], "19": [1, 0.55, 0.32] },
+    "ambiante": { "12": [0.88, 0.96, 1.08], "17.5": [1, 0.92, 0.96] },
+    "intensiteSoleil": 1.25,
+    "intensiteAmbiante": 1.15,
+    "partDirecte": 0.55
+  },
+  "ombres": { "actif": true, "distance": 128, "intensite": 0.85, "feuillage": 0.6, "couleur": [0.78, 0.82, 1.0], "acteurs": true, "acteursOpacite": 0.5 },
+  "occlusion": { "force": 1.2 },
+  "ciel": { "lueurCrepuscule": 1.6, "soleil": { "taille": 1.2, "halo": 0.25, "haloRayon": 8 } },
+  "brume": { "densite": 1.1, "courbe": "exp", "couleur": { "17.5": [1, 0.8, 0.62] }, "hauteur": { "densite": 0.5, "niveau": 98, "epaisseur": 18 } },
+  "rayons": { "intensite": 0.2, "echantillons": 12, "decroissance": 0.95, "longueur": 0.6, "couleur": [1, 0.78, 0.5] },
+  "lueur": { "intensite": 0.15, "seuil": 0.88, "rayon": 24 },
+  "tonalite": { "exposition": 1.18, "courbe": "reinhard", "blancMax": 1.7 },
+  "etalonnage": { "saturation": 1.1, "vibrance": 1.08, "contraste": 1.07, "temperature": 0.03 },
+  "ecran": { "vignette": 0.28 }
+}

@@ -5,13 +5,34 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 export const SOUND_MATERIALS = ['grass', 'stone', 'wood', 'sand', 'gravel', 'snow'];
-export const SOUND_EVENTS = SOUND_MATERIALS.map((m) => `block.${m}.step`);
+export const SOUND_EVENTS_PAS = SOUND_MATERIALS.map((m) => `block.${m}.step`);
+// Sons du MONDE SIMULE (docs/SIMULATION.md, partie 9) : pose, casse et coups de blocs des principaux materiaux, portes, trappes, portillons,
+// boutons, plaques, levier, coffres, cloche, bloc musical, TNT et explosions. Les noms sont ceux de sounds.json.
+export const MATERIAUX_MONDE = ['grass', 'stone', 'wood', 'sand', 'gravel', 'snow', 'wool', 'glass', 'metal', 'deepslate'];
+export const SOUND_EVENTS_MONDE = [
+  ...MATERIAUX_MONDE.flatMap((m) => ['break', 'place', 'hit', 'step'].map((k) => `block.${m}.${k}`)),
+  'block.wooden_door.open', 'block.wooden_door.close', 'block.iron_door.open', 'block.iron_door.close',
+  'block.wooden_trapdoor.open', 'block.wooden_trapdoor.close', 'block.iron_trapdoor.open', 'block.iron_trapdoor.close', 'block.fence_gate.open', 'block.fence_gate.close',
+  'block.wooden_button.click_on', 'block.wooden_button.click_off', 'block.stone_button.click_on', 'block.stone_button.click_off',
+  'block.wooden_pressure_plate.click_on', 'block.wooden_pressure_plate.click_off', 'block.stone_pressure_plate.click_on', 'block.stone_pressure_plate.click_off',
+  'block.metal_pressure_plate.click_on', 'block.metal_pressure_plate.click_off', 'block.lever.click', 'block.chest.open', 'block.chest.close',
+  'block.barrel.open', 'block.barrel.close', 'block.bell.use', 'block.bell.resonate',
+  ...['harp', 'basedrum', 'snare', 'hat', 'bass', 'flute', 'bell', 'guitar', 'chime', 'xylophone', 'iron_xylophone', 'cow_bell', 'didgeridoo', 'bit', 'banjo', 'pling'].map((i) => `block.note_block.${i}`),
+  'block.anvil.land', 'entity.tnt.primed', 'entity.generic.explode', 'item.flintandsteel.use', 'block.fire.ambient', 'block.fire.extinguish', 'entity.item.pickup',
+  // fluides, vie et feu a la main (phase 4) : seaux, lave, eclaboussure, degats, mort, chutes, charge de feu
+  'item.bucket.empty', 'item.bucket.fill', 'item.bucket.empty_lava', 'item.bucket.fill_lava', 'block.lava.extinguish', 'block.lava.pop', 'block.lava.ambient',
+  'entity.player.splash', 'entity.player.splash.high_speed', 'entity.player.hurt', 'entity.player.death', 'entity.player.big_fall', 'entity.player.small_fall',
+  'item.firecharge.use', 'entity.generic.extinguish_fire', 'block.candle.extinguish',
+];
+export const SOUND_EVENTS = [...new Set([...SOUND_EVENTS_PAS, ...SOUND_EVENTS_MONDE])];
+// Version de chaque groupe du kit : un cache plus ancien (kit.json) est complete la prochaine fois (sons du monde, textures de coffre et de cloche, particules)
+export const GROUP_VERSIONS = { sons: 3, textures: 2 };
 
 // groupe -> prefixes de chemin dans le jar (et dans le cache, qui reprend les memes chemins)
 export const GROUPS = {
   blockstates: ['assets/minecraft/blockstates/'],
   models: ['assets/minecraft/models/block/'],
-  textures: ['assets/minecraft/textures/block/'],
+  textures: ['assets/minecraft/textures/block/', 'assets/minecraft/textures/entity/chest/', 'assets/minecraft/textures/entity/bell/', 'assets/minecraft/textures/particle/'],   // + coffres, cloche et particules (monde simule)
   colormap: ['assets/minecraft/textures/colormap/'],
   skins: ['assets/minecraft/textures/entity/player/'],
   sons: ['assets/minecraft/sounds.json', 'assets/minecraft/sounds/'],
@@ -61,7 +82,7 @@ export function resolveSoundNames(soundsJson, events = SOUND_EVENTS) {
   const visit = (ev) => {
     if (seen.has(ev)) return; seen.add(ev);
     const e = soundsJson[ev];
-    if (!e) throw new Error(`evenement de son absent de sounds.json: ${ev}`);
+    if (!e) { if (SOUND_EVENTS_MONDE.includes(ev) && !SOUND_EVENTS_PAS.includes(ev)) return; throw new Error(`evenement de son absent de sounds.json: ${ev}`); }   // un son du monde simule absent est ignore (kit de test, version du jeu)
     for (const s of e.sounds || []) {
       const o = typeof s === 'string' ? { name: s } : s;
       const name = o.name.replace(/^minecraft:/, '');

@@ -54,6 +54,35 @@ Reecrit en JavaScript a partir de Horizon (MIT) : le code de Horizon n'est ni co
 Les **donnees** sont des nombres et des noms de blocs sortis du jeu du proprietaire par un outil de developpement ; le fichier produit n'a pas le format
 des fichiers du jeu (le controle `npm run controle` le verifie). Il est telecharge a la demande (groupe `donnees-jeu`), jamais range dans le paquet npm.
 
+### P1 : acteurs, collisions, blocs interactifs, minage, pose (`src/moteur/acteurs.js`, `collision.js`, `navigation.js`, `cassage.js`, `familles/`)
+
+Reecrit en JavaScript a partir de Horizon (MIT) et du comportement connu du jeu ; rien n'est copie.
+
+| Ce qui est porte | Fichier d'origine (Horizon, `_ref/horizon/crates/`) | Ou chez nous |
+|---|---|---|
+| `Entity.collide` / `collideBoundingBox` : Y d'abord, puis l'axe horizontal le plus court, marche de 0,6 (deux essais, le plus loin gagne), un tick de descente ; boites de collision par etat | `horizon-world/src/{entity_move,collision,block_collision_scan,block_collision}.rs` | `src/moteur/collision.js` (`deplacerBoite`, `boitesDans`, `solSous`) |
+| Mouvement du joueur : acceleration (vitesse x 0,216 / friction^3 au sol, 0,02 en l'air, x 0,98 d'entree, accroupi x 0,3, course 0,13), friction du bloc x 0,91, gravite 0,08 puis 0,98, saut 0,42 (+0,2 en courant), arret au bord accroupi | `horizon-world/src/{living_air,living_motion,living_fluid}.rs` | `src/moteur/acteurs.js` (`physique`, `sansTomber`) |
+| Portee d'interaction 4,5 ; balancement du bras (`LivingEntity.swing`, 6 ticks, relance a 3) ; marche des membres (`limbSwing`, `limbSwingAmount`) | `horizon-client/src/game/{hand,perspective}.rs`, `anim.rs` | `src/moteur/acteurs.js`, `src/film/acteurs-vivants.js` |
+| Minage : progression = vitesse / durete / (30 ou 100), efficacite, hate, fatigue, eau, air ; regles de l'outil (`minecraft:tool.rules`, `correct_for_drops`) | `horizon-client/src/game/{block_breaking,hand}.rs`, `horizon-items` | `src/moteur/cassage.js` |
+| Portes, trappes, portillons (`use_without_item`, `set_door_open`, `door_sound`, mise a jour de forme des moities, charniere, portillon retourne), boutons (`button_press`, `ticksToStayPressed`), leviers (`lever_pull`), plaques (`checkPressed`, 20 et 10 ticks), blocs musicaux (`note_play`), coffres et tonneaux (compteur de visiteurs), cloche (`isProperHit`) | `horizon-world/src/level/{interact,hooks,survive,redstone}.rs` | `src/moteur/familles/{portes,boutons,conteneurs}.js` |
+| Etats de pose (`getStateForPlacement` : porte, trappe, portillon, escalier et sa forme, dalle double, coffre double, lit, bûche, clotures et vitres reliees, torche murale, bouton) | `horizon-world/src/level/{place,orientation}.rs` | `src/moteur/familles/pose.js` |
+| Couvercle de coffre (`ChestLidController` : +-0,1 par tick, angle 1-(1-o)^3), corps de cloche (`BellRenderer` : sin(f/pi) / (4 + f/3), 50 ticks) | `horizon-client-render/src/` (entites de blocs) | `src/film/effets-monde.js` |
+| Particules de casse de bloc (`ParticleEngine.destroy` : 4 x 4 x 4, vitesse normalisee + 0,1, duree 4 a 40 ticks, 1/4 de texture, gravite 0,04, friction 0,98), particule de note | `horizon-client/src/game/{level_particles,block_particles}.rs`, `rendu/particles.rs` | `src/film/effets-monde.js` |
+| Affaiblissement des sons (portee 16 x volume, lineaire), hauteur = vitesse de lecture | `horizon-client/src/game/sound_playback.rs` | `src/film/sons-monde.js` |
+
+Les **outils** (`outils` dans les donnees : regles de minage de 38 objets) et l'instrument de chaque etat sortent de `items.json` et de `gameplay-facts.json` du dossier prepare du jeu, par `outils/extraire-donnees-jeu.mjs` (nombres et noms seulement).
+
+### P2 (debut) : entites, blocs qui tombent, TNT, explosion, feu (`src/moteur/{entites,explosion}.js`, `familles/{chute,tnt,feu}.js`)
+
+Reecrit en JavaScript a partir de Horizon (MIT) ; rien n'est copie.
+
+| Ce qui est porte | Fichier d'origine (Horizon, `_ref/horizon/crates/`) | Ou chez nous |
+|---|---|---|
+| Explosion : 1352 rayons (surface de la grille 16x16x16), pas 0,3, perte (resistance + 0,3) x 0,3 et 0,225 par pas, force x (0,7 + 0,6 x hasard) ; degats `(int)((ab^2 + ab) / 2 x 7 x 2 x puissance + 1)`, recul, exposition par rayons ; amorcage des TNT voisins (meche nextInt(meche/4) + meche/8) ; son et particules | `horizon-client/src/game/{explosion,tnt,native_explosions}.rs` | `src/moteur/explosion.js`, `src/moteur/entites.js` |
+| TNT amorce : meche 80, gravite 0,04, trainee 0,98, saut de depart 0,2, sol x (0,7 ; -0,5 ; 0,7) ; bloc qui tombe : gravite 0,04, trainee 0,98, atterrissage dans la cellule ; poudre de beton + eau | `horizon-client/src/game/{tnt,falling_blocks}.rs`, `horizon-world/src/{level/falling,block_landing}.rs` | `src/moteur/entites.js`, `familles/{chute,tnt}.js` |
+| Feu : age 0..15, tick 30 + nextInt(10), combustion des voisins (`burnOdds`), propagation (`igniteOdds`), extinction | `horizon-world/src/level/tick.rs` (feu) | `familles/feu.js` |
+| Particules de TNT et d'explosion (fumee, `explosion_0..15`) ; flash blanc du TNT toutes les 5 ticks | `horizon-client/src/rendu/particles.rs`, `tnt.rs` | `src/film/effets-monde.js` |
+
 ## Licence de Horizon (MIT), a conserver
 
 ```
@@ -127,3 +156,26 @@ Reecrit en JavaScript, rien n'est copie. Ce qui est porte, et d'ou (fichiers de 
 | Valeurs de pose du bras pour tenir quelque chose (donnees seulement, citees dans la fiche `objets`) : objet 18 degres, pinceau 36, bouclier 54, arc 90, trident lance 180, longue-vue 110, cornet 85 | `horizon-client/src/mobs/anim.rs` : `pose_arm` 490-545 | `site/regles/objets.md` |
 
 **Geometrie de l'armure : table propre a ce projet.** Les boites de la couche d'armure du joueur (`src/objets/armure.js`, `PIECES`) sont des NOMBRES relevees dans les donnees de modeles preparees du jeu (`entity-models.json` du client Horizon, entrees `minecraft:player#helmet`, `#chestplate`, `#leggings`, `#boots`, lecture seule ; le proprietaire a autorise l'usage de la geometrie du jeu) : casque = tete gonflee de 1,0 + chapeau de 1,5 ; plastron = tronc 1,0 et bras 1,0 ; jambieres = tronc 0,5 et jambes 0,4 ; bottes = jambes 0,9 ; decalages de texture (0,0) (32,0) (16,16) (40,16) (0,16) sur une image de 64x32 ; bras gauche et jambe gauche = le droit en miroir ; bras large meme avec un skin a bras fins (verifie dans `minecraft:player_slim#chestplate`). Rien d'autre de ces donnees n'est copie. Les textures, modeles et definitions d'objets et d'equipement du jeu ne sont PAS dans le depot : ils sont recuperes dans le cache du kit (groupes `objets` et `armures`, `src/kit.js`).
+
+## Police des légendes (`src/incrust/polices/`)
+
+`SourceSans3-Black.ttf` : Source Sans 3 Black, Copyright 2010-2020 Adobe, licence SIL Open Font License 1.1 (texte complet dans `src/incrust/polices/OFL.txt`).
+Police sans très grasse livrée avec le lecteur pour les légendes (`"police":"sans"`, défaut des sous-titres). Ce n'est pas un fichier du jeu.
+
+## Fluides, butin, objets au sol, sante (`src/moteur/familles/fluides.js`, `butin.js`, `entites.js`, `acteurs.js`, `src/rendu/maillage.js`) : portage depuis Horizon (MIT)
+
+Reecrit en JavaScript, rien n'est copie ; les nombres sont ceux du jeu, verifies par `test/sim4.test.js` et `test/fluides-rendu.test.js`. Fichiers de `_ref/horizon/crates/` :
+
+| Ce qui est porte | Fichier d'origine (Horizon) | Ou chez nous |
+|---|---|---|
+| `FlowingFluid` : `getNewLiquid`, `getSpread`, `getSlopeDistance`, `isWaterHole`, `spreadTo`, `tick` (source = 8, coulant 7 a 1, tombant = niveau 8 ; perte 1 par bloc pour l'eau, 2 pour la lave ; recherche de pente 4 / 2 ; deux sources voisines au-dessus d'un sol) | `horizon-world/src/level/fluids.rs` (l. 106-684) | `familles/fluides.js` |
+| Delais (eau 5, lave 30 ; la lave qui monte attend 4 fois plus 3 fois sur 4) et `canPassThroughWall` / `mergedFaceOccludes` (formes de collision qui bouchent la face commune) | `fluids.rs` (l. 107-246, 685-708, 816-866) | `familles/fluides.js` (`couvre`, `passe`) |
+| `LiquidBlock` : lave + eau -> obsidienne (source), pierre cassee (coulant), basalte (terre d'ame + glace bleue), son et fumee (evenement 1501) ; `LavaFluid.randomTick` (feu autour de la lave) | `fluids.rs` (l. 712-813) | `familles/fluides.js` |
+| Eau enchainee (`LiquidBlockContainer`, `canPlaceLiquid`, `placeLiquid`), reprise au seau (`BucketPickup.pickupBlock`) | `fluids.rs` (l. 74-362) | `familles/fluides.js` (evenement du monde `objet.utilise`) |
+| Courant (`FlowingFluid.getFlow`) et poussee des entites (`Entity.updateFluidHeightAndDoFluidPushing` : 0,014 eau, 0,0023 lave), nage (x 0,8, gravite / 16), lave (x 0,5, gravite / 4), saut dans un fluide (+0,04) | `horizon-world/src/entity_fluid.rs`, `living_fluid.rs` | `simulation.js` (`courant`), `acteurs.js` (`fluidesAutour`, `physique`) |
+| Rendu des fluides (`FluidRenderer` : hauteur d'une cellule, moyenne ponderee des 4 coins `calculateAverageHeight`, direction du courant, textures calme / coule, faces cachees) | `horizon-client-render/src/mesher/fluid.rs` | `rendu/maillage.js` (`emettreFluide`, `hauteurCoin`, `courant`) |
+| Butin des blocs (`LootTable`, conditions `survives_explosion`, `match_block`, `table_bonus`, `random_chance` ; fonctions `set_count`, `explosion_decay`, `apply_bonus`) : les tables sont compilees dans NOTRE format compact par `outils/extraire-donnees-jeu.mjs` (champ `butins` des donnees : noms et nombres, aucun fichier du jeu) | `horizon-world/src/loot.rs` | `butin.js` |
+| Objets au sol (`ItemEntity` : boite 0,25, gravite 0,04, rebond -0,5, delai de ramassage 10, fusion, 6000 ticks ; animation de ramassage de 3 ticks ; rotation et flottement a l'affichage) | `horizon-client/src/entities.rs`, `game/item_entities.rs` | `entites.js` (`tickObjet`, `ramasser`), `film/entites-monde.js` |
+| Vie : `hurt` (invulnerabilite de 10 ticks, seul un coup plus fort passe), degats de chute `ceil(distance - 3)`, noyade (300 ticks d'air), mort en 20 ticks (rotation `sqrt(t / 20 x 1,6) x 90`, nuage de 20 `poof`) | `horizon-world/src/living_damage.rs`, `horizon-client/src/game/combat.rs` | `acteurs.js` (`degats`, `mourir`, `atterrir`), `film/anim.js` |
+
+Les valeurs de `display.ground` des modeles d'objets (echelle 0,25 des blocs, 0,5 des objets plats) viennent des modeles du jeu lus par `src/objets/` ; rien n'est embarque.

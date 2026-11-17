@@ -37,6 +37,7 @@ import { terrainDepuis } from '../src/film/physique.js';
 import { lireReglages, preparerOptions, nonGere, ErreurPack } from '../src/shader/reglages.js';
 import { noteAmplitudes } from '../src/film/limites.js';   // articulations libres : amplitudes hors plausible (une ligne)
 import { animer } from '../src/film/scene.js';
+import { descripteursActeurs } from '../src/film/actes.js';   // acteurs a intentions de la simulation
 
 const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai terrain)
   mcanim terrain <zone> [--pas 8]     telecharge la zone et le kit, resume du terrain (chemins, clairieres, eau)
@@ -66,8 +67,11 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   mcanim shader --exemples            ou sont shader-leger.json et shader-tout.json
   mcanim objets --cherche <mot>       identifiants d'objets du jeu (20 au plus) pour les champs objet / objetG ; --armures : materiaux du champ armure
   mcanim simuler <scene.json>         simule le jeu (champ monde : blocs poses, regles, mods) AVANT de payer le rendu ; gratuit, resume court (blocs changes, avertissements)
+  (acteur.actes [[t,"verbe",..]] : un joueur SIMULE par le jeu : va x z | regarde | saute | accroupi | tient "objet" | attends s | utilise x y z (porte, bouton, levier, coffre, cloche...) | pose x y z "bloc" | casse x y z ; options {va, ouvrePortes, duree, max} ; portee 4.5 ; mcanim simuler dit les echecs ; fiches actions, blocs_interactifs, casser_poser)
   mcanim regles --liste [famille]     parametres du jeu que monde.regles peut changer (nom = defaut [plage] explication) ; --familles : les familles
   mcanim mods verifier <fichier.js>   charge un mod de monde.mods dans le bac a sable et signale l'erreur en une ligne
+  mcanim decor verifier|apercu|executer|module ...   DECORS : faire construire sur le terrain (maisons, ponts, tours, aplanir) ; champ de scene decor ["maison.decor.json"] ; verifier = rapport de 15 lignes, apercu = petite image ; gratuits ; fiches decor_bases, decor_operations, decor_terrain, decor_maison
+  mcanim terrain --scene scene.json   resume du terrain APRES les decors de la scene (les chemins contournent les batiments)
   mcanim kit                          recupere le kit de base
   (options de rendre : --ssaa 2 pour un rendu plus lisse, 3 fois plus lent)
   --shader shader.json : ombres du soleil, ciel, brume, rayons de lumiere, bloom, eau, feuilles qui bougent... (format : docs/FORMAT-SHADER.md ;
@@ -152,8 +156,10 @@ async function commandeTerrain(argv) {
   let carte = null;
   const ic = argv.indexOf('--carte');
   if (ic >= 0) { carte = /.png$/i.test(argv[ic + 1] ?? '') ? argv[ic + 1] : true; argv = argv.filter((_, i) => i !== ic && !(carte !== true && i === ic + 1)); }
-  const { pos, opt } = lireArgs(argv, { valeurs: ['pas', 'chemin', 'echelle'] });
-  if (pos.length !== 1) throw new Usage('usage : mcanim terrain <zone> [--pas N] [--chemin x1,z1,x2,z2]');
+  const { pos, opt } = lireArgs(argv, { valeurs: ['pas', 'chemin', 'echelle', 'scene'] });
+  let sceneDecor = null;   // --scene scene.json : le resume du terrain APRES les decors de la scene (docs/FORMAT-DECOR.md)
+  if (opt.scene !== undefined) { sceneDecor = lireScene(lireTexte(opt.scene)).scene; if (!pos.length) pos.push(sceneDecor.zone); }
+  if (pos.length !== 1) throw new Usage('usage : mcanim terrain <zone> [--pas N] [--chemin x1,z1,x2,z2] [--scene scene.json]');
   let seg = null;
   if (opt.chemin !== undefined) {
     seg = opt.chemin.split(',').map(Number);
@@ -167,11 +173,19 @@ async function commandeTerrain(argv) {
   else chemin = (await obtenirZone(pos[0])).chemin;
   const kit = await trouverKit({});
   const { chargerScene } = await import('../src/rendu/scene.js');
-  const rs = await chargerScene({ zonePath: chemin, kitDir: kit, travailleurs: 0 });
+  let zoneDecor, ligneDecor = null;
+  if (sceneDecor?.decor) {
+    const { lireZone } = await import('../src/rendu/zone.js');
+    const { donneesDuJeu } = await import('../src/moteur/chargeur.js');
+    const { zoneAvecDecor } = await import('../src/decor/index.js');
+    try { const r = await zoneAvecDecor({ zone: lireZone(chemin), scene: sceneDecor, baseDir: path.dirname(path.resolve(opt.scene)), donnees: await donneesDuJeu({ log: dire }) }); zoneDecor = r.zone; r.notes.forEach(dire); ligneDecor = (await import('../src/decor/index.js')).resumeTerrainDecor(r.rapports); } catch (e) { if (e.name === 'ErreurDecor') throw new Usage(e.message); throw e; }
+  }
+  const rs = await chargerScene({ zonePath: chemin, zone: zoneDecor, kitDir: kit, travailleurs: 0 });
   try {
     if (seg) { dire(rs.verifierChemin(...seg)); const profil = profilSegment(terrainDepuis(rs), ...seg); if (profil) dire(profil); }
     else if (carte) dire(await ecrireCarte(rs, kit, carte === true ? `carte-${path.basename(chemin, '.mcz')}.png` : carte, opt.echelle));
     else dire((await import('../src/rendu/terrain-texte.js')).texteTerrain(rs, pas));
+    if (ligneDecor && !seg && !carte) dire(ligneDecor);
     dire(`(${sec(Date.now() - t0)} s)`);
   } finally { await rs.fermer(); }
 }
@@ -190,12 +204,19 @@ async function ecrireCarte(rs, kit, fichier, echelle) {
 }
 
 // Le terrain de la zone de la scene, pour la simulation du trajet. `telecharger` faux : seulement le cache local (sinon null).
-async function terrainDeScene(scene, { telecharger }) {
+async function terrainDeScene(scene, { telecharger, baseDir = process.cwd() }) {
   const cache = path.join(dossierCache(), 'zones', `${scene.zone}.mcz`);
   if (!telecharger && !fs.existsSync(cache)) return null;
   const zone = await obtenirZone(scene.zone);
   const kit = await trouverKit({});
   const { chargerScene } = await import('../src/rendu/scene.js');
+  if (scene.monde) {   // scene avec simulation : le terrain est le monde VIVANT (blocs poses, portes ouvertes) ; les acteurs a `actes` viennent du replay
+    const { simulerScene } = await import('../src/film/video.js');
+    const { creerTerrainVivant } = await import('../src/film/terrain-vivant.js');
+    const sim = await simulerScene({ scene, zonePath: zone.chemin, baseDir });
+    const rs = await chargerScene({ zonePath: zone.chemin, zone: sim.zone, kitDir: kit, travailleurs: 0, options: { monde: { donnees: sim.donnees, replay: sim.replay, lumiere: scene.monde.lumiere } } });
+    return { rs, terrain: creerTerrainVivant({ rs, replay: sim.replay, donnees: sim.donnees }), monde: { replay: sim.replay } };
+  }
   const rs = await chargerScene({ zonePath: zone.chemin, kitDir: kit, travailleurs: 0 });
   return { rs, terrain: terrainDepuis(rs) };
 }
@@ -206,7 +227,7 @@ async function commandeTrajet(argv) {
   if (pos.length !== 1) throw new Usage('usage : mcanim trajet <scene.json>');
   const { scene } = lireScene(lireTexte(pos[0]));
   const t = await terrainDeScene(scene, { telecharger: true });
-  try { dire(texteTrajets(scene, t.terrain)); } finally { await t.rs.fermer(); }
+  try { dire(texteTrajets(scene, t.terrain, t.monde)); } finally { await t.rs.fermer(); }
 }
 
 // Etat de la scene a un instant (gratuit) : position, direction, phases des boucles, pose tenue ; pour enchainer la scene suivante sans a-coup.
@@ -220,7 +241,7 @@ async function commandeEtat(argv) {
   try {
     const { animer: animerFilm } = await import('../src/film/anim.js');
     const { etatDeScene, texteEtat } = await import('../src/film/etat.js');
-    dire(texteEtat(etatDeScene(scene, animerFilm(scene, t.terrain).images, tt)));
+    dire(texteEtat(etatDeScene(scene, animerFilm(scene, t.terrain, t.monde).images, tt)));
   } finally { await t.rs.fermer(); }
 }
 
@@ -269,6 +290,7 @@ async function commandeRendre(argv) {
   const e = fp.empreinte;
   const verifier = (extra = {}) => {
     try { return verifierJeton(opt.jeton, { empreinte: e, duree: scene.duree, zone: scene.zone, ...extra }); } catch (err) {
+      if (scene.decor && /empreinte differente/.test(err.message)) throw new Error("jeton refuse : le decor a change depuis l'autorisation (ou la scene, un fichier cite, une option de rendu) ; demande une retouche (modifier_scene) avec la nouvelle empreinte (mcanim empreinte), puis rends avec le nouveau jeton");
       if (fp.fichiers.length && /empreinte differente/.test(err.message)) throw new Error("jeton refuse : la scene, un fichier cite (skin, masque, texture, shader, pack) ou une option de rendu a change depuis l'autorisation ; demande une retouche (modifier_scene) avec la nouvelle empreinte (mcanim empreinte avec les memes options), puis rends avec le nouveau jeton");
       throw err;
     }
@@ -437,7 +459,9 @@ async function commandeSimuler(argv) {
   const { donneesDuJeu } = await import('../src/moteur/chargeur.js');
   const donnees = await donneesDuJeu({ log: dire });
   try {
-    const r = simuler({ zone: lireZone(zone.chemin), donnees, monde: scene.monde, baseDir, duree: scene.duree });
+    let zoneS = lireZone(zone.chemin);
+    if (scene.decor) { const { zoneAvecDecor } = await import('../src/decor/index.js'); const r0 = await zoneAvecDecor({ zone: zoneS, scene, baseDir, donnees }); zoneS = r0.zone; r0.notes.forEach(dire); }
+    const r = simuler({ zone: zoneS, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene), baseDir, duree: scene.duree });
     dire(r.rapport);
   } catch (e) { if (e instanceof ErreurMonde) throw new Usage(e.message); throw e; }
 }
@@ -545,6 +569,7 @@ async function main() {
     case 'simuler': return commandeSimuler(reste);
     case 'regles': return commandeRegles(reste);
     case 'mods': return commandeMods(reste);
+    case 'decor': return (await import('../src/decor/commande.js')).commandeDecor(reste, { obtenirZone, trouverKit, lireArgs, dire, Usage, lireTexte, terrainDeScene });
     case '--version': case '-v': return dire(JSON.parse(fs.readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')).version);
     case undefined: case 'aide': case '--help': case '-h': return dire(AIDE);
     default: throw new Usage(`commande inconnue : ${cmd}\n${AIDE}`);

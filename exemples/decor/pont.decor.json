@@ -1,0 +1,11 @@
+{
+  "v": 1, "zone": "W-BTYtCHIX2i6X16byJpog", "ancre": [-260, -680], "niveau": "sol", "graine": 3,
+  "pal": { "s": "stone_bricks:5,mossy_stone_bricks:1,cracked_stone_bricks:1", "m": "stone_brick_wall", "p": "stone_bricks" },
+  "ops": [
+    ["plein", 0, -1, -1, 39, -1, 1, "s"],
+    ["rep", 5, 8, 0, 0, [["fond", 3, -1, 4, 1, "p", { "profondeur": 40, "de": -2 }]]],
+    ["ligne", 0, 0, -1, 39, 0, -1, "m"],
+    ["ligne", 0, 0, 1, 39, 0, 1, "m"],
+    ["pts", "lantern", [0, 1, -1], [0, 1, 1], [13, 1, -1], [13, 1, 1], [26, 1, -1], [26, 1, 1], [39, 1, -1], [39, 1, 1]]
+  ]
+}

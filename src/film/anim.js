@@ -7,11 +7,14 @@ import { planifierCameraSuivi, planifierCameraLibre } from './camera.js';
 import { compensationAppui, descenteBascule, decalageYeux } from '../perso/modele.js';
 import { simulerActeur, creerSol, lisser01 } from './physique.js';
 import { reactionsA } from './reactions.js';
+import { creerVivant } from './acteurs-vivants.js';   // acteurs commandes par la simulation (champ `actes`) : leur trace dans le replay
 import { creerFige } from './fige.js';   // acteur fige seul : horloges propres
 import { notesObstruction } from './obstruction.js';   // camera : herbe, feuilles ou acteur colles a l'objectif (note, sans correction)
 import { valeurObjet } from './objets-scene.js';   // objets tenus et armure : pistes de changements d'un coup
 import { appliquerCibles, aCibles } from './cibles.js';   // articulations libres : cibles des mains et des pieds (cinematique inverse)
 import { carteTemps } from '../montage/temps.js';   // montage : ralenti, accelere, arret du temps du monde par plan (facultatif)
+import { ajouterJeu, gesteAvecCoude } from '../montage/jeu.js';   // montage : vie des acteurs au repos et gestes sur mots cles (facultatif)
+import { cameraDeCadre } from '../montage/cadrage.js';   // montage : cadrage par intention (plan moyen, rapproche...)
 import { appliquerMontage, effetsDeScene } from '../montage/effets-camera.js';   // montage : secousse, coup de zoom, roulis, flous, transitions (facultatif)
 
 const RAD = Math.PI / 180;
@@ -106,7 +109,8 @@ function skinEn(a, t) {
 // scene : sortie de validerScene. terrain : { solEn(x,z), estLibre(x,y,z), bloc?(x,y,z), eauEn?(x,z) } (facultatif : sans terrain, sol a y=0
 // et pas de collision). bloc et eauEn servent aux dalles, escaliers, echelles et a l'eau (physique.js).
 // Retourne { images: [...], corrections (nombre d'images ou la camera a ete corrigee), notes, camera (stat des corrections), trajets }.
-export function animer(scene, terrain = {}) {
+// monde (facultatif) : { replay } d'une scene avec simulation ; terrain vivant : voir terrain-vivant.js (le monde de chaque instant).
+export function animer(scene, terrain = {}, monde = null) {
   const estLibre = terrain.estLibre ?? (() => true);
   // solide pour la camera : seulement les blocs pleins (voir rendu/scene.js, estSolidePourCamera) ; a defaut, tout ce qui n'est pas libre
   const solide = terrain.solide ?? ((x, y, z) => !estLibre(x, y, z));
@@ -115,13 +119,14 @@ export function animer(scene, terrain = {}) {
   const acteurs = scene.acteurs;
   const parNom = new Map(acteurs.map((a, i) => [a.nom, i]));
   const notes = [];
-  const articule = acteurs.map((a) => ['coudeD', 'coudeG', 'genouD', 'genouG'].some((n) => a[n] || a.boucles.some((b) => b.pistes[n])) || aCibles(a));
+  const articule = acteurs.map((a) => ['coudeD', 'coudeG', 'genouD', 'genouG'].some((n) => a[n] || a.boucles.some((b) => b.pistes[n])) || aCibles(a) || gesteAvecCoude(a));
   // corps [t, penche, cote, torsion] (plus d'une valeur) : le haut du corps entier tourne autour des hanches ; une seule valeur : le dos du jeu
   const etatsIK = acteurs.map(() => ({}));   // dernier pivot de coude de chaque membre tenu par une cible (continuite d'une image a l'autre)
   const corpsComplet = acteurs.map((a) => (a.corps?.arite ?? 1) > 1 || a.boucles.some((b) => (b.pistes.corps?.arite ?? 1) > 1));
 
   // Pied du joueur : plus haut sol sous les 4 coins et le centre (comme la boite du jeu), dalles et escaliers a leur vraie hauteur.
-  const solSous = (x, z) => { const m = solFin.sous(x, z); return m ? m.y : null; };
+  const solSous = (x, z, yr) => { const m = solFin.sous(x, z, yr); return m ? m.y : null; };
+  const vivants = acteurs.map((a) => (a.actes && monde?.replay ? creerVivant(monde.replay, a.nom) : null));   // trace des acteurs a intentions
 
   // Etat de chaque acteur, avance image par image.
   const etat = acteurs.map((a) => {
@@ -153,6 +158,7 @@ export function animer(scene, terrain = {}) {
     // sans gel on garde exactement le calcul d'avant (h = null)
     const h = gel.length ? { tw, monde: horloge.monde } : null;
     infosImage.push({ fige, tm: gel.length ? horloge.monde(t) : t });
+    const posDeImage = scene.jeu || acteurs.some((a) => a.gestes?.length) ? Object.assign((nom) => { const j = parNom.get(nom); if (j === undefined) return null; const q = evaluer(etat[j].pistePos, t); return [q[0], q[2]]; }, { noms: acteurs.map((a) => a.nom) }) : null;
     parImage.push(acteurs.map((a, k) => {
       const e = etat[k];
       // acteur fige seul : temps propre pour les pistes ecrites (T), horloge des boucles (H), arret de l'acteur ; sans fige : ceux de l'image
@@ -164,14 +170,16 @@ export function animer(scene, terrain = {}) {
       const p = evaluer(e.pistePos, T('pos'));
       const sim = sims[k];
       const tmA = FG && !FG.sauf.has('pos') ? FG.U.monde(t) : infosImage[i].tm;   // temps du monde (il ne passe pas pendant un gel ni un fige)
-      const st = sim.etatA(tmA);
+      const V = vivants[k], vs = V ? V.en(tmA) : null;   // acteur commande par la simulation : sa trace remplace la piste pos et la physique
+      if (vs && terrain.regler) terrain.regler(tmA);
+      const st = vs ? V.etat(vs) : sim.etatA(tmA);
       // le chemin horizontal est celui de pos, sauf quand un mur l'arrete (physique.js : obstacle)
-      const x = sim.horizModifie ? st.x : p[0], z = sim.horizModifie ? st.z : p[2];
+      const x = (vs || sim.horizModifie) ? st.x : p[0], z = (vs || sim.horizModifie) ? st.z : p[2];
       // --- hauteur : imposee (cle a 3 valeurs), sinon physique du jeu (gravite 0,08, saut 0,42, pas de 0,6 : physique.js)
-      const sol = solSous(x, z);
+      const sol = vs ? (vs.auSol ? vs.y : solSous(x, z, vs.y)) : solSous(x, z, e.y);
       const solY = sol ?? e.y;
       let auSol, imposee = false;
-      if (Number.isFinite(p[1])) {
+      if (vs) { e.y = vs.y; e.vy = 0; imposee = true; auSol = vs.auSol; } else if (Number.isFinite(p[1])) {
         e.y = p[1]; e.vy = 0; imposee = true;
         auSol = e.y <= solY + 0.05;
       } else { e.y = st.y; e.vy = st.vy; auSol = st.auSol; }
@@ -186,20 +194,22 @@ export function animer(scene, terrain = {}) {
       e.xPrec = x; e.zPrec = z;
       if (a.lacet) lacet = evaluer(a.lacet, T('lacet'))[0] + sommeBoucles(a, 'lacet', t, 1, H('lacet'))[0];
       else lacet = e.lacet + sommeBoucles(a, 'lacet', t, 1, H('lacet'))[0];
+      if (vs) { e.lacet = vs.lacet; if (!a.lacet) lacet = vs.lacet + sommeBoucles(a, 'lacet', t, 1, H('lacet'))[0]; }
 
       // --- reactions automatiques (additives), membres, tete, buste
       const R = a.reactions && !imposee ? reactionsA(sim, tmA) : null;
       const fJ = R ? R.amortiJambes : 1, fB = R ? R.amortiBras : 1;
-      const th = valeurPiste(a.tete, T('tete'), ZERO2);
+      const th = vs && !a.tete ? [Math.max(-75, Math.min(75, normaliser180(vs.lacetTete - vs.lacet))), vs.tangage] : valeurPiste(a.tete, T('tete'), ZERO2);
       const tb = sommeBoucles(a, 'tete', t, 2, H('tete'));
       const corps = (a.corps ? evaluer(a.corps, T('corps'))[0] : 0) + sommeBoucles(a, 'corps', t, 1, H('corps'))[0] + (R ? R.corps : 0);
-      const accroupi = a.accroupi ? Math.min(1, Math.max(0, evaluer(a.accroupi, T('accroupi'))[0])) : 0;
+      const accroupi = a.accroupi ? Math.min(1, Math.max(0, evaluer(a.accroupi, T('accroupi'))[0])) : (vs && vs.accroupi ? 1 : 0);
       const pose = {
         nom: a.nom, x, y: e.y, z, sol: solY, auSol, lacet,
         tete: [th[0] + tb[0], th[1] + tb[1]], penche: corps, accroupi,
         brasD: membre(a, 'brasD', T('brasD'), H('brasD'), fB), brasG: membre(a, 'brasG', T('brasG'), H('brasG'), fB), jambeD: membre(a, 'jambeD', T('jambeD'), H('jambeD'), fJ), jambeG: membre(a, 'jambeG', T('jambeG'), H('jambeG'), fJ),
       };
       if (R) { pose.brasD[0] += R.bras; pose.brasG[0] += R.bras; pose.jambeD[0] += R.jambe; pose.jambeG[0] += R.jambe; }
+      if (vs) { V.membres(vs, pose); if (vs.objet && !a.objetD) pose.objetD = vs.objet; }   // balancement du jeu, coup du bras, objet tenu
       // articulations libres (additif) : torsion des membres, roulis de la tete, haut du corps entier ; rien n'est ajoute sans elles
       for (const [nom, f] of [['brasD', fB], ['brasG', fB], ['jambeD', fJ], ['jambeG', fJ]]) {
         const tors = (a[nom] ? (evaluer(a[nom], T(nom))[2] ?? 0) : 0) + sommeBoucles(a, nom, t, 3, H(nom))[2] * f;
@@ -212,6 +222,13 @@ export function animer(scene, terrain = {}) {
         pose.troncComplet = true; pose.troncCote = (cs[1] ?? 0) + sb[1]; pose.troncTorsion = (cs[2] ?? 0) + sb[2];
       }
       if (st.eau && !imposee) pose.eau = true;
+      if (vs) {   // sante : rougeur des degats (10 ticks), mort = le corps tombe sur le cote en 20 ticks (LivingEntityRenderer : sqrt(t / 20 x 1,6) x 90 degres) puis disparait
+        if (vs.eau) pose.eau = true;
+        if (vs.blessure > 0 || vs.mort > 0) pose.teinte = [1, 0.6, 0.6];
+        if (vs.mortT >= 0) {
+          if (vs.mortT >= 20) { pose.y -= 1000; pose.absent = true; } else { const rot = Math.min(1, Math.sqrt(Math.max(0, vs.mortT) / 20 * 1.6)) * 90; pose.roulis = rot; pose.dy = (pose.dy ?? 0) + descenteBascule(0, rot); }
+        }
+      }
       if (st.echelle && !imposee) pose.echelle = true;
       // orientation du corps entier et decalage vertical (pistes facultatives : rien n'est ajoute sans elles)
       const clamp180 = (v) => Math.max(-180, Math.min(180, v));
@@ -260,10 +277,14 @@ export function animer(scene, terrain = {}) {
       // objets tenus et armure (champs facultatifs : rien n'est ajoute sans eux)
       for (const [champ, piste] of [['objetD', a.objetD], ['objetG', a.objetG]]) { const id = piste ? valeurObjet(piste, T(champ)) : null; if (id) pose[champ] = id; }
       if (a.armure) { let arm = null; for (const [e, piste] of Object.entries(a.armure)) { const id = valeurObjet(piste, T('armure')); if (id) (arm ??= {})[e] = id; } if (arm) pose.armure = arm; }
+      // montage : vie au repos (respiration, regard) et gestes sur mots cles, ajoutes a la pose (rien sans `jeu` ni `gestes`)
+      if (a.gestes?.length || (scene.jeu && a.jeu?.actif)) ajouterJeu(pose, { t, a, vie: !!scene.jeu && a.jeu.actif, marche: Math.hypot(dx, dz) / DT > 0.5 || !auSol || !!st.eau, posDe: posDeImage, lacet });
       if (FG && etU.fige) pose.figee = true;   // cet acteur est fige : pas de bruits de pas (pas.js, sons.js)
       return pose;
     }));
   }
+
+  if (terrain.fin) terrain.fin();   // monde vivant : la camera planifie dans le monde de la fin de la scene (murs poses, trous faits)
 
   // ---- passe 2 : camera (on connait tout le film : planification sur tout le plan, voir camera.js)
   // Un seul plan (sans `plans`) : toute la scene avec la camera de la scene, comme avant. Avec `plans` : un plan de camera par segment, qui REPREND
@@ -289,7 +310,9 @@ export function animer(scene, terrain = {}) {
     }
     if (i < n) segments.push({ i0: i, i1: n, c: scene.camera, dec: 0 });
   } else segments.push({ i0: 0, i1: n, c: scene.camera, dec: 0 });
-  for (const { i0, i1, c, dec } of segments) {
+  for (const { i0, i1, c: c0, dec } of segments) {
+    // cadrage par intention (montage/cadrage.js) : la camera est calculee depuis les poses des acteurs de ce plan
+    const c = c0.mode === 'cadre' ? cameraDeCadre(c0, (i, nom) => parImage[i][parNom.get(nom)], i0, i1, dec, acteurs.map((a) => a.nom)) : c0;
     if (c.mode === 'suit') {
       const k = parNom.get(c.suit);
       let cap = parImage[i0][k].lacet;   // direction suivie par la camera : celle du corps, un peu adoucie

@@ -12,6 +12,8 @@ import { Regles } from './regles.js';
 import { ErreurMonde } from './erreurs.js';
 import { voulaisTu } from './util.js';
 import { texteRapport } from './rapport.js';
+import { Acteurs } from './acteurs.js';
+import { solSous } from './collision.js';
 
 export { MOTEUR, Simulation, ErreurMonde };
 export const LIMITES_MODS = { fichiers: 8, octets: 64 * 1024 };
@@ -46,9 +48,9 @@ export function lireFichiersMods(liste, baseDir) {
 }
 
 // Prepare la simulation (familles, mods, regles, commandes) sans la lancer. Utile aux tests et a `mcanim mods verifier`.
-export function preparer({ zone, donnees, monde = {}, mods = [], options = {} } = {}) {
+export function preparer({ zone, donnees, monde = {}, mods = [], acteurs = [], options = {} } = {}) {
   const config = {
-    graine: monde.graine ?? 1, blocs: monde.blocs || [], regles: monde.regles, plafondMs: options.plafondMs,
+    graine: monde.graine ?? 1, blocs: monde.blocs || [], cmd: monde.cmd || [], regles: monde.regles, plafondMs: options.plafondMs,
   };
   const sim = new Simulation({ zone, donnees, config, monde: options.monde });
   declarerReglesMonde(sim.regles);
@@ -62,6 +64,7 @@ export function preparer({ zone, donnees, monde = {}, mods = [], options = {} } 
     sim.replay.mods = mods.map((m) => m.nom);
   }
   sim.regles.appliquer(monde.regles);
+  if (acteurs.length) sim.acteurs = creerActeurs(sim, acteurs);
   // commandes datees : verification des blocs (messages avec le chemin du champ)
   const noms = [...donnees.noms];
   config.blocs = (monde.blocs || []).map((b, i) => {
@@ -77,10 +80,29 @@ export function preparer({ zone, donnees, monde = {}, mods = [], options = {} } 
 }
 
 // Simulation complete. `duree` : secondes de la scene. Rend { replay, sim, rapport }.
-export function simuler({ zone, donnees, monde = {}, mods, baseDir, duree, options = {} }) {
+export function simuler({ zone, donnees, monde = {}, mods, acteurs = [], baseDir, duree, options = {} }) {
   const sources = mods || lireFichiersMods(monde.mods, baseDir);
-  const sim = preparer({ zone, donnees, monde, mods: sources, options });
+  const sim = preparer({ zone, donnees, monde, mods: sources, acteurs, options });
   const ralenti = sim.regles.valeur('monde.ralenti', 1);
   const replay = sim.executer({ duree, ralenti });
   return { replay, sim, rapport: texteRapport({ sim, replay, duree }) };
+}
+
+// Acteurs simules (scene.acteurs avec `actes`) : descripteurs { nom, pos: [x, z] | [x, y, z], lacet, objet, actes: [{ t, verbe, ... }] }.
+// Les temps sont en secondes de film ; le tick du monde vaut floor(t x 20 x ralenti).
+export function creerActeurs(sim, descs) {
+  const ralenti = sim.regles.valeur('monde.ralenti', 1);
+  const liste = descs.map((d) => {
+    const p = d.pos;
+    const x = p[0], z = p.length === 3 ? p[2] : p[1];
+    return { nom: d.nom, x, z, y: p.length === 3 ? p[1] : null, lacet: d.lacet ?? 0, objet: d.objet ?? null, vie: d.vie, invulnerable: d.invulnerable, ramasse: d.ramasse, actes: (d.actes || []).map((a) => ({ ...a, tick: Math.floor(a.t * 20 * ralenti + 1e-9) })) };
+  });
+  const lec = { etatEn: (x, y, z) => sim.monde.etatEn(x, y, z), d: sim.d };
+  for (const a of liste) {
+    if (a.y === null) {
+      const h = sim.zone.hauteur(Math.floor(a.x), Math.floor(a.z));
+      a.y = solSous(lec, a.x, a.z, h + 3, 0.5, 80) ?? h + 1;
+    }
+  }
+  return new Acteurs(sim, liste);
 }

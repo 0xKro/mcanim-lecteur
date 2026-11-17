@@ -10,6 +10,7 @@ import { texture } from '../objets/fichiers.js';
 import { decoderPNG } from '../rendu/png.js';
 import { visibleParProfondeur, visibleParTerrain } from './ancrage.js';
 import { contenir, couperSegment } from '../montage/zones.js';
+import { choisirHauteur } from '../montage/evitement.js';   // legendes : hors des visages et des torses
 import { neutre, etatEntree, etatSortie, etatEmphase, composer2, progressionMot, courbe, COURBE_DEFAUT, DUREE_DEFAUT } from '../montage/mouvement.js';
 
 const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
@@ -47,11 +48,23 @@ function pngLocal(ctx, f) {
 }
 
 // pixels d'image par pixel de police : entier des qu'il vaut 2 ou plus (pixels nets, comme le jeu)
-const echellePolice = (ctx, taille) => { const s = (taille * ctx.U) / 8; return s >= 2 ? Math.round(s) : Math.max(0.5, s); };
+// la police sans (TrueType, lisse) prend l'echelle exacte ; la police du jeu (pixels) reste entiere
+const echellePolice = (ctx, taille, lisse = false) => { const s = (taille * ctx.U) / 8; return lisse ? Math.max(0.5, s) : s >= 2 ? Math.round(s) : Math.max(0.5, s); };
+
+// Tailles MINIMALES lisibles sur un telephone (part du petit cote de l'image : 0,05 = 54 px de haut de ligne sur 1080). Une taille plus petite est relevee
+// et une note le dit : le texte d'un film vertical se lit a bout de bras, sur un ecran de 6 pouces.
+export const TAILLE_MINI = { texte: 0.05, legende: 0.05, compteur: 0.05, nom: 0.034, bulle: 0.065, chat: 0.036, fleche: 0.045, horloge: 0.04, succes: 0.8 };
+function tailleLisible(ctx, el, type, def, mini = TAILLE_MINI[type] ?? 0) {
+  const t = el.taille ?? def;
+  if (t >= mini) return t;
+  noter(ctx, `mini#${type}#${el.ordre ?? el._seq}`, `${type}${el.texte ? ` "${String(el.texte).slice(0, 18)}"` : ''} a t=${el.t?.[0]} s : taille ${t} relevee a ${mini} (minimum lisible sur un telephone)`);
+  return mini;
+}
 
 function imageTexte(ctx, texte, el, defauts = {}) {
-  const taille = el.taille ?? defauts.taille ?? 0.05;
-  const S = echellePolice(ctx, taille);
+  const police = el.police === 'sans' && ctx.policeSans ? ctx.policeSans : ctx.police, lisse = police === ctx.policeSans && !!ctx.policeSans;
+  const taille = tailleLisible(ctx, el, defauts.type ?? 'texte', defauts.taille ?? 0.05, defauts.mini);
+  const S = echellePolice(ctx, taille, lisse);
   const couleur = el.couleur ?? defauts.couleur ?? BLANC;
   let segs = Array.isArray(texte) ? texte.flatMap(([t, c]) => segmentsDeTexte(t, { couleur: c ?? couleur, gras: el.gras ?? defauts.gras, italique: el.italique }))
     : segmentsDeTexte(texte, { couleur, gras: el.gras ?? defauts.gras, italique: el.italique });
@@ -59,16 +72,17 @@ function imageTexte(ctx, texte, el, defauts = {}) {
   segs = colorerMots(segs, el.couleurs, idx);
   segs = appliquerCasse(segs, el.casse);
   const contour = el.contour !== undefined ? el.contour : defauts.contour;
-  const ombre = el.ombre ?? defauts.ombre ?? false;
+  let ombre = el.ombre ?? defauts.ombre ?? false;
+  if (lisse && ombre === true) ombre = { dec: 0.6, couleur: [0, 0, 0], opacite: 0.55 };   // ombre portee douce des legendes de reference
   const fond = el.fond !== undefined ? el.fond : defauts.fond;
   const largeurMax = (el.largeurMax ?? defauts.largeurMax) ? (el.largeurMax ?? defauts.largeurMax) * ctx.zone.w : Infinity;   // part de la LARGEUR SURE
   const marge = Math.round((el.marge ?? defauts.marge ?? 0) * S);
-  const r = rendreTexte(ctx.police, segs, {
+  const r = rendreTexte(police, segs, {
     S, gras: false, contour: contour ? { couleur: contour.couleur, ep: contour.ep * 8 * S } : null, ombre,
     alignement: el.alignement ?? defauts.alignement ?? 'centre', largeurMax, interligne: el.interligne ?? defauts.interligne ?? 9, fond, marge,
     visibilite: ctx.anim ? visibiliteDe(ctx.anim) : null,
   });
-  return { img: r.img, boite: { x: r.origine.x - marge, y: r.origine.y - marge, w: r.larg + 2 * marge, h: r.haut + 2 * marge }, S };
+  return { img: r.img, boite: { x: r.origine.x - marge, y: r.origine.y - marge, w: r.larg + 2 * marge, h: r.haut + 2 * marge }, S, lignes: r.lignes };
 }
 
 // Image d'un objet agrandie a `px` pixels de cote (pixels nets) ; null si inconnu.
@@ -134,7 +148,7 @@ function construire(el, ctx) {
   switch (el.type) {
     case 'texte': {
       const texte = el.segments ?? el.texte;
-      return imageTexte(ctx, texte, el, el.legende ? {} : { taille: 0.065, contour: { couleur: [10, 10, 10, 255], ep: 0.07 }, gras: true, ombre: false });
+      return imageTexte(ctx, texte, el, el.legende ? { type: 'legende' } : { type: 'texte', taille: 0.065, contour: { couleur: [10, 10, 10, 255], ep: 0.07 }, gras: true, ombre: false });
     }
     case 'compteur': {
       const [a, b] = el.valeurs;
@@ -158,7 +172,7 @@ function construire(el, ctx) {
           texte = chiffres.join('');
         }
       }
-      return imageTexte(ctx, texte, { ...el, alignement: mode === 'saisie' ? 'gauche' : (el.alignement ?? 'centre') }, { taille: 0.07, contour: { couleur: [10, 10, 10, 255], ep: 0.07 }, gras: true });
+      return imageTexte(ctx, texte, { ...el, alignement: mode === 'saisie' ? 'gauche' : (el.alignement ?? 'centre') }, { type: 'compteur', taille: 0.07, contour: { couleur: [10, 10, 10, 255], ep: 0.07 }, gras: true });
     }
     case 'icone': {
       const px = Math.max(8, Math.round((el.taille ?? 0.12) * U));
@@ -193,15 +207,14 @@ function construire(el, ctx) {
       let etiquette = el.etiquette;
       if (etiquette === undefined && el.type === 'minuteur' && el.duree) { const r = Math.max(0, Math.round(el.duree * (1 - u))); etiquette = `${Math.floor(r / 60)}:${String(r % 60).padStart(2, '0')}`; }
       if (!etiquette) return { img: o, boite: { x: 0, y: 0, w: px, h: px } };
-      const tx = imageTexte(ctx, etiquette, { ...el, taille: (el.taille ?? 0.12) * 0.42 }, { contour: { couleur: [10, 10, 10, 255], ep: 0.07 }, gras: true });
+      const tx = imageTexte(ctx, etiquette, { ...el, taille: (el.taille ?? 0.12) * 0.42 }, { type: 'horloge', contour: { couleur: [10, 10, 10, 255], ep: 0.07 }, gras: true });
       const W = Math.max(px, tx.img.w), H = px + tx.img.h;
       const c = creerImage(W, H);
       composer(c, o, Math.round((W - px) / 2), 0); composer(c, tx.img, Math.round((W - tx.img.w) / 2), px);
       return { img: c, boite: { x: 0, y: 0, w: W, h: H } };
     }
     case 'nom': {
-      const S0 = el.taille ?? 0.032;
-      const t = imageTexte(ctx, el.texte ?? el.acteur, { ...el, taille: S0 }, { gras: false, ombre: false, fond: [0, 0, 0, 64], marge: 1 });
+      const t = imageTexte(ctx, el.texte ?? el.acteur, { ...el, taille: el.taille ?? 0.04 }, { type: 'nom', gras: false, ombre: false, fond: [0, 0, 0, 64], marge: 1 });
       return t;
     }
     case 'bulle': return imageBulle(ctx, el);
@@ -215,9 +228,10 @@ function construire(el, ctx) {
 
 // Infobulle : fond et cadre du jeu (sprites tooltip/), texte colore par les codes §.
 function imageBulle(ctx, el) {
-  const S = echellePolice(ctx, el.taille ?? 0.034);
+  const tb0 = tailleLisible(ctx, el, "bulle", 0.075);
+  const S = echellePolice(ctx, tb0);
   const texte = el.lignes.map((l) => l.texte).join('\n');
-  const t = imageTexte(ctx, texte, { ...el, taille: el.taille ?? 0.034, alignement: 'gauche', largeurMax: undefined }, { ombre: true, gras: false, interligne: 10, couleur: BLANC });
+  const t = imageTexte(ctx, texte, { ...el, taille: tb0, alignement: 'gauche', largeurMax: undefined }, { type: 'bulle', ombre: true, gras: false, interligne: 10, couleur: BLANC });
   const marge = Math.round(7 * S), tb = t.boite;
   const w = tb.w + 2 * marge, h = tb.h + 2 * marge;
   const o = creerImage(w, h);
@@ -244,7 +258,8 @@ function poserSpriteAlpha(dst, spr, x, y, w, h, E) {
 
 // Lignes de chat en haut a gauche : bande sombre translucide par ligne, texte avec ombre, les lignes datees apparaissent a leur temps.
 function imageChat(ctx, el) {
-  const S = echellePolice(ctx, el.taille ?? 0.022);
+  const tc = tailleLisible(ctx, el, 'chat', 0.042);
+  const S = echellePolice(ctx, tc);
   const tt = ctx.t;
   const vis = [];
   for (const l of el.lignes) {
@@ -257,21 +272,25 @@ function imageChat(ctx, el) {
     vis.push({ l, a });
   }
   if (!vis.length) return null;
-  const lignes = vis.map(({ l, a }) => ({ ...imageTexte(ctx, l.texte, { ...el, taille: el.taille ?? 0.022, alignement: 'gauche', largeurMax: undefined }, { ombre: true, gras: false, couleur: BLANC }), a }));
+  // les messages longs passent a la ligne dans la largeur sure (une ligne de chat de jeu depasserait l'image a cette taille)
+  const lignes = vis.map(({ l, a }) => ({ ...imageTexte(ctx, l.texte, { ...el, taille: tc, alignement: 'gauche', largeurMax: el.largeurMax ?? 0.94 }, { type: 'chat', ombre: true, gras: false, couleur: BLANC }), a }));
   const lh = Math.round(9 * S), W = Math.max(...lignes.map((x) => x.boite.w)) + Math.round(4 * S);
-  const o = creerImage(W, lh * lignes.length);
+  const hs = lignes.map((x) => lh * Math.max(1, x.lignes ?? 1)), HT = hs.reduce((a, b) => a + b, 0);
+  const o = creerImage(W, HT);
+  let yy = 0;
   lignes.forEach((x, k) => {
-    const bande = creerImage(W, lh);
+    const bande = creerImage(W, hs[k]);
     for (let i = 0; i < bande.px.length; i += 4) { bande.px[i + 3] = 128 * x.a; }
-    composer(o, bande, 0, k * lh);
-    composer(o, x.img, Math.round(2 * S) - x.boite.x, k * lh + Math.round(1 * S) - x.boite.y, { alpha: x.a });
+    composer(o, bande, 0, yy);
+    composer(o, x.img, Math.round(2 * S) - x.boite.x, yy + Math.round(1 * S) - x.boite.y, { alpha: x.a });
+    yy += hs[k];
   });
   return { img: o, boite: { x: 0, y: 0, w: W, h: o.h } };
 }
 
 // Toast de succes du jeu : sprite 160 x 32, icone a gauche, deux lignes de texte.
 function imageSucces(ctx, el) {
-  const largeur = (el.taille ?? 0.8) * ctx.U, E = largeur / 160;
+  const largeur = tailleLisible(ctx, el, 'succes', 0.9) * ctx.U, E = largeur / 160;
   const S = Math.max(1, Math.round(E));
   const spr = sprite(ctx.kit, 'toast/advancement');
   const w = Math.round(160 * E), h = Math.round(32 * E);
@@ -356,7 +375,7 @@ function imageHud(ctx, el) {
 // un libelle du monde fait un pop avec un petit rebond ; un compteur fait un pop, compte, puis pulse ; une icone tombe et flotte ;
 // une fleche se trace ; une infobulle ou un succes glissent ; une carte : fond puis contenu l'un apres l'autre.
 const DEFAUTS_MOUV = {
-  legende: { entree: 'pop', duree: 0.17, depart: 0.6, sortie: 'aucune', emphase: { type: 'croit', duree: 0.9, intensite: 1 } },   // mesure : la puce apparait d'un coup a ~80 % puis grossit sans arret jusqu'a la suivante
+  legende: { entree: 'pop', duree: 0.36, depart: 0.79, courbe: 'cubique', sortie: 'aucune' },   // mesure (V1, V3) : la puce apparait d'un coup, opaque, a 79 % de sa taille finale puis grossit en ~11 images (ease-out), sans depassement
   texte: { entree: 'pop', duree: 0.26, depart: 0.3, sortie: 'fondu', dsortie: 0.15 },
   compteur: { entree: 'compte', duree: 0.26, depart: 0.3, sortie: 'fondu', dsortie: 0.2 },
   icone: { entree: 'tombe', duree: 0.5, sortie: 'fondu', dsortie: 0.15, emphase: { type: 'flotte', periode: 1.6, intensite: 1 } },
@@ -494,9 +513,47 @@ function boiteOpaque(img) {
 }
 
 // ---------------------------------------------------------------- dessin d'un element
-const PIVOT_PAR_TYPE = { chat: [0, 0], hud: [0.5, 1], succes: [0.5, 0], nom: [0.5, 1] };
+const PIVOT_PAR_TYPE = { chat: [0, 0], hud: [0.5, 1], succes: [0.5, 0], nom: [0.5, 1], bulle: [0.5, 1] };   // la bulle se pose AU-DESSUS du point d ancrage (la tete)
 const TEXTES = new Set(['texte', 'compteur']);
 function noter(ctx, cle, msg) { if (ctx.notes && !ctx.notes.has(cle)) ctx.notes.set(cle, msg); }
+
+// Hauteur (pixels) de la legende `auto` : choisie une fois par plan (montage/evitement.js), gardee pour toutes les puces du plan.
+function hauteurLegende(ctx, el, vis, k, zone) {   // vis, k : gardes pour compatibilite ; la taille essayee est celle d'une puce moyenne (0,075 du petit cote de haut, 55 % de la largeur sure)
+  const plan = ctx.carteImage ? null : ctx.scene.plans?.find((p) => ctx.t >= p.de && ctx.t < p.a);
+  const cle = `${ctx.carteImage ? 'carte' + Math.floor(ctx.t * 10) : plan ? 'p' + plan.de : 'c' + el._seq}|${ctx.W}x${ctx.H}`;   // une carte : l'image de la carte (acteurs sur l'etage), pas le monde
+  let c = ctx.cacheEvite.get(cle);
+  if (!c) {
+    const Z = zone ?? { x0: 0, y0: 0, x1: ctx.W, y1: ctx.H };
+    const i0 = ctx.carteImage ? 0 : plan ? plan.i0 : Math.round(el.t[0] * 30), i1 = ctx.carteImage ? 1 : plan ? plan.i1 : Math.max(i0 + 1, Math.round(el.t[1] * 30));
+    c = choisirHauteur({ images: ctx.images, i0, i1, W: ctx.W, H: ctx.H, zone: Z, larg: 0.55 * (Z.x1 - Z.x0), haut: 0.075 * ctx.U });
+    ctx.cacheEvite.set(cle, c);
+    if (c.cout > 0.6) noter(ctx, `evite#${cle}`, `legende a t=${el.t[0]} s : couvre un visage ou un torse malgre tout (aucune place libre dans la zone sure) ; cadre plus large, personnage decale (cadre.decale) ou "position":"haut"`);
+  }
+  return c.y * ctx.H;
+}
+
+// Les libelles ancres au monde (texte, compteur, icone...) ne se posent pas sur la bande des legendes : s'ils la touchent ils passent juste au-dessus (ou dessous).
+const LIBELLES = new Set(['texte', 'compteur', 'icone', 'equation', 'bulle', 'horloge', 'minuteur', 'nom']);
+const aLegendes = (scene) => (scene._aLegendes ??= !!scene.textes?.some((e) => e.legende && e.evite));
+function hors_bande(ctx, el, vis, k, zone, cy, b, pivot) {
+  const Z = zone ?? { x0: 0, y0: 0, x1: ctx.W, y1: ctx.H };
+  const plan = ctx.scene.plans?.find((p) => ctx.t >= p.de && ctx.t < p.a);
+  const cle = `${plan ? 'p' + plan.de : 'c' + el._seq}|${ctx.W}x${ctx.H}`;
+  let c = ctx.cacheEvite.get(cle);
+  if (!c) {
+    const i0 = plan ? plan.i0 : Math.round(el.t[0] * 30), i1 = plan ? plan.i1 : Math.max(i0 + 1, Math.round(el.t[1] * 30));
+    c = choisirHauteur({ images: ctx.images, i0, i1, W: ctx.W, H: ctx.H, zone: Z, larg: 0.55 * (Z.x1 - Z.x0), haut: 0.075 * ctx.U });
+    ctx.cacheEvite.set(cle, c);
+  }
+  const marge = 0.012 * ctx.U, b0 = c.y * ctx.H - 0.0375 * ctx.U - marge, b1 = c.y * ctx.H + 0.0375 * ctx.U + marge;
+  const oy = b.y + pivot[1] * b.h, haut = vis.h * k, haut0 = cy + (vis.y - oy) * k, bas0 = haut0 + haut;
+  if (bas0 <= b0 || haut0 >= b1) return cy;
+  const dessus = b0 - haut - haut0, dessous = b1 - haut0;   // deplacements pour passer au-dessus / au-dessous
+  const ok = (d) => haut0 + d >= Z.y0 && haut0 + d + haut <= Z.y1;
+  const d = ok(dessus) && (Math.abs(dessus) <= Math.abs(dessous) || !ok(dessous)) ? dessus : ok(dessous) ? dessous : 0;
+  if (Math.abs(d) > 0.04 * ctx.U) noter(ctx, `bande#${el.type}#${el.ordre ?? el._seq}`, `${el.type}${el.texte ? ` "${String(el.texte).slice(0, 18)}"` : ''} a t=${el.t[0]} s : deplace de ${Math.round(Math.abs(d))} px pour ne pas recouvrir la legende`);
+  return cy + d;
+}
 
 function poserElement(film, ctx, el, spr, anc, anim) {
   const pivot = el.pivot ?? PIVOT_PAR_TYPE[el.type] ?? [0.5, 0.5];
@@ -513,6 +570,8 @@ function poserElement(film, ctx, el, spr, anc, anim) {
   let k = anc.k;
   if (zone) { const kmax = Math.min((zone.w * (Z.actif ? 1 : 1)) / vis.w, zone.h / vis.h); if (vis.w * k > zone.w + 0.5 || vis.h * k > zone.h + 0.5) k = Math.min(k, kmax); }
   let cx = anc.x, cy = anc.y;
+  if (el.evite && ctx.images) cy = hauteurLegende(ctx, el, vis, k, zone);   // position `auto` des legendes : hors des acteurs
+  else if (anc.mondeAncre && LIBELLES.has(el.type) && ctx.images && aLegendes(ctx.scene)) cy = hors_bande(ctx, el, vis, k, zone, cy, b, pivot);   // libelle du monde : pas sur la bande des legendes
   const ox = b.x + pivot[0] * b.w, oy = b.y + pivot[1] * b.h;   // le pivot, dans l'image du sprite
   if (zone) {
     // rectangle opaque au repos (avant l'animation) : on le ramene dans la zone
@@ -582,7 +641,7 @@ function dessinerFleche(film, ctx, el, anim) {
   dessinerAxe(sombre, ep + 3, alpha * 0.45); pointe(x1, y1, ux, uy, sombre, alpha * 0.45, 2); if (el.double) pointe(x0, y0, -ux, -uy, sombre, alpha * 0.45, 2);
   dessinerAxe(col, ep, alpha); pointe(x1, y1, ux, uy, col, alpha); if (el.double) pointe(x0, y0, -ux, -uy, col, alpha);
   if (el.texte && p >= 1) {
-    const t = imageTexte(ctx, el.texte, { ...el, taille: el.taille ?? 0.05, couleur: el.couleur }, { contour: { couleur: [10, 10, 10, 255], ep: 0.07 }, gras: true });
+    const t = imageTexte(ctx, el.texte, { ...el, taille: el.taille ?? 0.05, couleur: el.couleur }, { type: 'fleche', contour: { couleur: [10, 10, 10, 255], ep: 0.07 }, gras: true });
     const b = t.boite, mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
     let nx = uy, ny = -ux; if (Math.abs(ny) > Math.abs(nx)) { if (ny > 0) { nx = -nx; ny = -ny; } } else if (nx < 0) { nx = -nx; ny = -ny; }
     const decal = Math.abs(nx) * (b.w / 2) + Math.abs(ny) * (b.h / 2) + ep / 2 + 0.018 * U;

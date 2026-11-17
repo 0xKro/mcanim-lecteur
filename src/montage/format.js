@@ -127,7 +127,7 @@ export function lirePlans(D, brut, duree, images) {
 }
 
 // ---------------------------------------------------------------- styles de texte (communs aux legendes et aux incrustations)
-export const CLES_STYLE = ['couleur', 'couleurs', 'accent', 'couleurAccent', 'gras', 'italique', 'contour', 'ombre', 'casse', 'largeurMax', 'interligne', 'fond', 'marge', 'alignement', 'taille'];
+export const CLES_STYLE = ['couleur', 'couleurs', 'accent', 'couleurAccent', 'gras', 'italique', 'contour', 'ombre', 'casse', 'largeurMax', 'interligne', 'fond', 'marge', 'alignement', 'taille', 'police'];
 function lireStyle(D, o, ch, def = {}) {
   const s = { ...def };
   if (o.couleur !== undefined) s.couleur = couleurDe(D, o.couleur, `${ch}.couleur`);
@@ -148,6 +148,7 @@ function lireStyle(D, o, ch, def = {}) {
     else if (estObjet(o.contour)) { champsConnus(D, o.contour, ['couleur', 'epaisseur'], `${ch}.contour`); s.contour = { couleur: couleurDe(D, o.contour.couleur, `${ch}.contour.couleur`, [10, 10, 10, 255]), ep: nombreEntre(D, o.contour.epaisseur, `${ch}.contour.epaisseur`, 0, 0.5, 0.06) }; }
     else D.err(`${ch}.contour`, 'true, false ou {"couleur":"#000","epaisseur":0.06} (epaisseur : part de la taille du texte)');
   }
+  if (o.police !== undefined) { if (o.police !== 'sans' && o.police !== 'jeu') D.err(`${ch}.police`, '"jeu" (police du jeu ou du texture pack joint, defaut) ou "sans" (gras rond lisible)'); s.police = o.police; }
   if (o.ombre !== undefined) { if (typeof o.ombre !== 'boolean') D.err(`${ch}.ombre`, 'true ou false attendu'); s.ombre = o.ombre; }
   if (o.casse !== undefined) { if (!casses.includes(o.casse)) D.err(`${ch}.casse`, `une de : ${casses.join(', ')}`); s.casse = o.casse; }
   s.largeurMax = nombreEntre(D, o.largeurMax, `${ch}.largeurMax`, 0.05, 1.5, s.largeurMax);
@@ -160,13 +161,18 @@ function lireStyle(D, o, ch, def = {}) {
 }
 // Defauts des legendes : mesures sur les 4 videos de reference (analyse/10-videos-reference.md) : ligne de 0,065 du petit cote (70 px sur 1080),
 // blanc, contour sombre epais, centree, a 68 % de la hauteur, 1 a 3 mots.
-export const STYLE_LEGENDE = { taille: 0.06, couleur: [255, 255, 255, 255], gras: true, contour: { couleur: [8, 8, 8, 255], ep: 0.16 }, ombre: true, alignement: 'centre', largeurMax: 1, interligne: 9, marge: 0 };
+// Police par defaut des legendes : "sans" (gras rond lisible, comme les 4 videos : capitales tres grasses, ombre douce, contour fin) ; "jeu" = police pixel du jeu
+// (contour epais, taille 0,06). Hauteur de capitale mesuree sur V1 et V3 : 2,45 % de la hauteur de l'image = taille 0,055 de cette police.
+export const STYLE_LEGENDE = { taille: 0.055, couleur: [255, 255, 255, 255], gras: true, police: 'sans', contour: { couleur: [8, 8, 8, 255], ep: 0.05 }, ombre: true, alignement: 'centre', largeurMax: 1, interligne: 9, marge: 0 };
+export const STYLE_LEGENDE_JEU = { taille: 0.06, couleur: [255, 255, 255, 255], gras: true, police: 'jeu', contour: { couleur: [8, 8, 8, 255], ep: 0.16 }, ombre: true, alignement: 'centre', largeurMax: 1, interligne: 9, marge: 0 };
+// Decision du proprietaire (16/11/2026) : la police par defaut est celle du jeu (ou celle du texture pack joint) ; "sans" seulement sur demande.
+const styleLegende = (opt) => ({ ...(opt.police === 'sans' ? STYLE_LEGENDE : STYLE_LEGENDE_JEU) });
 // Positions nommees : fractions de la ZONE SURE (docs/MONTAGE.md), pas de l'image : "bas" = le bas de la zone sure. "legende" (defaut des sous-titres) :
 // la bande ou les createurs posent leurs sous-titres, 64 % de la hauteur de l'image (references : 62 a 68 %), ramenee dans la zone sure si besoin.
-export const POSITIONS = { haut: { ecran: [0.5, 0.04] }, centre: { ecran: [0.5, 0.5] }, bas: { ecran: [0.5, 1] }, bas_bord: { ecran: [0.5, 1] }, legende: { ecranAbs: [0.5, 0.64] } };
+export const POSITIONS = { haut: { ecran: [0.5, 0.04] }, centre: { ecran: [0.5, 0.5] }, bas: { ecran: [0.5, 1] }, bas_bord: { ecran: [0.5, 1] }, legende: { ecranAbs: [0.5, 0.64] }, auto: { ecranAbs: [0.5, 0.64], evite: true } };   // auto (defaut) : 64 % de la hauteur, deplacee hors des visages et des torses (montage/evitement.js) ; legende : toujours a 64 %
 
 function lirePosition(D, v, ch) {
-  if (v === undefined) return POSITIONS.legende;
+  if (v === undefined) return POSITIONS.auto;
   if (typeof v === 'string') { if (!POSITIONS[v]) D.err(ch, `position : une de ${Object.keys(POSITIONS).join(', ')} ou [x, y] (0..1)`); return POSITIONS[v]; }
   if (Array.isArray(v) && v.length === 2 && v.every((x) => estNombre(x) && x >= -0.5 && x <= 1.5)) return { ecran: v };
   return D.err(ch, `position : une de ${Object.keys(POSITIONS).join(', ')} ou [x, y] (fractions de la zone sure, y vers le bas)`);
@@ -232,7 +238,7 @@ export function lireTextes(D, brut, duree) {
   });
 }
 function elementLegende(D, t, texte, opt, ch, ordre) {
-  const style = lireStyle(D, opt, ch, { ...STYLE_LEGENDE });
+  const style = lireStyle(D, opt, ch, styleLegende(opt));
   const pos = lirePosition(D, opt.position, `${ch}.position`);
   return { type: 'texte', legende: true, t, texte, ...style, ...pos, pop: lirePop(D, opt.pop, `${ch}.pop`), ...lireMouvement(D, opt, ch), calque: nombreEntre(D, opt.calque, `${ch}.calque`, -100, 100, 50), opacite: nombreEntre(D, opt.opacite, `${ch}.opacite`, 0, 1, 1), ordre };
 }
@@ -272,12 +278,13 @@ export function lireSousTitres(D, brut, duree) {
       let t = b.debut; mots = ws.map((w, j) => { const m = { t, mot: w }; t += (b.fin - b.debut) * poids[j] / total; return m; });
     }
     if (!mots.length) D.err(c, 'aucun mot');
+    D.mots?.push(...mots.map((m) => ({ t: m.t, mot: m.mot })));   // pour les gestes "@mot" (montage/jeu.js)
     const fin = estNombre(b.fin) ? b.fin : null;
     if (fin !== null && (fin <= mots[0].t || fin > duree + 1e-9)) D.err(`${c}.fin`, `fin apres le premier mot et au plus ${duree}`);
     const st = b.style !== undefined ? (estObjet(b.style) ? b.style : D.err(`${c}.style`, 'objet de style attendu')) : {};
     if (b.style !== undefined) champsConnus(D, st, [...CLES_STYLE, ...CLES_MOUVEMENT, 'position', 'pop'], `${c}.style`);
     const opt = { ...b, ...st };
-    const style = lireStyle(D, opt, c, { ...STYLE_LEGENDE });
+    const style = lireStyle(D, opt, c, styleLegende(opt));
     const pos = lirePosition(D, opt.position, `${c}.position`), pop = lirePop(D, opt.pop, `${c}.pop`), mouv = lireMouvement(D, opt, c);
     const calque = nombreEntre(D, b.calque, `${c}.calque`, -100, 100, 50), opacite = nombreEntre(D, b.opacite, `${c}.opacite`, 0, 1, 1);
     const puces = decouperSousTitres(mots, { par, fin: fin ?? Math.min(duree, mots[mots.length - 1].t + 0.6), accent: style.accent ?? null });

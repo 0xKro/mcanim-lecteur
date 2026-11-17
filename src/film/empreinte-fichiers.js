@@ -27,6 +27,8 @@ export const REGISTRE = [
   { role: 'texture', lister: (brut) => (brut.textures && typeof brut.textures === 'object' ? Object.values(brut.textures).filter((m) => typeof m === 'string') : []) },
   { role: 'shader', lister: (brut) => (typeof brut.shader === 'string' ? [brut.shader] : []) },
   { role: 'packShader', lister: (brut) => (typeof brut.packShader === 'string' ? [brut.packShader] : []) },
+  // decors (docs/FORMAT-DECOR.md) : un decor change le monde, donc l'image ; les decors en ligne sont deja dans le JSON de la scene. Octets normalises (retours a la ligne, sans BOM) comme les mods.
+  { role: 'decor', normaliser: true, lister: (brut) => (Array.isArray(brut.decor) ? brut.decor.filter((m) => typeof m === 'string') : []) },
   // mods de comportement (monde.mods) : le fichier change le jeu, donc l'image. Octets normalises (\n, sans BOM) : voir moteur/mods.js
   { role: 'mod', normaliser: true, lister: (brut) => (Array.isArray(brut.monde?.mods) ? brut.monde.mods.filter((m) => typeof m === 'string') : []) },
   // montage : fichiers audio (voix, musique, effets) et images PNG des incrustations (icone / image avec `fichier`, y compris dans les cartes) : leur CONTENU est dans l'empreinte
@@ -46,9 +48,11 @@ function fichiersIncrustations(liste) {
 // tables de donnees du jeu (moteur/donnees-empreinte.json : SHA-256 du fichier) et de la version du moteur ; un changement de donnees
 // invalide donc les jetons deja emis (comme un mod modifie).
 export function lignesVirtuelles(brut) {
-  if (brut?.monde === undefined) return [];
+  if (brut?.monde === undefined && brut?.decor === undefined) return [];   // un decor depend aussi des tables de blocs du jeu (etats, formes)
   const d = JSON.parse(fs.readFileSync(new URL('../moteur/donnees-empreinte.json', import.meta.url), 'utf8'));
-  return [{ role: 'moteur', chemin: `donnees-jeu v${d.v}`, sha: d.sha256 }];
+  const lignes = [{ role: 'moteur', chemin: `donnees-jeu v${d.v}`, sha: d.sha256 }];
+  if (brut?.decor !== undefined) lignes.push({ role: 'decor-version', chemin: 'decor v1', sha: null });   // version du langage de decor : un changement de regle change l'image
+  return lignes;
 }
 
 // { role, chemin } des fichiers cites par une scene lue (chemins comme ecrits dans la scene, relatifs au fichier de scene).

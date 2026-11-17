@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Net } from './net.js';
-import { normGroups, KitWriter, readInfo, writeInfo, kitFingerprint } from './kit.js';
+import { normGroups, KitWriter, readInfo, writeInfo, kitFingerprint, GROUP_VERSIONS } from './kit.js';
 import * as mojang from './routes/mojang.js';
 import * as git from './routes/git.js';
 import * as github from './routes/github.js';
@@ -38,7 +38,7 @@ export async function ensureKit({ version = '26.3', cacheDir = '.kit-cache', rou
   const want = normGroups(groups);
   const kitDir = path.resolve(cacheDir, version);
   const info = readInfo(kitDir) || { version, groups: {} };
-  const need = new Set([...want].filter((g) => !info.groups[g]));
+  const need = new Set([...want].filter((g) => !info.groups[g] || (info.groups[g].v ?? 1) < (GROUP_VERSIONS[g] ?? 1)));   // groupe absent ou d'une version plus ancienne
   const report = { version, route: null, complete: false, partial: false, missing: [], files: 0, bytesDownloaded: 0, requests: 0, seconds: 0, groups: {}, hash: null, attempts: [], notes: {} };
 
   if (need.size === 0) {
@@ -83,7 +83,7 @@ export async function ensureKit({ version = '26.3', cacheDir = '.kit-cache', rou
     err.report = { ...report, seconds: (Date.now() - t0) / 1000 };
     throw err;
   }
-  if (!report.partial) for (const [g, s] of Object.entries(best.writer.byGroup)) info.groups[g] = { files: s.files, bytes: s.bytes, route: best.r };
+  if (!report.partial) for (const [g, s] of Object.entries(best.writer.byGroup)) info.groups[g] = { files: s.files, bytes: s.bytes, route: best.r, ...(GROUP_VERSIONS[g] ? { v: GROUP_VERSIONS[g] } : {}) };
   info.updated = new Date().toISOString();
   if (!report.partial) writeInfo(kitDir, info);
   const done = new Set([...want].filter((g) => info.groups[g] || (report.partial && best.writer.byGroup[g])));

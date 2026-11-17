@@ -60,8 +60,16 @@ export class Sons {
     return out;
   }
 
-  // fichier .ogg -> Int16Array mono 44100 Hz
-  pcm(fichier) {
+  // fichier .ogg -> Int16Array mono 44100 Hz ; `hauteur` (pitch du jeu, 1 = normal) change la vitesse de lecture (reechantillonnage lineaire)
+  pcm(fichier, hauteur = 1) {
+    if (hauteur !== 1) {
+      const cle = fichier + '|' + hauteur.toFixed(4);
+      if (this.cachePcm.has(cle)) return this.cachePcm.get(cle);
+      const src = this.pcm(fichier), n = Math.max(1, Math.floor(src.length / hauteur)), out = new Int16Array(n);
+      for (let i = 0; i < n; i++) { const p = i * hauteur, k = Math.floor(p), f = p - k; out[i] = Math.round(src[k] * (1 - f) + (src[Math.min(src.length - 1, k + 1)] ?? 0) * f); }
+      this.cachePcm.set(cle, out);
+      return out;
+    }
     if (this.cachePcm.has(fichier)) return this.cachePcm.get(fichier);
     const r = spawnSync(this.ffmpeg, ['-v', 'error', '-i', fichier, '-f', 's16le', '-ac', '1', '-ar', String(FREQUENCE), '-'], { maxBuffer: 64 << 20 });
     if (r.status !== 0) throw new Error(`ffmpeg n'a pas pu lire ${path.basename(fichier)} : ${String(r.stderr).slice(0, 200)}`);
@@ -73,7 +81,7 @@ export class Sons {
 }
 
 // Choix pseudo-aleatoire mais repetable.
-function choisir(liste, graine) {
+export function choisir(liste, graine) {
   const h = crypto.createHash('sha256').update(String(graine)).digest();
   return liste[h.readUInt32BE(0) % liste.length];
 }
@@ -180,7 +188,7 @@ export function mixer({ evenements, duree, sons, volume = VOLUME_MIXAGE }) {
   const n = Math.ceil(duree * FREQUENCE);
   const mix = new Float32Array(n * 2);
   for (const e of evenements) {
-    const pcm = sons.pcm(e.fichier);
+    const pcm = e.hauteur && e.hauteur !== 1 ? sons.pcm(e.fichier, e.hauteur) : sons.pcm(e.fichier);
     const debut = Math.round(e.t * FREQUENCE);
     const angle = ((e.pan + 1) * Math.PI) / 4;     // puissance constante
     const gl = Math.cos(angle) * e.gain * volume * 1.4142, gd = Math.sin(angle) * e.gain * volume * 1.4142;

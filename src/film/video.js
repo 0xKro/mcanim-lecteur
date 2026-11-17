@@ -7,6 +7,7 @@ import { chargerScene } from '../rendu/scene.js';
 import { encoderPNG } from '../rendu/png.js';
 import { animer } from './anim.js';
 import { terrainDepuis } from './physique.js';
+import { descripteursActeurs } from './actes.js';   // acteurs a intentions (champ `actes`) pour la simulation
 import { imageEn, cielEn } from './look.js';
 import { Personnage } from '../perso/modele.js';
 import { resoudreSkin } from '../perso/skin.js';
@@ -56,10 +57,13 @@ export async function simulerScene({ scene, zonePath, baseDir, env = process.env
   const { lireZone } = await import('../rendu/zone.js');
   const { simuler } = await import('../moteur/index.js');
   const { donneesDuJeu } = await import('../moteur/chargeur.js');
-  const zone = lireZone(zonePath);
+  let zone = lireZone(zonePath);
   const donnees = await donneesDuJeu({ env });
-  const r = simuler({ zone, donnees, monde: scene.monde, baseDir, duree: scene.duree });
-  return { zone, donnees, replay: r.replay, rapport: r.rapport, notes: r.replay.avertissements.map((a) => 'monde : ' + a), secondes: (performance.now() - t0) / 1000 };
+  // decors de la scene (docs/FORMAT-DECOR.md) : appliques a une copie de la zone AVANT la simulation et le maillage ; rien sans champ `decor`
+  let notesDecor = [];
+  if (scene.decor) { const r0 = await (await import('../decor/index.js')).zoneAvecDecor({ zone, scene, baseDir, donnees }); zone = r0.zone; notesDecor = r0.notes; }
+  const r = simuler({ zone, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene), baseDir, duree: scene.duree });
+  return { zone, donnees, replay: r.replay, rapport: r.rapport, notes: [...notesDecor, ...r.replay.avertissements.map((a) => 'monde : ' + a)], secondes: (performance.now() - t0) / 1000 };
 }
 
 // Prepare tout ce qui sert a dessiner des images de la scene : kit (avec les textures de la scene), terrain, personnages, animation.
@@ -78,11 +82,15 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
     const notes = sh ? [...sh.notes] : [];
     if (sim) notes.push(...sim.notes);
     const { personnages, parRef, infos } = await preparerPersonnages(scene, { kitDir: kit, surcharges, baseDir });
-    const terrain = terrainDepuis(rs);
-    const anim = animer(scene, terrain);
+    // scene avec simulation : le terrain est le monde VIVANT (blocs poses, portes ouvertes, collisions des boites du jeu), instant par instant
+    const terrain = sim ? (await import('./terrain-vivant.js')).creerTerrainVivant({ rs, replay: sim.replay, donnees: sim.donnees }) : terrainDepuis(rs);
+    const anim = animer(scene, terrain, sim ? { replay: sim.replay } : null);
     const comp = await creerComposition({ scene, kit, baseDir, rs, anim });   // null sans plans, textes, incrustations ni effets de camera
     if (comp) notes.push(...comp.notes);
     const lumiere = personnages.map(() => null);
+    // effets visibles du monde simule (coffres, cloches, fissures, particules) : maillages dynamiques lus dans le replay
+    const effets = sim ? (await import('./effets-monde.js')).creerEffetsMonde({ rs, scene, sim, kit, donnees: sim.donnees, terrain }) : null;
+    if (effets) notes.push(...effets.notes);
     // une image : personnages (skin du moment, lumiere du lieu), ciel, lumiere globale, puis post-traitement `image`
     const dessiner = async (i, { largeur, hauteur, ssaa = 1, copie = true }) => {
       const im = anim.images[i];
@@ -110,6 +118,7 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
         const perso = p.skin ? parRef[k].get(p.skin) : personnages[k];
         return perso.maillage({ ...p, age: im.tm * 20 }, l);
       });
+      if (effets && !carte) maillages.push(...effets.maillages(im.tm, im.camera));
       const ciel = sim ? cielM : cielEn(scene, im.t);
       const veutProf = comp ? comp.veutProfondeur(i) : false;
       const fond = carte ? carte.fond : null;   // carte : ciel et brume de la couleur du fond, terrain hors de portee
@@ -194,6 +203,7 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
     // --- son
     const sons = new Sons(film.kit, ffmpeg);
     const plan = planifierSons({ scene, images, zone: rs.zone, sons, sims: anim.sims, remap: anim.remap });
+    if (film.sim) { const { sonsDuReplay } = await import('./sons-monde.js'); plan.notes.push(...sonsDuReplay({ replay: film.sim.replay, images, sons, evenements: plan.evenements, gel: scene.gel, remap: anim.remap })); plan.evenements.sort((a, b) => a.t - b.t); }   // sons du monde simule (portes, coups de pioche, cloche...)
     let pcm = mixer({ evenements: plan.evenements, duree: scene.duree, sons, volume: VOLUME_MIXAGE * (scene.sons.volume ?? 1) });
     // fichiers audio du montage (voix, musique, effets) : mixes par-dessus les bruits du jeu, ducking et sonie finale (montage/audio.js)
     let notesAudio = [];

@@ -111,13 +111,22 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
   const opaque = new Uint8Array(CAP), perm = new Uint8Array(CAP), opac = new Uint8Array(CAP), kind = new Uint8Array(CAP);
   const aoSh = new Float32Array(CAP).fill(1);
   const genre = new Uint8Array(CAP);
+  const fluFam = new Uint8Array(CAP), fluQte = new Uint8Array(CAP);   // fluide de l'entree : famille (1 eau, 2 lave) et quantite (8 source ou chute, 1..7 coulant), comme FluidState
   const teintesPal = new Array(CAP);
   let NP = 0;
   function preparerEntree(i) {
     if (i === 1) { opaque[1] = 1; perm[1] = 0; opac[1] = 15; aoSh[1] = 0.2; return; }
     const e = modeles.etat(palette[i]);
     etats[i] = e;
+    // variantes au hasard (feu : fire_floor0 / fire_floor1, herbes...) : TOUTES les textures doivent etre connues avant l'atlas, sinon une variante tiree
+    // plus tard (section refaite) aurait des uv NaN (sprite sans place dans l'atlas) et un carre de texture au hasard
+    if (e.aleatoire) for (const l of e.emplacements) for (const v of l) if (v && v.model) modeles.quadsModele(v.model, v.x || 0, v.y || 0, !!v.uvlock);
     kind[i] = e.type;
+    if (e.type === 2 || e.type === 3 || e.eau) {
+      fluFam[i] = e.type === 3 ? 2 : 1;
+      const lv = e.type === 2 || e.type === 3 ? +(e.props.level || 0) : 0;
+      fluQte[i] = lv === 0 || lv >= 8 ? 8 : 8 - lv;
+    }
     opaque[i] = e.opaque ? 1 : 0; perm[i] = e.opaque ? 0 : 1; opac[i] = e.opaciteLumiere;
     aoSh[i] = e.aoSolide ? 0.2 : 1;
     if (e.type === 1 && e.geo.length === 0 && !e.aleatoire) kind[i] = 0;
@@ -326,44 +335,102 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
   const spriteLaveStill = textures.sprite('block/lava_still'), spriteLaveFlow = textures.sprite('block/lava_flow');
   const FLU_OMBRE = OMBRE_DIR;
 
+  // Hauteur d'une cellule pour un fluide de famille `fam` (FluidRenderer.getHeight) : 1 si le meme fluide est au-dessus, sinon quantite / 9 ;
+  // une cellule sans ce fluide : 0, ou -1 si c'est un bloc solide (il ne compte pas dans la moyenne des coins)
+  const hauteurFluide = (p, dessusP, fam) => (fluFam[p] === fam ? (fluFam[dessusP] === fam ? 1 : fluQte[p] / 9) : (opaque[p] ? -1 : 0));
+  const poids = (acc, h) => { if (h >= 0.8) { acc[0] += h * 10; acc[1] += 10; } else if (h >= 0) { acc[0] += h; acc[1] += 1; } };
+  // FluidRenderer.calculateAverageHeight : moyenne ponderee du coin (cellule, deux voisins de l'arete, voisin en diagonale)
+  function hauteurCoin(h, h1, h2, diag) {
+    if (h2 >= 1 || h1 >= 1) return 1;
+    const acc = [0, 0];
+    if (h2 > 0 || h1 > 0) { const f = diag(); if (f >= 1) return 1; poids(acc, f); }
+    poids(acc, h); poids(acc, h2); poids(acc, h1);
+    return acc[1] ? acc[0] / acc[1] : h;
+  }
+  // FlowingFluid.getFlow : direction du courant (x, z) normalisee, ou null (eau calme)
+  function courant(i, fam) {
+    const OFF = [[OFFDIR[2], 0, -1], [OFFDIR[3], 0, 1], [OFFDIR[4], -1, 0], [OFFDIR[5], 1, 0]];   // nord, sud, ouest, est : [decalage, dx, dz]
+    const propre = (p) => (fluFam[p] === fam ? fluQte[p] / 9 : 0);
+    const touche = (p) => fluFam[p] === 0 || fluFam[p] === fam;
+    const mien = propre(pal[i]);
+    let x = 0, z = 0;
+    for (const [off, dx, dz] of OFF) {
+      const p = pal[i + off];
+      if (!touche(p)) continue;
+      let h = propre(p), f = 0;
+      if (h === 0) {
+        if (!opaque[p]) {
+          const pb = pal[i + off - OY];
+          if (touche(pb)) { h = propre(pb); if (h > 0) f = mien - (h - 0.8888889); }
+        }
+      } else f = mien - h;
+      if (f !== 0) { x += dx * f; z += dz * f; }
+    }
+    const n = Math.hypot(x, z);
+    return n > 1e-9 ? [x / n, z / n] : null;
+  }
+
   function emettreFluide(i, lx, ly, lz, lave, props, colonne) {
-    const lv = +(props.level || 0);
-    const dessus = pal[i + OY];
-    const dessusEau = lave ? kind[dessus] === 3 : (etats[dessus] && etats[dessus].eau);
-    const h = dessusEau || lv >= 8 ? 1 : (lv === 0 ? 14 / 16 : (8 - lv) / 9);
+    const fam = lave ? 2 : 1;
+    const p0 = pal[i], dessus = pal[i + OY];
+    const dessusEau = fluFam[dessus] === fam;
     const X = X0 + lx, Y = Y0 + ly, Z = Z0 + lz;
     const couche = lave ? 0 : 2;
-    const sTop = lave ? spriteLaveStill : spriteEauStill, sSide = lave ? spriteLaveFlow : spriteEauFlow;
+    const sTop = lave ? spriteLaveStill : spriteEauStill, sFlow = lave ? spriteLaveFlow : spriteEauFlow;
     const coul = lave ? [255, 255, 255] : rgb(tab.eau[colonne]);
     const niveauLum = (idx) => (lave ? 15 : lum[idx]);
     const niveauBlk = (idx) => (lave ? 15 : (lightmap ? blk[idx] : 0));
     const lumF = (idx) => (lightmap ? 1 : lumiere(niveauLum(idx)));
-    const memeFluide = (p) => (lave ? kind[p] === 3 : !!(etats[p] && etats[p].eau));
+    const memeFluide = (p) => fluFam[p] === fam;
     const secteur = secDe(lx, ly, lz);
-    // haut
-    if (!(opaque[dessus]) && !(dessusEau)) {
-      const f = FLU_OMBRE[1] * lumF(i);
-      quadFluide(couche, sTop, [[X, Y + h, Z], [X, Y + h, Z + 1], [X + 1, Y + h, Z + 1], [X + 1, Y + h, Z]], [[0, 0], [0, 1], [1, 1], [1, 0]], coul, f, secteur, lave ? 0 : ETI_EAU, niveauLum(i), pal[i], niveauBlk(i));
+    // hauteurs : de la cellule, des quatre voisins, puis des quatre coins (moyenne des cellules qui les touchent)
+    const h = hauteurFluide(p0, dessus, fam);
+    const H = (off) => hauteurFluide(pal[i + off], pal[i + off + OY], fam);
+    let hNW, hNE, hSW, hSE;
+    if (h >= 1) hNW = hNE = hSW = hSE = 1;
+    else {
+      const hN = H(OFFDIR[2]), hS = H(OFFDIR[3]), hW = H(OFFDIR[4]), hE = H(OFFDIR[5]);
+      hNW = hauteurCoin(h, hN, hW, () => H(OFFDIR[2] + OFFDIR[4]));
+      hNE = hauteurCoin(h, hN, hE, () => H(OFFDIR[2] + OFFDIR[5]));
+      hSW = hauteurCoin(h, hS, hW, () => H(OFFDIR[3] + OFFDIR[4]));
+      hSE = hauteurCoin(h, hS, hE, () => H(OFFDIR[3] + OFFDIR[5]));
     }
-    // cotes
-    const faces = [[2, OFFDIR[2]], [3, OFFDIR[3]], [4, OFFDIR[4]], [5, OFFDIR[5]]];
-    for (const [d, off] of faces) {
-      const np = pal[i + off];
+    // haut : texture "coule" avec la direction du courant, "calme" sinon (uv comme FluidRenderer)
+    if (!opaque[dessus] && !dessusEau) {
+      const f = FLU_OMBRE[1] * lumF(i);
+      const fl = h < 1 ? courant(i, fam) : null;
+      let sp = sTop, uv = [[0, 0], [0, 1], [1, 1], [1, 0]];
+      if (fl) {
+        sp = sFlow;
+        const ang = Math.atan2(fl[1], fl[0]) - Math.PI / 2, sn = Math.sin(ang) * 0.25, cs = Math.cos(ang) * 0.25;
+        uv = [[0.5 + (-cs - sn), 0.5 + (-cs + sn)], [0.5 + (-cs + sn), 0.5 + (cs + sn)], [0.5 + (cs + sn), 0.5 + (cs - sn)], [0.5 + (cs - sn), 0.5 + (-cs - sn)]];
+      }
+      const dessusPts = [[X, Y + hNW, Z], [X, Y + hSW, Z + 1], [X + 1, Y + hSE, Z + 1], [X + 1, Y + hNE, Z]];
+      quadFluide(couche, sp, dessusPts, uv, coul, f, secteur, lave ? 0 : ETI_EAU, niveauLum(i), p0, niveauBlk(i));
+      // FluidRenderer dessine aussi le dessous de la surface de l'EAU (vue d'en dessous) : meme quad, sommets dans l'ordre inverse
+      if (!lave) quadFluide(couche, sp, [dessusPts[0], dessusPts[3], dessusPts[2], dessusPts[1]], [uv[0], uv[3], uv[2], uv[1]], coul, f, secteur, ETI_EAU, niveauLum(i), p0, niveauBlk(i));
+    }
+    // cotes : seulement la ou le voisin n'est ni opaque ni le meme fluide ; le bord haut suit les hauteurs des deux coins
+    const v = (hh) => (1 - hh) * 0.5;
+    const cotes = [
+      [2, [[X + 1, Y + hNE, Z], [X + 1, Y, Z], [X, Y, Z], [X, Y + hNW, Z]], hNE, hNW],
+      [3, [[X, Y + hSW, Z + 1], [X, Y, Z + 1], [X + 1, Y, Z + 1], [X + 1, Y + hSE, Z + 1]], hSW, hSE],
+      [4, [[X, Y + hNW, Z], [X, Y, Z], [X, Y, Z + 1], [X, Y + hSW, Z + 1]], hNW, hSW],
+      [5, [[X + 1, Y + hSE, Z + 1], [X + 1, Y, Z + 1], [X + 1, Y, Z], [X + 1, Y + hNE, Z]], hSE, hNE],
+    ];
+    for (const [d, pts, ha, hb] of cotes) {
+      const off = OFFDIR[d], np = pal[i + off];
       if (opaque[np] || memeFluide(np)) continue;
       const f = FLU_OMBRE[d] * lumF(i + off);
-      let pts;
-      if (d === 2) pts = [[X + 1, Y + h, Z], [X + 1, Y, Z], [X, Y, Z], [X, Y + h, Z]];
-      else if (d === 3) pts = [[X, Y + h, Z + 1], [X, Y, Z + 1], [X + 1, Y, Z + 1], [X + 1, Y + h, Z + 1]];
-      else if (d === 4) pts = [[X, Y + h, Z], [X, Y, Z], [X, Y, Z + 1], [X, Y + h, Z + 1]];
-      else pts = [[X + 1, Y + h, Z + 1], [X + 1, Y, Z + 1], [X + 1, Y, Z], [X + 1, Y + h, Z]];
-      quadFluide(couche, sSide, pts, [[0, 0], [0, h * 0.5], [0.5, h * 0.5], [0.5, 0]].map((u, k) => [[0, 0], [0, h / 2], [0.5, h / 2], [0.5, 0]][k]), coul, f, secteur, 0, niveauLum(i + off), pal[i], niveauBlk(i + off));
+      quadFluide(couche, sFlow, pts, [[0, v(ha)], [0, 0.5], [0.5, 0.5], [0.5, v(hb)]], coul, f, secteur, 0, niveauLum(i + off), p0, niveauBlk(i + off));
     }
     // bas
     const dessous = pal[i - OY];
     if (!opaque[dessous] && !memeFluide(dessous)) {
       const f = FLU_OMBRE[0] * lumF(i - OY);
-      quadFluide(couche, sTop, [[X, Y, Z + 1], [X, Y, Z], [X + 1, Y, Z], [X + 1, Y, Z + 1]], [[0, 1], [0, 0], [1, 0], [1, 1]], coul, f, secteur, 0, niveauLum(i - OY), pal[i], niveauBlk(i - OY));
+      quadFluide(couche, sTop, [[X, Y, Z + 1], [X, Y, Z], [X + 1, Y, Z], [X + 1, Y, Z + 1]], [[0, 1], [0, 0], [1, 0], [1, 1]], coul, f, secteur, 0, niveauLum(i - OY), p0, niveauBlk(i - OY));
     }
+    void props;
   }
 
   // Emet les quads des cellules locales [xa, xb[ x [ya, yb[ x [za, zb[

@@ -4,6 +4,7 @@ import { appliquerEffetsImage, melangerCouleur } from './effets-image.js';
 import { effetsDeScene } from './effets-camera.js';
 import { creerIncrustations, aIncrustations } from '../incrust/index.js';
 import { creerProjecteur, transformRoulis } from '../incrust/ancrage.js';
+import { notesRythme } from './rythme.js';
 
 export const scenePourMontage = (scene) => effetsDeScene(scene) || aIncrustations(scene);
 
@@ -15,7 +16,7 @@ export async function creerComposition({ scene, kit, baseDir, rs = null, anim, g
   if (!scenePourMontage(scene)) return null;
   const solide = rs && typeof rs.estSolidePourCamera === 'function' ? (x, y, z) => rs.estSolidePourCamera(x, y, z) : null;
   const inc = aIncrustations(scene) ? await creerIncrustations({ scene, kit, baseDir, solide }) : null;
-  const notes = [];
+  const notes = [...notesRythme(scene)];   // rythme compare aux videos de reference (notes courtes)
   const prof = { demandee: 0, ignoree: 0 };
   const parNom = new Map(scene.acteurs.map((a, k) => [a.nom, k]));
   return {
@@ -51,7 +52,7 @@ export async function creerComposition({ scene, kit, baseDir, rs = null, anim, g
         const imUtile = carte ? carte.im : im;
         const roulis = im.roulis ? transformRoulis(im.roulis, W, H) : null;
         const proj = creerProjecteur(imUtile.camera, W, H, roulis);
-        inc.dessiner(rgba, W, H, { t: im.t, im: imUtile, proj, prof: profondeur, carte: carte?.el ?? null });
+        inc.dessiner(rgba, W, H, { t: im.t, im: imUtile, proj, prof: profondeur, carte: carte?.el ?? null, images: carte ? [imUtile] : anim.images, carteImage: !!carte });
       }
       return faits;
     },

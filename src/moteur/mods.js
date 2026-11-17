@@ -14,7 +14,7 @@
 import vm from 'node:vm';
 import { ErreurMonde } from './erreurs.js';
 
-const API_PONT = ['bloc', 'poser', 'casser', 'planifier', 'voisins', 'survit', 'appui', 'lumiere', 'evenement', 'son', 'particule', 'entites', 'regle', 'tick', 'dire'];
+const API_PONT = ['bloc', 'poser', 'casser', 'planifier', 'voisins', 'survit', 'survitEtat', 'remplacable', 'appui', 'lumiere', 'evenement', 'son', 'particule', 'entites', 'champs', 'utiliser', 'alimenter', 'allumer', 'chuter', 'exploser', 'feu', 'blocEntite', 'regle', 'tick', 'dire'];
 
 const AMORCE = `(function (pont) {
   'use strict';
@@ -26,7 +26,7 @@ const AMORCE = `(function (pont) {
   const gestionnaires = [];
   const monde = {};
   for (const nom of ${JSON.stringify(API_PONT)}) monde[nom] = (...a) => appeler(nom, ...a);
-  monde.hasard = { entier: (n) => appeler('hasard.entier', n), reel: () => appeler('hasard.reel'), booleen: () => appeler('hasard.booleen') };
+  monde.hasard = { entier: (n) => appeler('hasard.entier', n), reel: () => appeler('hasard.reel'), booleen: () => appeler('hasard.booleen'), flottant: () => appeler('hasard.flottant') };
   Object.freeze(monde.hasard); Object.freeze(monde);
   const nouvelEv = (donnees) => { const ev = donnees; Object.defineProperty(ev, 'annuler', { value() { this.annule = true; }, enumerable: false }); return ev; };
   const cible = (genre, sel) => {
@@ -117,6 +117,7 @@ export class HoteMods {
       if (op === 'hasard.entier') return JSON.stringify({ v: sim.api.hasard.entier(a[0]) });
       if (op === 'hasard.reel') return JSON.stringify({ v: sim.api.hasard.reel() });
       if (op === 'hasard.booleen') return JSON.stringify({ v: sim.api.hasard.booleen() });
+      if (op === 'hasard.flottant') return JSON.stringify({ v: sim.api.hasard.flottant() });
       if (!API_PONT.includes(op)) throw new ErreurMonde(`monde.${op} : appel inconnu`);
       const v = sim.api[op](...a);
       return JSON.stringify({ v: v === undefined ? null : v });

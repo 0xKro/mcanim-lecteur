@@ -1,0 +1,12 @@
+{
+  "v": 1, "zone": "W-BTYtCHIX2i6X16byJpog", "ancre": [-216, -640], "niveau": "sol",
+  "ops": [
+    ["aplanir", 0, 0, 11, 11, 0, { "dessus": "gravel", "marge": 3 }],
+    ["mur", 0, 0, 0, 11, 0, 11, "oak_fence"],
+    ["bloc", 5, 0, 0, "oak_fence_gate", "nord"],
+    ["bloc", 6, 0, 0, "oak_fence_gate", "nord"],
+    ["pts", "lantern", [0, 1, 0], [11, 1, 0], [0, 1, 11], [11, 1, 11]],
+    ["bloc", 5, 0, 5, "campfire"],
+    ["pts", "oak_log[axis=x]", [3, 0, 5], [8, 0, 5], [5, 0, 3], [5, 0, 8]]
+  ]
+}

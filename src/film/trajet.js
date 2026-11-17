@@ -144,13 +144,33 @@ export function texteActeur(nom, evenements) {
   return [entete, ...lignes].join('\n');
 }
 
-// Reponse complete de `mcanim trajet`.
-export function texteTrajets(scene, terrain) {
+// Acteur commande par ses `actes` (monde simule) : resume de sa trace dans le replay (marche, sauts, arrivee) et de ses echecs.
+export function texteActeurVivant(nom, replay) {
+  const id = replay.acteurs.indexOf(nom), A = replay.acteursVue, pts = [];
+  for (let i = 0; i < A.length / 16; i++) if (A[i * 16 + 1] === id) pts.push({ k: A[i * 16], x: A[i * 16 + 2], y: A[i * 16 + 3], z: A[i * 16 + 4], sol: (A[i * 16 + 8] & 2) !== 0 });
+  let dist = 0, sauts = 0, chuteMax = 0, depart = null;
+  for (let i = 1; i < pts.length; i++) {
+    dist += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z);
+    if (pts[i - 1].sol && !pts[i].sol && pts[i].y > pts[i - 1].y + 0.05) sauts++;
+    if (pts[i - 1].sol && !pts[i].sol) depart = pts[i - 1].y;
+    if (!pts[i - 1].sol && pts[i].sol && depart !== null) { chuteMax = Math.max(chuteMax, depart - pts[i].y); depart = null; }
+  }
+  const fin = pts[pts.length - 1];
+  const echecs = replay.actes.filter((a) => a.acteur === nom && a.statut !== 'ok');
+  const l = [`${nom} : guide par ses actes (monde simule) : ${f1(dist)} blocs de marche, ${sauts} saut(s)${chuteMax >= 0.9 ? `, chute max ${f1(chuteMax)} blocs` : ''}, arrivee (${f1(fin.x)}, ${f1(fin.y)}, ${f1(fin.z)})`];
+  for (const e of echecs.slice(0, 3)) l.push(`  ! t=${f1(e.tick / 20 / replay.ralenti)} ${e.args} ${e.statut === 'echec' ? 'ECHEC' : 'interrompu'}${e.texte ? ' : ' + e.texte.slice(0, 110) : ''}`);
+  if (echecs.length > 3) l.push(`  (+${echecs.length - 3} autres, mcanim simuler)`);
+  return l.join('\n');
+}
+
+// Reponse complete de `mcanim trajet`. monde (facultatif) : { replay } de la simulation du jeu (acteurs a `actes`) ; le terrain est alors le monde vivant.
+export function texteTrajets(scene, terrain, monde = null) {
   const t = trajetsDeScene(scene, terrain);
   let note = null;   // articulations libres : amplitudes hors plausible, une ligne (information seule)
   let camera = [];   // camera : herbe, feuilles ou acteur colles a l'objectif (obstruction.js)
-  try { const anim = animer(scene, terrain); note = noteAmplitudes(scene, anim); camera = anim.notes.filter((n) => n.startsWith('camera : de ')); } catch { /* facultatif */ }
-  return [...t.map((x) => texteActeur(x.nom, x.evenements)), ...(note ? [note] : []), ...camera, RAPPEL].join('\n');
+  try { const anim = animer(scene, terrain, monde); note = noteAmplitudes(scene, anim); camera = anim.notes.filter((n) => n.startsWith('camera : de ')); } catch { /* facultatif */ }
+  const parNom = new Map(scene.acteurs.map((a) => [a.nom, a]));
+  return [...t.map((x) => (parNom.get(x.nom).actes && monde?.replay ? texteActeurVivant(x.nom, monde.replay) : texteActeur(x.nom, x.evenements))), ...(note ? [note] : []), ...camera, RAPPEL].join('\n');
 }
 
 // Nombre d'evenements (hors vitesse) et d'avertissements de vitesse, pour la ligne de `mcanim empreinte`.

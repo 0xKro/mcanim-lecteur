@@ -60,6 +60,7 @@ export function idsDeScene(scene) {
   for (const a of scene.acteurs) {
     for (const p of [a.objetD, a.objetG]) for (const k of p?.cles ?? []) if (k.id) objets.add(k.id);
     for (const p of Object.values(a.armure ?? {})) for (const k of p.cles) if (k.id) armures.add(k.id);
+    for (const x of a.actes ?? []) { if (x.verbe === 'tient' && x.objet) objets.add(x.objet); else if (x.verbe === 'pose') objets.add(x.bloc); }   // objets tenus par les intentions (tient, pose)
   }
   return { objets, armures };
 }

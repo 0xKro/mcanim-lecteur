@@ -16,9 +16,12 @@ export const BASCULE_MAX = 180, HAUTEUR_MAX = 10;
 import { PLAFOND } from './limites.js';
 import { lireCibles, MEMBRES_CIBLES } from './cibles.js';
 import { lireMontage, lireEffetsCamera } from '../montage/format.js';   // plans, textes, sousTitres, incrustations, effets de camera (facultatifs)
+import { lireJeuActeur, resoudreGestes, jeuDeScene } from '../montage/jeu.js';   // jeu d'acteur : vie au repos, gestes sur mots cles
+import { lireCadre } from '../montage/cadrage.js';   // cadre : plan moyen, rapproche, gros plan, plan a deux (camera calculee)
 import { lireZonesSures } from '../montage/zones.js';   // zonesSures : marges de l'interface des applications (profils instagram, tiktok, youtube, toutes, aucune)
 import { lireEntreesFichiers } from '../montage/audio.js';   // sons.fichiers : fichiers audio du montage
 import { lireHabillage } from './objets-scene.js';   // objet, objetG, armure (docs/CONCEPTION.md, tableau de l'acteur)
+import { lireActes } from './actes.js';   // actes : intentions d'un acteur simule (va, utilise, pose, casse... docs/SIMULATION.md partie 9)
 const PISTES_BOUCLE = [...MEMBRES, ...ARTICULATIONS, 'tete', 'corps', 'lacet', 'bascule', 'roulis', 'hauteur'];
 export const MAX_CLES_SKINS = 16, MAX_GELS = 8, MAX_TEXTURES = 32;
 
@@ -148,6 +151,7 @@ export function validerScene(s) {
   if (s.acteurs.length > 10) err('acteurs', 'dix acteurs au maximum');
 
   const noms = new Set();
+  const tousNoms = new Set(s.acteurs.map((a) => a?.nom));   // les gestes peuvent viser un acteur declare plus loin
   const acteurs = s.acteurs.map((a, i) => {
     const ch = `acteurs[${i}]`;
     if (!estObjet(a)) err(ch, 'un objet est attendu');
@@ -173,6 +177,13 @@ export function validerScene(s) {
     if (a.lueur !== undefined) o.lueur = borner(lirePiste(a.lueur, `${ch}.lueur`, { minArite: 1, maxArite: 1 }), `${ch}.lueur`, 0, 1);
     if (a.masque !== undefined) o.masque = verifierPng(a.masque, `${ch}.masque`);
     Object.assign(o, lireHabillage(a, ch, (c, msg) => err(c, msg)));   // objetD, objetG, armure : pistes de changements d'un coup
+    if (a.actes !== undefined) {   // intentions : la simulation du jeu commande l'acteur ; `pos` ne donne que le depart (une seule cle)
+      if (a.pos.length > 1) err(`${ch}.pos`, 'avec "actes", pos est le point de depart seulement (une seule cle) : choisir des cles pos OU des actes');
+      o.actes = lireActes(a.actes, `${ch}.actes`, (c, msg) => err(c, msg), { noms: new Set(s.acteurs.map((x) => x && x.nom)), duree: s.duree });
+    }
+    // sante et ramassage d'un acteur a intentions (docs/SIMULATION.md partie 11) : vie (20 par defaut), invulnerable, ramasse (objets au sol)
+    if (a.vie !== undefined) { if (!estNombre(a.vie) || a.vie <= 0 || a.vie > 1024) err(`${ch}.vie`, 'nombre entre 0 et 1024 attendu (points de vie : 20 = 10 coeurs)'); o.vie = a.vie; }
+    for (const k of ['invulnerable', 'ramasse']) if (a[k] !== undefined) { if (typeof a[k] !== 'boolean') err(`${ch}.${k}`, 'true ou false attendu'); o[k] = a[k]; }
     if (a.lacet !== undefined) o.lacet = lirePiste(a.lacet, `${ch}.lacet`, { minArite: 1, maxArite: 1 });
     if (a.tete !== undefined) o.tete = borner(lirePiste(a.tete, `${ch}.tete`, { minArite: 2, maxArite: 3 }), `${ch}.tete`, -PLAFOND, PLAFOND);
     if (a.corps !== undefined) o.corps = borner(lirePiste(a.corps, `${ch}.corps`, { minArite: 1, maxArite: 3 }), `${ch}.corps`, -PLAFOND, PLAFOND);
@@ -181,6 +192,7 @@ export function validerScene(s) {
     if (a.hauteur !== undefined) o.hauteur = borner(lirePiste(a.hauteur, `${ch}.hauteur`, { minArite: 1, maxArite: 1 }), `${ch}.hauteur`, -HAUTEUR_MAX, HAUTEUR_MAX);
     if (a.reactions !== undefined && typeof a.reactions !== 'boolean') err(`${ch}.reactions`, 'true ou false attendu (false : coupe les reactions automatiques du corps au saut, a la chute et a l atterrissage)');
     o.reactions = a.reactions !== false;
+    Object.assign(o, lireJeuActeur({ err, noms: tousNoms }, a, ch));   // jeu (vie au repos) et gestes
     if (a.accroupi !== undefined) o.accroupi = lirePiste(a.accroupi, `${ch}.accroupi`, { minArite: 1, maxArite: 1 });
     for (const m of MEMBRES) if (a[m] !== undefined) o[m] = borner(lirePiste(a[m], `${ch}.${m}`, { minArite: 1, maxArite: 3 }), `${ch}.${m}`, -PLAFOND, PLAFOND);
     for (const m of ARTICULATIONS) if (a[m] !== undefined) o[m] = borner(lirePiste(a[m], `${ch}.${m}`, { minArite: 1, maxArite: 1 }), `${ch}.${m}`, 0, FLEXION_MAX);
@@ -205,8 +217,10 @@ export function validerScene(s) {
   });
 
   // montage (facultatif) : plans = une camera par plan ; sans plans, la camera de la scene est obligatoire comme avant
-  const D = { err, lirePiste, borner, noms, lireTable: (b, ch) => lireTable(b, ch, LEVIERS_IMAGE), lireCamera: (c, n, base) => lireCamera(c, n, base) };
+  const D = { mots: [], err, lirePiste, borner, noms, lireTable: (b, ch) => lireTable(b, ch, LEVIERS_IMAGE), lireCamera: (c, n, base) => lireCamera(c, n, base) };
   const montage = lireMontage(D, s, s.duree, Math.round(s.duree * IMAGES_PAR_SECONDE));
+  if (s.jeu !== undefined && typeof s.jeu !== 'boolean') err('jeu', 'true ou false attendu (vie des acteurs au repos : respiration, regard ; defaut : active si la scene a des champs de montage)');
+  resoudreGestes(acteurs, D.mots, err);   // "@mot" -> instant du mot dans les sous-titres
   const camera = s.camera === undefined && montage.plans ? null : lireCamera(s.camera, noms);
   if (!camera) {   // les plans doivent couvrir toute la scene : pas de camera de repli
     let fin = 0;
@@ -255,14 +269,16 @@ export function validerScene(s) {
     gel: s.gel !== undefined ? lireGel(s.gel, s.duree) : [],
     textures: s.textures !== undefined ? lireTextures(s.textures) : {},
     shader: s.shader !== undefined ? lireRefShader(s.shader) : null,   // chemin du fichier shader.json (docs/FORMAT-SHADER.md)
-    monde: s.monde !== undefined ? lireMonde(s.monde, s.duree) : null,   // simulation du jeu (docs/SIMULATION.md) ; absent = rendu d'avant, exactement
+    monde: s.monde !== undefined ? lireMonde(s.monde, s.duree) : (acteurs.some((a) => a.actes) || s.decor !== undefined ? lireMonde({}, s.duree) : null),   // simulation du jeu (docs/SIMULATION.md) ; absent = rendu d'avant, exactement ; un decor cree `monde: {}` (lumiere de blocs, sols et portes du monde vivant)
+    ...(s.decor !== undefined ? { decor: lireListeDecor(s.decor) } : {}),   // decors (docs/FORMAT-DECOR.md) : fichiers .decor.json ou objets en ligne, appliques dans l'ordre
     packShader: s.packShader !== undefined ? lireRefPackShader(s.packShader) : null,   // vrai pack de shaders (.zip) : rendu OpenGL logiciel, docs/SHADERS-REELS.md
+    jeu: jeuDeScene(s, !!(montage.plans || montage.textes.length || montage.incrustations.length)),
     ...(s.zonesSures !== undefined ? { zonesSures: lireZonesSures({ err }, s.zonesSures) } : {}), ...(montage.plans ? { plans: montage.plans } : {}), ...(montage.textes.length ? { textes: montage.textes } : {}), ...(montage.incrustations.length ? { incrustations: montage.incrustations } : {}),   // montage (facultatif)
   };
 }
 
 // ---------------------------------------------------------------- monde (simulation)
-export const MONDE_CLES = ['graine', 'regles', 'mods', 'blocs', 'lumiere', 'moteur'];
+export const MONDE_CLES = ['graine', 'regles', 'mods', 'blocs', 'cmd', 'lumiere', 'moteur'];
 export const MAX_BLOCS_MONDE = 2000, MAX_MODS = 8;
 const MOTEUR_ECRITURE = 1;   // version du moteur de simulation (moteur/simulation.js : MOTEUR)
 
@@ -294,6 +310,19 @@ function lireMonde(m, duree) {
       return [b[0], b[1], b[2], b[3], b[4]];
     });
   }
+  if (m.cmd !== undefined) {   // commandes datees : [t, "alimente", x, y, z, vrai|faux] (signal direct sur un bloc : porte en fer, cloche, bloc musical)
+    if (!Array.isArray(m.cmd) || m.cmd.length > MAX_BLOCS_MONDE) err('monde.cmd', 'liste [[t, "alimente", x, y, z, true], ...] attendue');
+    o.cmd = m.cmd.map((k, i) => {
+      const c = `monde.cmd[${i}]`;
+      const attendu = k && k[1] === 'allume' ? 5 : 6;
+      if (!Array.isArray(k) || k.length !== attendu || !['alimente', 'allume', 'explose'].includes(k[1])) err(c, 'forme attendue : [t, "alimente", x, y, z, true|false], [t, "allume", x, y, z] (TNT) ou [t, "explose", x, y, z, puissance]');
+      if (!estNombre(k[0]) || k[0] < 0 || k[0] > duree) err(`${c}[0]`, `temps entre 0 et ${duree} secondes attendu`);
+      for (let j = 2; j <= 4; j++) if (!Number.isInteger(k[j]) || Math.abs(k[j]) > 30000000) err(`${c}[${j}]`, 'entier attendu (coordonnee de bloc)');
+      if (k[1] === 'alimente' && typeof k[5] !== 'boolean') err(`${c}[5]`, 'true ou false attendu');
+      if (k[1] === 'explose' && !(estNombre(k[5]) && k[5] >= 0 && k[5] <= 64)) err(`${c}[5]`, 'puissance de 0 a 64 attendue');
+      return k.slice();
+    });
+  }
   return o;
 }
 
@@ -306,6 +335,18 @@ function verifierSkin(v, ch) {
 }
 
 // Champ facultatif `shader` : chemin d'un fichier .json relatif au fichier de scene (le contenu est lu et controle au rendu).
+// Champ `decor` : liste de 1 a 8 chemins de fichiers .decor.json (relatifs a la scene) ou objets en ligne {"ancre":[x,z],"ops":[...]}.
+// Le CONTENU des decors est controle plus tard (decor/lire.js, avec les tables du jeu) ; ici seulement la forme.
+export const MAX_DECORS = 8;
+function lireListeDecor(v) {
+  if (!Array.isArray(v) || v.length < 1 || v.length > MAX_DECORS) err('decor', `liste de 1 a ${MAX_DECORS} decors attendue, par exemple ["maison.decor.json"] ou [{"ancre":[-250,-640],"ops":[["plein",0,0,0,2,2,2,"stone"]]}]`);
+  return v.map((e, i) => {
+    if (typeof e === 'string') { if (!/\.json$/i.test(e) || e.length > 200) err(`decor[${i}]`, 'chemin d\'un fichier .json attendu (relatif au fichier de scene), par exemple "maison.decor.json"'); return e; }
+    if (!estObjet(e) || !Array.isArray(e.ops)) err(`decor[${i}]`, 'un chemin de fichier .json ou un objet {"ancre":[x,z],"ops":[...]} est attendu');
+    return e;
+  });
+}
+
 function lireRefShader(v) {
   if (typeof v !== 'string' || !/\.json$/i.test(v) || v.length > 200) err('shader', 'chemin d\'un fichier .json attendu (relatif au fichier de scene), par exemple "shader.json"');
   return v;
@@ -454,7 +495,10 @@ function lireCamera(c, noms, base = 'camera') {
       o.regarde = c.regarde;
     } else if (c.cible !== undefined) o.cible = lirePiste(c.cible, `${base}.cible`, { minArite: 3, maxArite: 3 });
     else err(base, "\"pos\" demande aussi \"cible\" (points a regarder) ou \"regarde\" (nom d'un acteur)");
-  } else err(base, 'il faut "suit" (avec "decalage") ou "pos" (avec "cible" ou "regarde")');
+  } else if (c.cadre !== undefined) {   // cadrage par intention (montage/cadrage.js) : la camera est calculee depuis les poses des acteurs (anim.js)
+    o.mode = 'cadre'; o.cadre = lireCadre({ err, noms }, c.cadre, `${base}.cadre`);
+    o.fov = { arite: 1, cles: [{ t: 0, v: [o.cadre.fov], l: null }] };
+  } else err(base, 'il faut "suit" (avec "decalage"), "pos" (avec "cible" ou "regarde") ou "cadre" (cadrage par intention)');
   if (c.suit !== undefined && c.regarde !== undefined) { /* "suit" vise deja la tete : "regarde" ignore */ }
   // effets de camera (facultatifs) : roulis, secousse, coupZoom, flouFile, flouAuto, flouRadial, profondeurChamp (montage/format.js)
   const ef = lireEffetsCamera({ err, lirePiste, borner, noms, lireTable: null }, c, base);

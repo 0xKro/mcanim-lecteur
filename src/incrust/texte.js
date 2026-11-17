@@ -178,7 +178,7 @@ export function rendreTexte(police, segments, { S = 1, gras = false, italique = 
   }
   const dessineTout = (puits, avecGras = true) => {
     for (const g of gl) {
-      const it = g.seg.italique || italique, gr = g.seg.gras || gras;
+      const it = g.seg.italique || italique, gr = (g.seg.gras || gras) && !police.sansGras;   // une police deja grasse (sansGras) n'est pas redoublee
       glypheDans(police, g.cp, g.x, g.y, S, it, puits(g));
       if (gr && avecGras) glypheDans(police, g.cp, g.x + S, g.y, S, it, puits(g));
     }
@@ -201,8 +201,8 @@ export function rendreTexte(police, segments, { S = 1, gras = false, italique = 
   };
   // 2. ombre du jeu : meme glyphe decale de (1, 1) pixel de police, couleur x 0,25
   if (dec) {
-    const sc = typeof ombre === 'object' && ombre.couleur ? lireCouleur(ombre.couleur) : null;
-    dessineTout((g) => ({ poser: (x, y, a, r, gg, b) => { const c = g.seg.couleur; const k = 0.25; ecrire(x + dec, y + dec, a, sc ? sc[0] : r * c[0] / 255 * k, sc ? sc[1] : gg * c[1] / 255 * k, sc ? sc[2] : b * c[2] / 255 * k); } }));
+    const sc = typeof ombre === 'object' && ombre.couleur ? lireCouleur(ombre.couleur) : null, op = typeof ombre === 'object' && ombre.opacite !== undefined ? ombre.opacite : 1;   // opacite : ombre douce des legendes
+    dessineTout((g) => ({ poser: (x, y, a, r, gg, b) => { const c = g.seg.couleur; const k = 0.25; ecrire(x + dec, y + dec, a * op, sc ? sc[0] : r * c[0] / 255 * k, sc ? sc[1] : gg * c[1] / 255 * k, sc ? sc[2] : b * c[2] / 255 * k); } }));
   }
   // 3. le texte
   dessineTout((g) => ({ poser: (x, y, a, r, gg, b) => { const c = g.seg.couleur; ecrire(x, y, a, r * c[0] / 255, gg * c[1] / 255, b * c[2] / 255); } }));

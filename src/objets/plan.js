@@ -9,7 +9,8 @@ import { nomMateriau, couchesTexture, materiauxDuKit, EMPLACEMENTS } from './arm
 export function groupesDeScene(scene) {
   const { objets, armures } = idsDeScene(scene);
   const m = groupesMontage(scene);   // textes et incrustations : groupe `interface` (police, sprites) ; icones d'objets : `objets`
-  return [...(objets.size || m.objets ? ['objets'] : []), ...(armures.size ? ['armures'] : []), ...(m.interface ? ['interface'] : [])];
+  // une scene avec monde peut lacher des objets au sol (butin des blocs casses ou detruits) : leur modele vient du groupe `objets`
+  return [...(objets.size || m.objets || scene.monde ? ['objets'] : []), ...(armures.size ? ['armures'] : []), ...(m.interface ? ['interface'] : [])];
 }
 
 // Groupes de kit dont le montage a besoin : { interface, objets }.
@@ -52,6 +53,7 @@ export function proches(kit, id, n = 5) {
 export function planifier(scene, kit) {
   const mains = new Map();   // id -> Set('D'|'G')
   for (const a of scene.acteurs) for (const [c, p] of [['D', a.objetD], ['G', a.objetG]]) for (const k of p?.cles ?? []) if (k.id) (mains.get(k.id) ?? mains.set(k.id, new Set()).get(k.id)).add(c);
+  for (const a of scene.acteurs) for (const x of a.actes ?? []) if (x.verbe === 'tient' && x.objet) (mains.get(x.objet) ?? mains.set(x.objet, new Set()).get(x.objet)).add('D');   // objets tenus par les intentions : controles comme `objet`
   const { armures } = idsDeScene(scene);
   const plats = [], blocs = [], plaques = [], vides = [], autres = [];
   if (mains.size && !groupePresent(kit, 'objets')) return { erreur: 'les fichiers d\'objets du jeu manquent dans ce kit (groupe "objets") : relance sans MCANIM_KIT, ils seront recuperes', note: null };

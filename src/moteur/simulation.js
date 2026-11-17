@@ -20,11 +20,16 @@ import { Registre, evenement } from './registre.js';
 import { ErreurMonde } from './erreurs.js';
 import { NOMS_FACES } from './util.js';
 import { D } from './donnees.js';
+import { Entites } from './entites.js';
+import { exploser } from './explosion.js';
+import { bonOutil } from './cassage.js';
 
 // Drapeaux de set_block (Block.UPDATE_*)
 export const F = { VOISINS: 1, CLIENTS: 2, INVISIBLE: 4, IMMEDIAT: 8, FORME_CONNUE: 16, SANS_BUTIN: 32, PISTON: 64, SANS_FORME_FIL: 128, SANS_EFFETS_ENTITE: 256, SANS_POSE: 512, TOUS: 3, AUCUN: 260 };
 export const LIMITE_FORMES = 512;                // Block.UPDATE_LIMIT : profondeur des mises a jour de forme
 export const MOTEUR = 1;
+const FLUIDE_VIDE = Object.freeze({ type: null, quantite: 0, source: false, tombant: false });
+const PLEIN = [[0, 0, 0, 1, 1, 1]];                // cellule inconnue (cachee) : pleine
 
 export class Simulation {
   // zone : rendu/zone.js ; donnees : moteur/donnees.js ;
@@ -46,6 +51,11 @@ export class Simulation {
     this.api = this._creerApi();
     this.budgetPoses = 20000;
     this.mods = null;                             // hote des mods (mods.js), s'il y en a
+    this.acteurs = null;                          // acteurs simules (acteurs.js) : intentions, marche, interactions
+    this.conteneurs = new Map();                  // coffres et tonneaux ouverts : 'x,y,z' -> Set des noms des visiteurs
+    this.entites = new Entites(this);             // TNT amorce, blocs qui tombent, objets au sol (entites.js)
+    this.fileFluides = new FileTicks();           // ticks planifies des fluides (file a part, comme le jeu) : type = famille (1 eau, 2 lave)
+    this.nbFluides = 0;                           // ticks de fluide executes (pour le resume)
   }
 
   avertir(t) { if (this.avertissements.length < 20 && !this.avertissements.includes(t)) this.avertissements.push(t); }
@@ -63,7 +73,7 @@ export class Simulation {
   decrire(x, y, z) {
     const e = this.monde.etatEn(x, y, z);
     if (e < 0) return { nom: 'minecraft:#hidden', chaine: '#hidden', etat: {}, id: -1, indice: 1 };
-    return { nom: 'minecraft:' + this.d.nomBloc(e), chaine: this.d.chaine(e), etat: this.d.props(e), id: e, indice: this.monde.indiceEn(x, y, z) };
+    return { nom: 'minecraft:' + this.d.nomBloc(e), chaine: this.d.chaine(e), etat: this.d.props(e), id: e, indice: this.monde.indiceEn(x, y, z), instrument: this.d.instrument(e) };
   }
   _indiceDe(bloc) {
     if (typeof bloc === 'number') return this.monde.indicePaletteEtat(bloc);
@@ -103,13 +113,26 @@ export class Simulation {
   }
 
   // Level.destroyBlock : le bloc devient de l'air (ou de l'eau s'il etait "waterlogged"), avec son bruit de casse
-  casser(x, y, z, { butin = true } = {}) { return this._casserLimite(x, y, z, butin ? 0 : F.SANS_BUTIN, LIMITE_FORMES); }
+  // opt.outil : objet tenu (le bon outil decide du butin des blocs qui exigent un outil) ; opt.acteur : nom de celui qui casse
+  casser(x, y, z, { butin = true, outil = null, acteur = null, outilOk } = {}) {
+    this._butinCtx = { outil, acteur, outilOk };
+    try { return this._casserLimite(x, y, z, butin ? 0 : F.SANS_BUTIN, LIMITE_FORMES); } finally { this._butinCtx = null; }
+  }
   _casserLimite(x, y, z, drapeaux, limite) {
     const e = this.monde.etatEn(x, y, z);
     if (e < 0 || this.d.nomBloc(e) === 'air') return false;
+    // Block.dropResources : les objets du bloc, avant qu'il soit retire (pas de butin si le drapeau SANS_BUTIN est la)
+    if (!(drapeaux & F.SANS_BUTIN) && this.regles.valeur('butin.actif', true)) {
+      const c = this._butinCtx || {};
+      const ok = c.outilOk !== undefined ? c.outilOk : (c.acteur ? bonOutil(this.d, e, c.outil) : true);
+      this.entites.lacher(x, y, z, e, { outilOk: ok, acteur: c.acteur ?? null, source: 'casse' });
+    }
     const s = this.d.son(e);
     this.son(s.casse, x + 0.5, y + 0.5, z + 0.5, (s.volume + 1) / 2, s.hauteur * 0.8);
-    this.replay.particule(this.temps, 'block_break', x + 0.5, y + 0.5, z + 0.5, 0, 0, 0, 20);
+    // particules de casse (ParticleEngine.destroy) : une par sous-cellule de 0,25 de chaque boite de collision (4 x 4 x 4 = 64 pour un cube) ; nom `block_break|<etat>` : le rendu y lit la texture
+    let n = 0;
+    for (const b of this.d.boites(e).length ? this.d.boites(e) : [[0, 0, 0, 1, 1, 1]]) n += Math.max(2, Math.ceil(Math.min(1, b[3] - b[0]) / 0.25)) * Math.max(2, Math.ceil(Math.min(1, b[4] - b[1]) / 0.25)) * Math.max(2, Math.ceil(Math.min(1, b[5] - b[2]) / 0.25));
+    this.replay.particule(this.temps, 'block_break|' + this.d.chaine(e), x + 0.5, y + 0.5, z + 0.5, 0, 0, 0, n);
     const eau = this.d.prop(e, 'waterlogged') === 'true';
     return this._poserIndice(x, y, z, this.monde.indicePalette(eau ? 'minecraft:water[level=0]' : 'minecraft:air'), F.TOUS | (drapeaux & F.SANS_BUTIN), limite);
   }
@@ -199,6 +222,24 @@ export class Simulation {
   }
   planifierBloc(x, y, z, bloc, delai = 0, priorite = 0) { return this.file.planifier(this.temps, bloc, x, y, z, delai, priorite); }
 
+  // FluidState de la cellule : { type: 'water' | 'lava' | null, quantite (0 a 8), source, tombant }. Eau enchainee (waterlogged), herbes marines et varech : eau source.
+  fluide(x, y, z) {
+    const e = this.monde.etatEn(x, y, z);
+    if (e < 0) return FLUIDE_VIDE;
+    const f = this.d.fluide(e);
+    if (!f) return FLUIDE_VIDE;
+    const q = this.d.niveauFluideE[e], source = f === 2 || f === 4;
+    let tombant = false;
+    if (!source) { const l = this.d.prop(e, 'level'); tombant = l !== undefined && Number(l) >= 8; }
+    return { type: f <= 2 ? 'water' : 'lava', quantite: q, source, tombant };
+  }
+  // tick de fluide : le fluide present dans la cellule doit etre de la famille voulue a l'echeance
+  planifierFluide(x, y, z, delai = 0, priorite = 0) {
+    const f = this.fluide(x, y, z);
+    if (!f.type) return false;
+    return this.fileFluides.planifier(this.temps, f.type === 'water' ? 1 : 2, x, y, z, delai, priorite);
+  }
+
   // survie d'un bloc (BlockState.canSurvive) : vrai s'il n'y a pas de gestionnaire `survit`
   survit(x, y, z) {
     const e = this.monde.etatEn(x, y, z);
@@ -209,10 +250,112 @@ export class Simulation {
     return r === undefined ? true : !!r;
   }
 
+  // canSurvive d'un etat HYPOTHETIQUE en (x,y,z) (pose d'un bloc : on teste avant d'ecrire)
+  survitEtat(x, y, z, etat) {
+    const id = this.d.etatId(String(etat));
+    if (id < 0) return false;
+    const b = this.d.blocDe(id);
+    if (!this.reg.a('survit', b)) return true;
+    const r = this.reg.lancerBloc('survit', b, evenement({ pos: [x, y, z], etat: this.d.chaine(id), bloc: this.d.nomBloc(id) }), this.api);
+    return r === undefined ? true : !!r;
+  }
+
   // ------------------------------------------------------------ sons, particules, textes
   son(nom, x, y, z, volume = 1, hauteur = 1) { this.replay.son(this.temps, String(nom).replace(/^minecraft:/, ''), x, y, z, volume, hauteur); this.stats.evenements++; }
   particule(nom, x, y, z, vx = 0, vy = 0, vz = 0, nombre = 1) { this.replay.particule(this.temps, String(nom).replace(/^minecraft:/, ''), x, y, z, vx, vy, vz, nombre); this.stats.evenements++; }
   dire(texte) { this.replay.texte(this.temps, texte); }
+
+  // ------------------------------------------------------------ entites et interactions
+  // Entites dont la boite touche filtre.boite [x1,y1,z1,x2,y2,z2] (toutes sans boite) : { id, type, nom, x, y, z, boite }
+  entitesDans(filtre = {}) {
+    if (!this.acteurs) return [];
+    const b = filtre.boite;
+    return this.acteurs.liste.filter((a) => {
+      if (filtre.type && filtre.type !== 'joueur') return false;
+      if (!b) return true;
+      const k = a.boite();
+      return k[3] > b[0] && k[0] < b[3] && k[4] > b[1] && k[1] < b[4] && k[5] > b[2] && k[2] < b[5];
+    }).map((a) => ({ id: a.id, type: 'joueur', nom: a.nom, x: a.x, y: a.y, z: a.z, boite: a.boite() }));
+  }
+  // Clic droit sur un bloc (Block.use) : lance l'evenement utilise ; rend 'fait', 'passe' ou undefined (rien n'ecoute).
+  // opt : { acteur (nom), face ('north'...), hit [fx,fy,fz], accroupi, objet, lacet }
+  utiliserBloc(x, y, z, opt = {}) {
+    const e = this.monde.etatEn(x, y, z);
+    if (e < 0) return undefined;
+    const b = this.d.blocDe(e);
+    if (!this.reg.a('utilise', b)) return undefined;
+    const ev = evenement({ pos: [x, y, z], etat: this.d.chaine(e), bloc: this.d.nomBloc(e), face: opt.face || 'up', hit: opt.hit || [0.5, 0.5, 0.5], acteur: opt.acteur || null, accroupi: !!opt.accroupi, objet: opt.objet || null, lacet: opt.lacet ?? 0 });
+    const r = this.reg.lancerBloc('utilise', b, ev, this.api);
+    this.dernierUtilise = ev;
+    return r;
+  }
+  // Courant du fluide d'une cellule (FlowingFluid.getFlow) : vecteur [x, y, z] normalise, nul sur de l'eau calme. Sert a la poussee des entites et au rendu.
+  courant(x, y, z) {
+    const f = this.fluide(x, y, z);
+    if (!f.type) return [0, 0, 0];
+    const mien = f.quantite / 9, DIR = [[0, -1, 'north'], [0, 1, 'south'], [-1, 0, 'west'], [1, 0, 'east']], FACE = { north: 2, south: 3, west: 4, east: 5 };
+    const affecte = (g) => !g.type || g.type === f.type;
+    const haut = (g) => (g.type ? g.quantite / 9 : 0);
+    const bloque = (a, b, c) => this.api.boites(a, b, c).length > 0;
+    let vx = 0, vz = 0;
+    for (const [dx, dz] of DIR) {
+      const g = this.fluide(x + dx, y, z + dz);
+      if (!affecte(g)) continue;
+      let h = haut(g), f1 = 0;
+      if (h === 0) {
+        if (!bloque(x + dx, y, z + dz)) { const gb = this.fluide(x + dx, y - 1, z + dz); if (affecte(gb)) { h = haut(gb); if (h > 0) f1 = mien - (h - 0.8888889); } }
+      } else f1 = mien - h;
+      if (f1 !== 0) { vx += dx * f1; vz += dz * f1; }
+    }
+    let v = [vx, 0, vz];
+    const norme = (a) => { const l = Math.hypot(...a); return l > 0 ? a.map((q) => q / l) : [0, 0, 0]; };
+    if (f.tombant) {
+      const pleine = (a, b, c, face) => { const g = this.fluide(a, b, c); if (g.type === f.type) return false; const e = this.monde.etatEn(a, b, c); return e >= 0 && this.d.solideFace(e, FACE[face], 0); };
+      for (const [dx, dz, face] of DIR) if (pleine(x + dx, y, z + dz, face) || pleine(x + dx, y + 1, z + dz, face)) { const n = norme(v); v = [n[0], n[1] - 6, n[2]]; break; }
+    }
+    return norme(v);
+  }
+  // Objet tenu utilise sur un bloc qui ne reagit pas (seau, briquet...) : evenement du monde `objet.utilise` ; les familles ecrivent ev.fait, ev.nouvelObjet, ev.raison
+  utiliserObjet(x, y, z, opt = {}) {
+    const ev = evenement({ pos: [x, y, z], face: opt.face || 'up', hit: opt.hit || [0.5, 0.5, 0.5], acteur: opt.acteur || null, accroupi: !!opt.accroupi, objet: String(opt.objet || '').replace(/^minecraft:/, ''), lacet: opt.lacet ?? 0, fait: false });
+    this.reg.lancerMonde('objet.utilise', ev, this.api);
+    return ev;
+  }
+  // Amorce un TNT en (x, y, z) : le bloc devient une entite a meche. opt.chaine : meche courte (amorce par une explosion voisine)
+  allumer(x, y, z, opt = {}) {
+    const e = this.monde.etatEn(x, y, z);
+    if (e < 0 || this.d.nomBloc(e) !== 'tnt') return false;
+    const b = this.d.blocDe(e), ev = evenement({ pos: [x, y, z], acteur: opt.acteur || null, chaine: !!opt.chaine });
+    if (this.reg.a('allume', b)) this.reg.lancerBloc('allume', b, ev, this.api);
+    if (ev.annule) return false;
+    let meche;
+    if (opt.chaine) {
+      const m = this.regles.valeur('tnt.meche', 80), mn = this.regles.valeur('tnt.chaineMin', -1), mx = this.regles.valeur('tnt.chaineMax', -1);
+      meche = mn >= 0 && mx >= mn ? mn + this.hasard.entierBorne(mx - mn + 1) : this.hasard.entierBorne(Math.max(1, Math.floor(m / 4))) + Math.floor(m / 8);
+    }
+    this.poser(x, y, z, 'minecraft:air', F.TOUS);
+    this.entites.tnt(x, y, z, meche);
+    return true;
+  }
+  // Un bloc qui tombe (sable, gravier...) : il quitte sa cellule et devient une entite
+  chuter(x, y, z) {
+    const e = this.monde.etatEn(x, y, z);
+    if (e < 0) return false;
+    const chaine = this.d.chaine(e);
+    this.poser(x, y, z, 'minecraft:air', F.TOUS);
+    this.entites.chute(x, y, z, chaine);
+    return true;
+  }
+  exploser(x, y, z, opt = {}) { return exploser(this, x, y, z, opt); }
+  // Signal de redstone direct sur un bloc (en attendant la redstone, P5) : evenement alimente
+  alimenter(x, y, z, vrai) {
+    const e = this.monde.etatEn(x, y, z);
+    if (e < 0) return false;
+    const b = this.d.blocDe(e);
+    if (!this.reg.a('alimente', b)) return false;
+    this.reg.lancerBloc('alimente', b, evenement({ pos: [x, y, z], etat: this.d.chaine(e), bloc: this.d.nomBloc(e), alimente: vrai }), this.api);
+    return true;
+  }
 
   // ------------------------------------------------------------ API publique (la meme pour le moteur et pour les mods)
   _creerApi() {
@@ -224,14 +367,34 @@ export class Simulation {
       planifier: (x, y, z, delai, priorite) => s.planifier(x | 0, y | 0, z | 0, delai, priorite),
       voisins: (x, y, z) => ORDRE_VOISINS.map((f) => { const nx = x + FACE_DX[f], ny = y + FACE_DY[f], nz = z + FACE_DZ[f]; return { face: NOMS_FACES[f], x: nx, y: ny, z: nz, bloc: s.decrire(nx, ny, nz) }; }),
       survit: (x, y, z) => s.survit(x | 0, y | 0, z | 0),
+      survitEtat: (x, y, z, etat) => s.survitEtat(x | 0, y | 0, z | 0, etat),
+      remplacable: (x, y, z) => { const e = s.monde.etatEn(x | 0, y | 0, z | 0); return e >= 0 && s.d.a(e, D.REMPLACABLE); },
       appui: (x, y, z, face, type = 'plein') => { const e = s.monde.etatEn(x | 0, y | 0, z | 0); const f = NOMS_FACES.indexOf(face); return e >= 0 && f >= 0 && s.d.solideFace(e, f, type === 'centre' ? 1 : type === 'rigide' ? 2 : 0); },
       lumiere: (x, y, z) => { const l = s.lumiere(); return { bloc: l.niveauBloc(x | 0, y | 0, z | 0), ciel: l.niveauCiel(x | 0, y | 0, z | 0) }; },
       evenement: (nom, donnees) => s.evenementPerso(nom, donnees),
       son: (nom, x, y, z, volume, hauteur) => s.son(nom, x, y, z, volume, hauteur),
       particule: (nom, x, y, z, vx, vy, vz, nombre) => s.particule(nom, x, y, z, vx, vy, vz, nombre),
-      entites: () => [],                                  // stub : les entites arrivent en P2/P3
+      entites: (filtre) => s.entitesDans(filtre),          // acteurs (P1) ; mobs et objets en P2/P3
+      champs: (nom) => { const b = s.d.idBloc(String(nom)); return b < 0 ? null : s.d.champsBloc(b); },
+      utiliser: (x, y, z, opt) => s.utiliserBloc(x | 0, y | 0, z | 0, opt),
+      alimenter: (x, y, z, vrai) => s.alimenter(x | 0, y | 0, z | 0, !!vrai),
+      feu: (nom) => { const b = s.d.idBloc(String(nom)); return b < 0 ? [0, 0] : s.d.feu(b); },
+      allumer: (x, y, z, opt) => s.allumer(x | 0, y | 0, z | 0, opt),
+      butin: (x, y, z, opt) => { const e = s.monde.etatEn(x | 0, y | 0, z | 0); return e < 0 ? [] : s.entites.lacher(x | 0, y | 0, z | 0, e, opt || {}); },
+      lacher: (objet, n, x, y, z) => { s.entites.objet(String(objet), Math.max(1, n | 0), +x, +y, +z); },
+      fluide: (x, y, z) => s.fluide(x | 0, y | 0, z | 0),
+      courant: (x, y, z) => s.courant(x | 0, y | 0, z | 0),
+      degats: (nom, quantite, source) => { const a = s.acteurs?.parNom.get(nom); return !!a && a.degats(Number(quantite), String(source || 'generique')); },
+      vie: (nom) => { const a = s.acteurs?.parNom.get(nom); return a ? { vie: a.vie, max: a.vieMax, mort: a.mort >= 0 } : null; },
+      allumeParLave: (x, y, z) => { const e = s.monde.etatEn(x | 0, y | 0, z | 0); return e >= 0 && s.d.a(e, D.ALLUME_PAR_LAVE); },
+      planifierFluide: (x, y, z, delai, priorite) => s.planifierFluide(x | 0, y | 0, z | 0, delai, priorite),
+      boites: (x, y, z) => { const e = s.monde.etatEn(x | 0, y | 0, z | 0); return e < 0 ? PLEIN : s.d.boites(e); },
+      estDans: (x, y, z, tag) => { const b = s.blocIdx(x | 0, y | 0, z | 0); return b >= 0 && s.d.etiquette(tag).has(b); },
+      chuter: (x, y, z) => s.chuter(x | 0, y | 0, z | 0),
+      exploser: (x, y, z, opt) => { const r = s.exploser(+x, +y, +z, opt || {}); return { detruits: r.detruits, touches: r.touches, puissance: r.puissance }; },
+      blocEntite: (type, x, y, z, a, b, c) => { s.replay.blocEntite(s.temps, String(type), x | 0, y | 0, z | 0, a, b, c); },
       regle: (nom, repli) => s.regles.valeur(nom, repli),
-      hasard: { entier: (n) => s.hasard.entierBorne(n), reel: () => s.hasard.reel(), booleen: () => s.hasard.booleen() },
+      hasard: { entier: (n) => s.hasard.entierBorne(n), reel: () => s.hasard.reel(), booleen: () => s.hasard.booleen(), flottant: () => s.hasard.flottant() },
       tick: () => s.temps,
       dire: (t) => s.dire(t),
     };
@@ -261,8 +424,20 @@ export class Simulation {
       const e = this.monde.etatEn(x.x, x.y, x.z);
       if (this.reg.a('tick', b)) this.reg.lancerBloc('tick', b, evenement({ pos: [x.x, x.y, x.z], etat: this.d.chaine(e), bloc: this.d.nomBloc(e) }), this.api);
     }
+    // 2b. ticks planifies de fluides (apres ceux des blocs, comme le jeu) : l'ecoulement est ecrit avec l'API des mods (familles/fluides.js)
+    if (this.fileFluides.nb) {
+      for (const x of this.fileFluides.collecter(t, MAX_PAR_TICK)) {
+        const f = this.fluide(x.x, x.y, x.z);
+        if (f.type !== (x.type === 1 ? 'water' : 'lava')) continue;     // le fluide a change de famille ou a disparu
+        this.nbFluides++;
+        this.reg.lancerMonde('fluide.tick', evenement({ pos: [x.x, x.y, x.z], type: f.type }), this.api);
+      }
+    }
     // 3. ticks aleatoires dans la region active
     this._aleatoires();
+    // 5. entites : les acteurs (intentions, marche, interactions) ; leurs blocs touches (plaques) sont traites a la fin de leur deplacement
+    if (this.acteurs) this.acteurs.tick();
+    if (this.entites.liste.length) this.entites.tick();
     // 8. fin de tick
     if (this.reg.aMonde('finTick')) this.reg.lancerMonde('finTick', evenement({ tick: t }), this.api);
     this._ecrireReplay();
@@ -272,7 +447,10 @@ export class Simulation {
     const c = this.cmds;
     while (this.iCmd < c.length && c[this.iCmd].tick <= this.temps) {
       const k = c[this.iCmd++];
-      this.poser(k.x, k.y, k.z, k.bloc, F.TOUS);
+      if (k.tipo === 'alimente') this.alimenter(k.x, k.y, k.z, !!k.bloc);
+      else if (k.tipo === 'allume') this.allumer(k.x, k.y, k.z, {});
+      else if (k.tipo === 'explose') this.exploser(k.x + 0.5, k.y + 0.5, k.z + 0.5, { puissance: k.bloc });
+      else this.poser(k.x, k.y, k.z, k.bloc, F.TOUS);
     }
   }
 
@@ -327,8 +505,13 @@ export class Simulation {
     this.replay.ticks = n; this.replay.ralenti = ralenti;
     // commandes datees : [t, x, y, z, bloc] (t en secondes de film) -> tick du monde
     this.cmds = (cfg.blocs || []).map(([t, x, y, z, bloc], i) => ({ tick: Math.floor(t * 20 * ralenti + 1e-9), x, y, z, bloc, i })).sort((p, q) => p.tick - q.tick || p.i - q.i);
+    // commandes `cmd` : [t, "alimente", x, y, z, vrai|faux] (signal direct sur un bloc : porte en fer, cloche, bloc musical...)
+    // [t, "allume", x, y, z] : amorce un TNT ; [t, "explose", x, y, z, puissance] : explosion
+    for (const [t, verbe, x, y, z, v] of cfg.cmd || []) if (verbe === 'alimente' || verbe === 'allume' || verbe === 'explose') this.cmds.push({ tick: Math.floor(t * 20 * ralenti + 1e-9), x, y, z, bloc: v, tipo: verbe, i: this.cmds.length });
+    this.cmds.sort((p, q) => p.tick - q.tick || p.i - q.i);
     this.iCmd = 0;
     this.region = this.cmds.map((c) => [c.x, c.y, c.z]);
+    if (this.acteurs) for (const a of this.acteurs.liste) this.region.push([a.x, a.y, a.z]);
     this.aTickAleatoire = this.reg.entrees.some((e) => e.genre === 'bloc' && e.evt === 'tickAleatoire');
     this._calculerRegion();
     this.reg.figer();

@@ -39,7 +39,7 @@ export function etatEntree(type, u, { courbeNom, depuis = 'gauche', depart = nul
   const nom = courbeNom ?? COURBE_DEFAUT[type] ?? 'cubique';
   const e = courbe(nom, u), eC = courbe('cubique', u);
   switch (type) {
-    case 'pop': { const d = depart ?? 0.2; const k = d + (1 - d) * e; s.kx = s.ky = Math.max(0.01, k); s.a = clamp01(0.4 + u * 5); break; }
+    case 'pop': { const d = depart ?? 0.2; const k = d + (1 - d) * e; s.kx = s.ky = Math.max(0.01, k); s.a = d >= 0.7 ? 1 : clamp01(0.4 + u * 5); break; }   // un pop qui part de 70 % ou plus (legendes de reference) est opaque d'emblee
     case 'rebond': { const ky = 0.35 + 0.65 * e; s.ky = Math.max(0.01, ky); s.kx = 1 + (1 - ky) * 0.55; s.dy = (1 - e) * 0.03; s.a = clamp01(0.4 + u * 5); break; }
     case 'zoom': { const k = 1 + (depart ?? 0.8) * (1 - e); s.kx = s.ky = k; s.a = clamp01(0.4 + u * 3); break; }
     case 'fondu': s.a = e; break;

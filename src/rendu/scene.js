@@ -55,6 +55,7 @@ export async function chargerScene({ zonePath, zone, kitDir, travailleurs, optio
   }
   const tex = new BibliothequeTextures(kit);
   const modeles = new BibliothequeModeles(kit, tex);
+  if (options.monde) modeles.coffresDynamiques = true;   // scene avec monde : les coffres sont dessines par film/effets-monde.js (couvercle anime), pas par la boite de remplacement
   const couleurs = new CouleursBiomes(kit);
   const tLecture = performance.now();
   const maillage = mailler({ zone: z, modeles, textures: tex, couleurs, options: optionsM });

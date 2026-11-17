@@ -28,8 +28,8 @@ export class Police {
   avance(cp, gras = false) {
     const a = this.avances.get(cp);
     const g = a !== undefined ? a : this.glyphes.get(cp)?.avance;
-    if (g === undefined) { this.manquants.add(cp); return 6 + (gras ? 1 : 0); }   // glyphe manquant : le jeu dessine un carre de 5 de large
-    return g + (gras ? 1 : 0);
+    if (g === undefined) { this.manquants.add(cp); return 6 + (gras && !this.sansGras ? 1 : 0); }   // glyphe manquant : le jeu dessine un carre de 5 de large
+    return g + (gras && !this.sansGras ? 1 : 0);
   }
   aGlyphe(cp) { return this.glyphes.has(cp) || this.avances.has(cp); }
   // Phrase unique sur les glyphes absents (a afficher une fois).
@@ -125,5 +125,30 @@ async function ajouterTtf(police, p, kit) {
   police.aGlyphe = (cp) => ancienA(cp) || !!fabrique(cp);
 }
 
+// Police "sans" fournie avec le lecteur : Source Sans 3 Black (licence SIL OFL 1.1, polices/OFL.txt), un gras rond et lisible comme les legendes des
+// videos de reference. Les glyphes manquants (rares) viennent de la police du jeu. Le gras n'est pas redouble (la police est deja grasse).
+let sansCache = null;
+export async function chargerPoliceSans(kit) {
+  const cle = 'sans|' + kit;
+  if (sansCache?.has(cle)) return sansCache.get(cle);
+  const jeu = await chargerPolice(kit);
+  const m = await chargerTtf();
+  const police = new Police('sans');
+  police.sansGras = true;
+  if (!m) { police.notes.add('ttf'); return jeu; }
+  let police0;
+  try { police0 = m.lireTTF(fs.readFileSync(new URL('./polices/SourceSans3-Black.ttf', import.meta.url))); } catch { return jeu; }
+  const taille = 10.6;   // hauteur d'em en pixels de police : capitales de 7 pixels, comme la police du jeu
+  const fabrique = (cp) => (police0.aGlyphe(cp) ? { type: 't', ttf: police0, cp, taille, shift: [0, 0], avance: police0.avance(cp, taille) } : null);
+  police.ttf.push(police0);
+  police.glyphe = (cp) => { const a = police.glyphes.get(cp); if (a) return a; const g = fabrique(cp) ?? jeu.glyphe(cp); if (g) police.glyphes.set(cp, g); return g; };
+  police.avance = (cp) => { const g = police.glyphe(cp); if (g) return g.avance; const a = jeu.avances.get(cp); if (a !== undefined) return a; police.manquants.add(cp); return 6; };
+  police.aGlyphe = (cp) => !!police.glyphe(cp) || jeu.avances.has(cp);
+  police.avances = jeu.avances;   // les espaces fins du jeu
+  if (!sansCache) sansCache = new Map();
+  sansCache.set(cle, police);
+  return police;
+}
+
 // Oublie les polices lues (tests).
-export function viderCachePolices() { caches.clear(); }
+export function viderCachePolices() { caches.clear(); sansCache = null; }

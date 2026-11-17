@@ -45,13 +45,13 @@ export class Donnees {
     this.dureteE = new Float32Array(a); this.resistanceE = new Float32Array(a); this.frictionE = new Float32Array(a);
     this.formeE = new Int16Array(a); this.sonE = new Uint8Array(a); this.solideE = new Uint32Array(a);
     this.faibleE = new Uint32Array(a); this.fortE = new Uint32Array(a); this.fluideE = new Uint8Array(a); this.pousseeE = new Uint8Array(a);
-    this.niveauFluideE = new Uint8Array(a);
+    this.niveauFluideE = new Uint8Array(a); this.instrumentE = new Uint8Array(a);
     for (let i = 0; i < a; i++) {
       const l = L[idx[i]];
       this.emissionE[i] = l[c.emission]; this.opaciteE[i] = l[c.opacite]; this.drapeauxE[i] = l[c.drapeaux];
       this.dureteE[i] = l[c.durete]; this.resistanceE[i] = l[c.resistance]; this.frictionE[i] = l[c.friction];
       this.formeE[i] = l[c.forme]; this.sonE[i] = l[c.son]; this.solideE[i] = l[c.solide]; this.faibleE[i] = l[c.faible]; this.fortE[i] = l[c.fort];
-      this.fluideE[i] = l[c.fluide]; this.niveauFluideE[i] = l[c.niveauFluide]; this.pousseeE[i] = l[c.poussee];
+      this.instrumentE[i] = l[c.instrument]; this.fluideE[i] = l[c.fluide]; this.niveauFluideE[i] = l[c.niveauFluide]; this.pousseeE[i] = l[c.poussee];
     }
     this._etiq = new Map();
     this.air = this.etatId('air');
@@ -119,6 +119,10 @@ export class Donnees {
     const actuel = Math.floor((id - this.debut[b]) / pas) % n;
     return id + (v - actuel) * pas;
   }
+  // instrument du bloc de bois musical pose DESSUS-DESSOUS (NoteBlockInstrument.byState), en minuscules : 'harp', 'basedrum'...
+  instrument(id) { return String(this.j.instruments[this.instrumentE[id]]).toLowerCase(); }
+  // regles de l'outil `nom` (composant minecraft:tool) : { r: [[selecteurs, butinOk (1/0/-1), vitesse|null]], d, u } ou null
+  outil(nom) { return this.j.outils?.[String(nom).replace(/^minecraft:/, '')] ?? null; }
   etatParDefaut(bloc) { return this.debut[bloc] + this.j.defauts[bloc]; }
 
   // ---- proprietes d'un etat

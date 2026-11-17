@@ -103,6 +103,16 @@ export class BibliothequeModeles {
     this.speciaux = new Map(); // blocs dessines par code dans le jeu (coffres...) : approximation
   }
 
+  // Nom de la texture de particule ('block/dirt') d'un etat de bloc ('minecraft:dirt', 'oak_stairs[facing=north]') : celle des particules de casse. null si inconnue.
+  texParticule(chaine) {
+    const { nom, props } = analyserEtat(chaine);
+    const emp = this._emplacements(nom, props);
+    const v = emp && emp[0] && emp[0][0];
+    const m = v && v.model ? this.modele(v.model) : null;
+    if (!m || m.introuvable) return null;
+    return this._resoudreTexture(m, '#particle') || null;
+  }
+
   _json(rel) {
     try { return JSON.parse(fs.readFileSync(path.join(this.dir, ...rel.split('/')), 'utf8')); } catch { return null; }
   }
@@ -334,7 +344,7 @@ export class BibliothequeModeles {
         const boite = BOITES_SPECIALES.find(([re]) => re.test(nom));
         const part = this._resoudreTexture(m, '#particle');
         this.speciaux.set(chaine, boite ? 'boite de remplacement' : 'non dessine (dessine par code dans le jeu)');
-        if (boite && part) e.geo = this._boite(boite[1], part, v.y || 0);
+        if (boite && part && !(this.coffresDynamiques && /(^|_)chest$/.test(nom))) e.geo = this._boite(boite[1], part, v.y || 0);   // coffres : dessines par film/effets-monde.js (couvercle anime) dans une scene avec monde
         else e.type = 0;
       }
     }

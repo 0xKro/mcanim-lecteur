@@ -28,14 +28,14 @@ function lireTransform(t) {
     scale: v(t.scale, [1, 1, 1]).map((c) => Math.max(-4, Math.min(4, c))),
   };
 }
-export function afficheDe(kit, modeleId, gauche) {
+export function afficheDe(kit, modeleId, gauche, contexte = null) {   // contexte : 'ground' (objet au sol), 'gui'... ; null : la main (thirdperson)
   let cur = net(modeleId);
   for (let i = 0; i < 16 && cur && !cur.startsWith('builtin/'); i++) {
     const j = lireJson(kit, `models/${cur}.json`);
     if (!j) return null;
     const d = j.display;
     if (d && typeof d === 'object') {
-      const t = gauche ? (d.thirdperson_lefthand !== undefined ? d.thirdperson_lefthand : d.thirdperson_righthand) : d.thirdperson_righthand;
+      const t = contexte ? d[contexte] : gauche ? (d.thirdperson_lefthand !== undefined ? d.thirdperson_lefthand : d.thirdperson_righthand) : d.thirdperson_righthand;
       if (t !== undefined) return lireTransform(t);
     }
     cur = j.parent ? net(j.parent) : null;

@@ -76,8 +76,10 @@ export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {
   try {
     const rapport = exporterZone(rs, path.join(tmp, 'maillage'));
     const { personnages, parRef, infos } = await preparerPersonnages(scene, { kitDir: kit, surcharges, baseDir });
-    const terrain = terrainDepuis(rs);
-    const anim = animer(scene, terrain);
+    // scene avec monde : terrain vivant (portes, murs poses...) et acteurs a `actes` lus dans le replay, comme dans le rendu de base ; les effets visibles
+    // (couvercles de coffre, cloche, fissures, particules : film/effets-monde.js) ne sont dessines que par le rendu de base
+    const terrain = sim ? (await import('../film/terrain-vivant.js')).creerTerrainVivant({ rs, replay: sim.replay, donnees: sim.donnees }) : terrainDepuis(rs);
+    const anim = animer(scene, terrain, sim ? { replay: sim.replay } : null);
     const W = scene.largeur, H = scene.hauteur;
     const rw = Math.max(16, Math.round(W * echelle)), rh = Math.max(16, Math.round(H * echelle));
     hote = await Hote.demarrer();

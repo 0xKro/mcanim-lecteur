@@ -275,6 +275,7 @@ export class Personnage {
     const inc = inclinaison(pose.bascule, pose.roulis);   // null : corps droit, rendu d'avant inchange
     const nS = cfg.partie.length;
     const positions = new Float32Array(nS * 3), couleurs = new Float32Array(nS * 3);
+    const tn = pose.teinte ?? TEINTE_NEUTRE;   // teinte du corps (rouge des degats : docs/SIMULATION.md partie 11) ; neutre sans elle
     const normales = brut ? new Float32Array(nS * 3) : null;
     for (let s = 0; s < nS; s++) {
       const m = mats[cfg.partie[s]];
@@ -290,7 +291,7 @@ export class Personnage {
       const [vx, vy, vz] = versMondeDir(rx, ry, rz, ct, st, inc);
       if (brut) { couleurs[s * 3] = 1; couleurs[s * 3 + 1] = 1; couleurs[s * 3 + 2] = 1; normales[s * 3] = vx; normales[s * 3 + 1] = vy; normales[s * 3 + 2] = vz; continue; }
       const o = ombre(vx, vy, vz) * lumiere;
-      couleurs[s * 3] = o; couleurs[s * 3 + 1] = o; couleurs[s * 3 + 2] = o;
+      couleurs[s * 3] = o * tn[0]; couleurs[s * 3 + 1] = o * tn[1]; couleurs[s * 3 + 2] = o * tn[2];
     }
     const m = { positions, uvs: cfg.uvs, couleurs, indices: cfg.indices, texture: this.texture, mode: 'decoupe' };
     if (brut) m.normales = normales;   // vrai pack de shaders : couleurs a 1 (c'est le pack qui eclaire) et normales en repere monde
@@ -311,6 +312,7 @@ export class Personnage {
     const inc = inclinaison(pose.bascule, pose.roulis);
     const n = ext.partie.length;
     const positions = new Float32Array(n * 3), couleurs = new Float32Array(n * 3), normales = brut ? new Float32Array(n * 3) : null;
+    const tn = pose.teinte ?? TEINTE_NEUTRE;
     for (let s = 0; s < n; s++) {
       const m = mats[ext.partie[s]];
       const lx = ext.local[s * 3], ly = ext.local[s * 3 + 1], lz = ext.local[s * 3 + 2];
@@ -323,7 +325,7 @@ export class Personnage {
       const [vx, vy, vz] = versMondeDir(rx, ry, rz, ct, st, inc);
       if (brut) { couleurs[s * 3] = 1; couleurs[s * 3 + 1] = 1; couleurs[s * 3 + 2] = 1; normales[s * 3] = vx; normales[s * 3 + 1] = vy; normales[s * 3 + 2] = vz; continue; }
       const o = ombre(vx, vy, vz) * lumiere;
-      couleurs[s * 3] = o; couleurs[s * 3 + 1] = o; couleurs[s * 3 + 2] = o;
+      couleurs[s * 3] = o * tn[0]; couleurs[s * 3 + 1] = o * tn[1]; couleurs[s * 3 + 2] = o * tn[2];
     }
     return { positions, couleurs, normales };
   }
@@ -456,6 +458,7 @@ function versMondeDir(px, py, pz, ct, st, inc = null) {
 // l'avant du joueur est -Z, sa droite +X, le haut +Y. bascule > 0 : le haut du corps part vers l'avant (90 = a plat, face au sol) ;
 // roulis > 0 : le haut part vers la droite du joueur. Le roulis tourne autour de l'axe avant du monde APRES la bascule : couche sur
 // le ventre (bascule 90), roulis 90 = couche sur le cote droit.
+const TEINTE_NEUTRE = [1, 1, 1];
 export const PIVOT_HANCHE = -(12 / 16 + DECALAGE_Y) * ECHELLE;
 export function inclinaison(bascule = 0, roulis = 0) {
   if (!bascule && !roulis) return null;

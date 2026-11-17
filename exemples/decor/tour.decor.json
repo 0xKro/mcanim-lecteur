@@ -1,0 +1,20 @@
+{
+  "v": 1, "zone": "W-BTYtCHIX2i6X16byJpog", "ancre": [-226, -652], "niveau": "sol", "graine": 11,
+  "pal": { "p": "stone_bricks:6,mossy_stone_bricks:2,cracked_stone_bricks:1", "w": "stone_brick_wall", "o": "oak_planks", "f": "oak_fence", "e": "spruce_stairs" },
+  "ops": [
+    ["aplanir", -1, -1, 5, 5, 0, { "marge": 2 }],
+    ["fond", 0, 0, 4, 4, "p", { "profondeur": 10, "de": -2 }],
+    ["creux", 0, -1, 0, 4, 11, 4, "p"],
+    ["porte", 2, 0, 4, "oak_door", "sud"],
+    ["pts", "iron_bars", [2, 3, 0], [0, 3, 2], [4, 3, 2], [2, 7, 0], [0, 7, 2], [4, 7, 2]],
+    ["rep", 11, 0, 1, 0, [["bloc", 2, 0, 3, "ladder", "nord"]]],
+    ["plein", 0, 5, 0, 4, 5, 4, "o"],
+    ["effacer", 2, 5, 3, 2, 5, 3],
+    ["plein", -1, 11, -1, 5, 11, 5, "o"],
+    ["effacer", 2, 11, 3, 2, 11, 3],
+    ["mur", -1, 12, -1, 5, 12, 5, "w"],
+    ["pts", "torch", [2, 13, -1], [2, 13, 5], [-1, 13, 2], [5, 13, 2]],
+    ["coins", -1, -1, 5, 5, 13, 16, "f"],
+    ["toit", -1, -1, 5, 5, 16, "e", "x", { "forme": "croupe", "debord": 1 }]
+  ]
+}

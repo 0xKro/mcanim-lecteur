@@ -80,6 +80,12 @@ export function terrainDepuis(rs) {
 export function creerSol(terrain) {
   const solEn = terrain.solEn ?? (() => 0);
   const bloc = terrain.bloc ?? null;
+  if (terrain.solFinEn) {   // monde VIVANT (scene avec `monde`) : sol et obstacles venus des boites de collision du jeu, autour de la hauteur `yr` des pieds
+    const PTS = [[0, 0], [-RAYON_PIED, -RAYON_PIED], [RAYON_PIED, -RAYON_PIED], [-RAYON_PIED, RAYON_PIED], [RAYON_PIED, RAYON_PIED]];
+    const fin = (x, z, yr) => terrain.solFinEn(x, z, yr);
+    const sous = (x, z, yr) => { let m = null; for (const [dx, dz] of PTS) { const y = fin(x + dx, z + dz, yr); if (y !== null && (m === null || y > m.y)) m = { y, x: x + dx, z: z + dz }; } return m; };
+    return { sous, solFin: fin };
+  }
   const solFin = (x, z) => {
     const s = solEn(x, z);
     if (s === null || s === undefined) return null;
@@ -121,7 +127,10 @@ export function simulerActeur({ piste, terrain = {}, duree, gel = [], tempsPos =
     evaluer(piste, tempsPos ? tempsPos(reel(k * TICK)) : reel(k * TICK), tmp);
     X[k] = tmp[0]; Z[k] = tmp[2]; YI[k] = tmp[1];
   }
-  const gAt = (x, z) => { const s = sol.sous(x, z); return s ? s.y : null; };
+  let yRef = null;   // monde vivant : hauteur courante des pieds (le sol se cherche autour d'elle)
+  const gAt = (x, z, yr) => { const s = sol.sous(x, z, yr ?? yRef); return s ? s.y : null; };
+  if (terrain.solFinEn) yRef = Number.isFinite(YI[0]) ? YI[0] : (terrain.solEn?.(X[0], Z[0]) ?? 0);
+  const vivant = !!terrain.solFinEn;
 
   const Y = new Float64Array(K + 1), VY = new Float64Array(K + 1), XE = new Float64Array(K + 1), ZE = new Float64Array(K + 1);
   const SOL = new Uint8Array(K + 1), AIR = new Uint8Array(K + 1), EAU = new Uint8Array(K + 1), ECH = new Uint8Array(K + 1), IMP = new Uint8Array(K + 1);
@@ -153,7 +162,7 @@ export function simulerActeur({ piste, terrain = {}, duree, gel = [], tempsPos =
   const planSaut = (k) => {
     let yp = y;
     for (let j = 0; j <= 8; j++) {
-      const g = gAt(X[k + j], Z[k + j]);
+      const g = gAt(X[k + j], Z[k + j], yp);
       if (g === null) continue;
       const r = g - yp;
       if (r > HAUTEUR_PAS + 1e-6) {
@@ -170,11 +179,21 @@ export function simulerActeur({ piste, terrain = {}, duree, gel = [], tempsPos =
   };
 
   for (let k = 1; k <= K; k++) {
+    if (vivant) { terrain.regler?.(reel(k * TICK)); yRef = y; }   // le monde de cet instant (blocs poses, portes ouvertes)
     const xd = X[k], zd = Z[k];
     const xPrec = xe, zPrec = ze;
     xe = xd; ze = zd;
     if (bloque) {
       if (Math.hypot(xd - bloque.x, zd - bloque.z) > 0.75) { xe = bloque.x; ze = bloque.z; horizModifie = true; } else bloque = null;
+    }
+    // monde vivant : la boite de l'acteur glisse de sa position precedente vers la piste ; elle ne traverse ni panneau de porte fermee, ni cloture,
+    // ni mur (les 5 points d'appui ne voient pas un panneau de 3/16 de bloc)
+    if (vivant && terrain.balayer && (xe !== xPrec || ze !== zPrec) && !Number.isFinite(YI[k])) {
+      const r = terrain.balayer(xPrec, y, zPrec, xe - xPrec, ze - zPrec, grounded);
+      if (r.bloque) {
+        xe = r.x; ze = r.z; horizModifie = true;
+        if (!bloque) { brut.push({ k, type: 'obstacle', x: xe, z: ze, bloc: r.bloc, haut: r.haut }); bloque = { x: xe, z: ze }; }
+      }
     }
     // ---- hauteur imposee par la piste (cle a 3 valeurs) : elle l'emporte sur tout
     if (Number.isFinite(YI[k])) {

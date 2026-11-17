@@ -294,6 +294,7 @@ export class Creature {
 
   // Matrice de base (monde) : voir l'en-tete.
   base(pose) {
+    if (pose.matrice) return pose.matrice;   // matrice imposee (fantome du gardien ancien : ElderGuardianParticle, film/effets-monde.js)
     const lacet = pose.lacet ?? 0, et = pose.creature ?? {};
     const y = pose.y + (pose.dy ?? 0) + (pose.hauteur ?? 0);
     if (this.vehicule) {

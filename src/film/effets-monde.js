@@ -12,7 +12,7 @@ import { Aleatoire } from '../moteur/aleatoire.js';
 import { deplacerBoite } from '../moteur/collision.js';
 import { creerMeteoRendu } from './meteo-rendu.js';   // pluie, neige, foudre
 import { creerEntites } from './entites-monde.js';   // TNT amorce, blocs qui tombent (vrai modele), objets au sol
-import { Creature } from '../creatures/rendu.js';   // fantome du gardien ancien (ElderGuardianParticle)
+import { Creature, mul, T, S, RX, RY } from '../creatures/rendu.js';   // fantome du gardien ancien (ElderGuardianParticle)
 import { etatInitial } from '../creatures/anim.js';
 
 const RAD = Math.PI / 180;
@@ -52,6 +52,18 @@ class Constructeur {
 const rotX = (p, a, [cx, cy, cz]) => { const y = p[1] - cy, z = p[2] - cz, c = Math.cos(a), s = Math.sin(a); return [p[0], cy + y * c + z * s, cz - y * s + z * c]; };
 const rotZ = (p, a, [cx, cy]) => { const x = p[0] - cx, y = p[1] - cy, c = Math.cos(a), s = Math.sin(a); return [cx + x * c - y * s, cy + x * s + y * c, p[2]]; };
 const rotYcentre = (p, deg) => { const a = deg * RAD, x = p[0] - 8, z = p[2] - 8, c = Math.cos(a), s = Math.sin(a); return [8 + x * c + z * s, p[1], 8 - x * s + z * c]; };
+
+// Matrice (monde) du fantome du gardien ancien a la fraction f (0..1) de ses 30 ticks : ElderGuardianParticle.renderCustom, dans le repere
+// de la camera (x a droite, y en haut, -z devant) : rotate(camera.rotation()) . Rx(60 - 150 f) . scale(1/2,35, -1/2,35, -1/2,35)
+// . translate(0, -0,56, 3,5), puis le modele cuit du gardien ancien (racine a l'echelle 2,35), SANS le T(0, -1,501, 0) des entites.
+// camera.rotation() = Ry(180 - lacet) . Rx(-tangage) (Camera.setRotation). Le gardien regarde la camera (son oeil, -z du modele, vient
+// vers elle), tete en haut, pas en miroir (scale(1, -1, -1) = Ry(180) . scale(-1, -1, 1) du rendu normal) ; il passe d'au-dessus
+// (60 degres) a devant (f = 0,4) puis en dessous (-90 degres) en tournant autour de la camera.
+export function matriceFantome(camera, f) {
+  const k = 1 / 2.35;   // 0,42553192 : annule l'echelle 2,35 cuite dans le modele
+  const rot = mul(RY((180 - camera.lacet) * RAD), RX(-camera.tangage * RAD));
+  return mul(mul(mul(mul(T(camera.x, camera.y, camera.z), rot), RX((60 - 150 * f) * RAD)), S(k, -k, -k)), T(0, -0.56, 3.5));
+}
 
 export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain, creatures: creaturesDonnees = null }) {
   const replay = sim.replay, zone = rs.zone, notes = [];
@@ -230,8 +242,8 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain, creatu
   const particules = creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes });
   const entites = creerEntites({ rs, replay, kit, texOf, lum, notes });   // TNT amorce, blocs qui tombent, objets au sol
   const meteoR = creerMeteoRendu({ rs, replay, scene, donnees, terrain, texOf, lum });   // pluie, neige, foudre (null sans meteo ni foudre)
-  // malediction du gardien ancien (ElderGuardianParticle) : 30 ticks, le gardien ancien devant la camera (3,5 blocs, 0,56 plus bas), qui
-  // bascule de 60 a -90 degres, opacite 0,05 + 0,5 x sin(f x pi)
+  // malediction du gardien ancien (ElderGuardianParticle) : 30 ticks, le modele du gardien ancien dans le repere de la camera (voir
+  // matriceFantome), opacite 0,05 + 0,5 x sin(f x pi)
   const fantomes = [];
   { const P = replay.particules; for (let i = 0; i < P.length; i += 9) if (replay.noms[P[i + 1]] === 'elder_guardian') fantomes.push(P[i]); }
   let ancien = null;
@@ -243,9 +255,8 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain, creatu
     const t0 = fantomes.filter((t) => u >= t && u < t + 30).pop();
     if (t0 === undefined) return [];
     const f = (u - t0) / 30, alpha = 0.05 + 0.5 * Math.sin(f * Math.PI);
-    const ya = camera.lacet * RAD, pa = camera.tangage * RAD, fw = [-Math.sin(ya) * Math.cos(pa), -Math.sin(pa), Math.cos(ya) * Math.cos(pa)];
-    const pose = { x: camera.x + fw[0] * 3.5, y: camera.y + fw[1] * 3.5 - 0.56 - 0.85, z: camera.z + fw[2] * 3.5, lacet: camera.lacet + 180, bascule: -(60 - 150 * f), age: u,
-      creature: { cacher: [], s: { pos: 0, speed: 0, age: u, yRot: 0, xRot: 0, swing: 0, baby: false, partial: 0 }, m: etatInitial('elder_guardian'), parties: {} } };
+    const pose = { x: camera.x, y: camera.y, z: camera.z, matrice: matriceFantome(camera, f), age: u,
+      creature:{ cacher: [], s: { pos: 0, speed: 0, age: u, yRot: 0, xRot: 0, swing: 0, baby: false, partial: 0 }, m: etatInitial('elder_guardian'), parties: {} } };
     return ancien.maillage(pose, 1).map((m) => ({ ...m, texture: transparent(m.texture, alpha), mode: 'melange', deuxFaces: true, exempt: true }));
   }
 

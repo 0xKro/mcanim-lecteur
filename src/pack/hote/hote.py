@@ -47,11 +47,15 @@ class Hote:
             e["frame"] = base + k
             if n > 1 and "temps" in e:
                 e["temps"] = float(c["etat"].get("temps", 0.0)) + k * float(e.get("dt", 1.0 / 30.0))
+            e["veutProfondeur"] = bool(c.get("profondeur")) and k == n - 1     # profondeur (depthtex0) en plus, pour la profondeur de champ du montage
             raw = r.rendre(e)
         force = r.force_octets
         if force:
             raw = raw + force
-        return raw, {"temps": r.stats.get("dernier"), "manquants": sorted(r.manquants)[:80], "compile_ms": r.stats.get("compile_ms"), "masque": len(force) if force else 0,
+        prof = r.prof_octets
+        if prof:
+            raw = raw + prof
+        return raw, {"temps": r.stats.get("dernier"), "manquants": sorted(r.manquants)[:80], "compile_ms": r.stats.get("compile_ms"), "masque": len(force) if force else 0, "profondeur": len(prof) if prof else 0,
                      "journal": r.journal[-6:]}
 
 

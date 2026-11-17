@@ -22,7 +22,17 @@ GLB = {"ZERO": 0, "ONE": 1, "SRC_COLOR": 0x300, "ONE_MINUS_SRC_COLOR": 0x301, "S
        "DST_ALPHA": 0x304, "ONE_MINUS_DST_ALPHA": 0x305, "DST_COLOR": 0x306, "ONE_MINUS_DST_COLOR": 0x307, "SRC_ALPHA_SATURATE": 0x308}
 
 
+# genre de geometrie dynamique -> programmes essayes dans l'ordre (le repli d'Iris : block -> terrain, damagedblock -> terrain, particules -> textured)
+PROGRAMMES_GEO = [
+    ("entites", ["gbuffers_entities", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"]),
+    ("bloc", ["gbuffers_block", "gbuffers_terrain", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"]),
+    ("fissure", ["gbuffers_damagedblock", "gbuffers_terrain", "gbuffers_textured", "gbuffers_basic"]),
+    ("particule", ["gbuffers_textured", "gbuffers_textured_lit", "gbuffers_basic"]),
+]
+
+
 class PassesMixin:
+    _genres_dits = set()
     # ------------------------------------------------------------------ melange (blend)
     def _facteurs(self, texte):
         return [GLB.get(x.upper(), 1) for x in texte.split()]
@@ -128,16 +138,24 @@ class PassesMixin:
 
     # ------------------------------------------------------------------ acteurs
     def _passe_acteurs(self, vals, custom, geos, translucide, mv):
-        """Acteurs dans gbuffers_entities (opaques et decoupes) ou gbuffers_entities_translucent (melange)."""
-        liste = [g for g in geos if (g["mode"] == "melange") == translucide]
-        if not liste:
-            return
+        """Acteurs et geometries du monde dans gbuffers_entities (opaques et decoupes) ou gbuffers_entities_translucent (melange) ; les blocs a entite
+        (coffre, cloche) vont dans gbuffers_block, les fissures dans gbuffers_damagedblock, les particules dans gbuffers_textured (repli d'Iris)."""
+        for genre, noms in PROGRAMMES_GEO:
+            liste = [g for g in geos if g.get("programme", "entites") == genre and (g["mode"] == "melange") == translucide]
+            if not liste:
+                continue
+            if genre == "entites" and translucide:
+                noms = ["gbuffers_entities_translucent"] + noms
+            nom = self.premier_existant(noms)
+            if nom is None:
+                if genre not in self._genres_dits:
+                    self._genres_dits.add(genre)
+                    self.journal.append("geometries '%s' : aucun programme utilisable dans le pack, non dessinees" % genre)
+                continue
+            self._passe_genre(vals, custom, liste, translucide, mv, nom, genre)
+
+    def _passe_genre(self, vals, custom, liste, translucide, mv, nom, genre):
         gl = self.gl
-        noms = (["gbuffers_entities_translucent"] if translucide else []) + ["gbuffers_entities", "gbuffers_textured_lit", "gbuffers_textured", "gbuffers_basic"]
-        nom = self.premier_existant(noms)
-        if nom is None:
-            self.journal.append("acteurs : aucun programme gbuffers_entities")
-            return
         cib = self.pack.cibles_ecriture(nom)
         self._attacher([self._ct_lecture(i) for i in cib], self.depth_gb)
         gl.Viewport(0, 0, self.W, self.H)
@@ -146,6 +164,7 @@ class PassesMixin:
         gl.DepthMask(1)
         self._appliquer_blend(nom, "SRC_ALPHA ONE_MINUS_SRC_ALPHA ONE ONE_MINUS_SRC_ALPHA" if translucide else "off", cib)
         id_joueur = self.pack.entites.id("minecraft:player")
+        etape = {"entites": 11, "bloc": 9, "fissure": 12, "particule": 13}.get(genre, 11)
         for g in liste:
             if g["deuxFaces"]:
                 gl.Disable(0x0B44)
@@ -154,8 +173,9 @@ class PassesMixin:
                 gl.CullFace(0x0405)
             gl.Enable(0x0BC0)
             gl.AlphaFunc(0x204, 0.1)
-            v = self._vals_perso(vals, custom, renderStage=11)
-            self._tracer_geo(nom, g, v, mv, vals["gbufferProjection"], nom, {"entityId": g["entite"] or id_joueur, "entityColor": g["couleurEntite"]})
+            v = self._vals_perso(vals, custom, renderStage=etape)
+            self._tracer_geo(nom, g, v, mv, vals["gbufferProjection"], nom, {"entityId": g["entite"] or (id_joueur if genre == "entites" else 0),
+                                                                              "entityColor": g["couleurEntite"], "blockEntityId": g["bloc_id"]})
         gl.Disable(0x0B44)
         gl.Disable(0x0BC0)
         gl.Disable(0x0BE2)
@@ -229,6 +249,18 @@ class PassesMixin:
         out = b"".join([raw[y * W:(y + 1) * W] for y in range(self.H - 1, -1, -1)])
         gl.BindFramebuffer(FRAMEBUFFER, 0)
         return out
+
+    def _lire_profondeur(self):
+        """depthtex0 (opaques, acteurs, eau : apres les translucides) en flottants 32 bits 0..1, ligne du haut d'abord (profondeur de champ du montage)."""
+        gl = self.gl
+        self._attacher([], self.depthtex[0])
+        buf = ctypes.create_string_buffer(self.W * self.H * 4)
+        gl.PixelStorei(0x0D05, 4)
+        gl.ReadPixels(0, 0, self.W, self.H, 0x1902, FLOAT_T, buf)
+        raw = buf.raw
+        ligne = self.W * 4
+        gl.BindFramebuffer(FRAMEBUFFER, 0)
+        return b"".join([raw[y * ligne:(y + 1) * ligne] for y in range(self.H - 1, -1, -1)])
 
     # ------------------------------------------------------------------ eau, verre, acteurs translucides, nuages
     def _passe_translucides(self, vals, custom, e, mv, geos_acteurs, nuage):
@@ -386,6 +418,7 @@ class PassesMixin:
         ligne = self.W * 4
         out = b"".join([raw[y * ligne:(y + 1) * ligne] for y in range(self.H - 1, -1, -1)])
         self.force_octets = self._lire_force() if veut_force else None
+        self.prof_octets = self._lire_profondeur() if e.get("veutProfondeur") else None
         self.dyn.liberer()
         self.dernier = {"camera": dict(e["camera"]), "vue": vals["gbufferModelView"], "proj": vals["gbufferProjection"]}
         T["lecture"] = round((time.perf_counter() - t0) * 1000, 1)
@@ -397,7 +430,7 @@ class PassesMixin:
 from . import uniformes  # noqa: E402  (en bas : evite un import circulaire au chargement)
 
 
-UTILISES = re.compile(r"^(shadow|gbuffers_(terrain|water|entities|entities_translucent|skybasic|skytextured|clouds|basic|textured|textured_lit)|deferred\d*|composite\d*|final)$")
+UTILISES = re.compile(r"^(shadow|gbuffers_(terrain|water|entities|entities_translucent|skybasic|skytextured|clouds|basic|textured|textured_lit|block|damagedblock)|deferred\d*|composite\d*|final)$")
 
 
 def _premiere_ligne(journal):

@@ -9,6 +9,7 @@ import ctypes
 import math
 
 from . import matrices as M
+from .idmap import analyser_etat
 
 FLOATS = 28
 
@@ -140,8 +141,11 @@ class Dyn:
             sky = float(s.get("ciel", 15.0)) * 16.0
             a = entrelacer(pos, uv, col, nor, idx, origine, lum=(float(s.get("bloc", 0.0)) * 16.0, min(240.0, sky)))
             m = s.get("mode", "decoupe")
+            # entityId : le nom du jeu (minecraft:item, minecraft:tnt...) est resolu avec entity.properties du pack ; blockEntityId : block.properties
+            ident = self.r.pack.entites.id(s["entiteNom"]) if s.get("entiteNom") else int(s.get("entite", 0))
+            bloc_id = self.r.pack.blocs.id(*analyser_etat(s["blocNom"])) if s.get("blocNom") else 0
             res.append(self._geo(a, idx, tex=tex[0], mode=m, deuxFaces=bool(s.get("deuxFaces")), masque=self.masques.get(s.get("masque")),
-                                 kM=float(s.get("kM", 1.0)), exempt=bool(s.get("exempt")), entite=int(s.get("entite", 0)),
+                                 kM=float(s.get("kM", 1.0)), exempt=bool(s.get("exempt")), entite=ident, programme=s.get("programme", "entites"), bloc_id=bloc_id,
                                  couleurEntite=tuple(s.get("couleurEntite", (0.0, 0.0, 0.0, 0.0))), couche=3 if m == "melange" else 1))
         return res
 

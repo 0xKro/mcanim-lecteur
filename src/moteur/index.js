@@ -50,7 +50,7 @@ export function lireFichiersMods(liste, baseDir) {
 // Prepare la simulation (familles, mods, regles, commandes) sans la lancer. Utile aux tests et a `mcanim mods verifier`.
 export function preparer({ zone, donnees, monde = {}, mods = [], acteurs = [], options = {} } = {}) {
   const config = {
-    graine: monde.graine ?? 1, blocs: monde.blocs || [], cmd: monde.cmd || [], regles: monde.regles, plafondMs: options.plafondMs,
+    graine: monde.graine ?? 1, blocs: monde.blocs || [], cmd: monde.cmd || [], regles: monde.regles, plafondMs: options.plafondMs, heure: options.heure, contenus: monde.contenus,
   };
   const sim = new Simulation({ zone, donnees, config, monde: options.monde });
   declarerReglesMonde(sim.regles);

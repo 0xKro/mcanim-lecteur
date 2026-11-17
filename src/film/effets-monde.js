@@ -148,7 +148,7 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain }) {
     piece([xa, 9, 1, xb, 14, 15], 0, 0, true);                            // couvercle
     const sx = gauche ? [15, 16] : droit ? [0, 1] : [7, 9];
     piece([sx[0], 8, 15, sx[1], 12, 16], 0, 0, true);                     // serrure (suit le couvercle)
-    return C.maillage(tx, 'decoupe');
+    return C.maillage(tx, 'decoupe', { genre: 'bloc', bloc: 'minecraft:' + I.nom });   // genre : pour le chemin GPU (programme et blockEntityId)
   };
 
   // ---------------------------------------------------------------- cloches
@@ -180,7 +180,7 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain }) {
     };
     piece([5, 6, 5, 11, 13, 11], 0, 0);      // corps
     piece([4, 4, 4, 12, 6, 12], 0, 13);      // evasement du bas
-    return C.maillage(tx, 'decoupe');
+    return C.maillage(tx, 'decoupe', { genre: 'bloc', bloc: 'minecraft:bell' });
   };
 
   // ---------------------------------------------------------------- fissures de casse
@@ -220,7 +220,7 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain }) {
       ];
       for (const f of F) C.quad(f, [[0, 0], [1, 0], [1, 1], [0, 1]], 1);
     }
-    return C.maillage(tx, 'melange', { deuxFaces: false });
+    return C.maillage(tx, 'melange', { deuxFaces: false, genre: 'fissure' });
   };
 
   // ---------------------------------------------------------------- particules (Particle.tick du jeu)
@@ -380,7 +380,7 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
         for (let i = 0; i < 4; i++) { C.col[k + i * 3] = p.couleur[0] * L; C.col[k + i * 3 + 1] = p.couleur[1] * L; C.col[k + i * 3 + 2] = p.couleur[2] * L; }
       }
       const out = [];
-      for (const [tex, C] of parTex) { const t = texPart(tex); if (t && !C.vide()) out.push(C.maillage(t, 'decoupe', { deuxFaces: true })); }
+      for (const [tex, C] of parTex) { const t = texPart(tex); if (t && !C.vide()) out.push(C.maillage(t, 'decoupe', { deuxFaces: true, genre: 'particule' })); }
       return out;
     },
   };

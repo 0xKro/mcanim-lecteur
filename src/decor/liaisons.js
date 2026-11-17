@@ -5,6 +5,7 @@
 // IronBarsBlock, WallBlock, ChestBlock du jeu (tables de proprietes et de formes : donnees du jeu).
 import { OPPOSE, VECT, GAUCHE, DROITE, HORIZ } from './etats.js';
 import { D } from '../moteur/donnees.js';
+import { Redstone } from '../moteur/redstone.js';
 
 const FACE_INDEX = { down: 0, up: 1, north: 2, south: 3, west: 4, east: 5 };
 const EXCEPTIONS = /^(barrier|carved_pumpkin|jack_o_lantern|melon|pumpkin|(\w+_)?shulker_box)$/;
@@ -12,7 +13,9 @@ const EXCEPTIONS = /^(barrier|carved_pumpkin|jack_o_lantern|melon|pumpkin|(\w+_)
 export class Liaisons {
   constructor(g, d, cls) {
     this.g = g; this.d = d; this.cls = cls;
-    this.compte = { escaliers: 0, clotures: 0, murets: 0, vitres: 0, coffres: 0, autres: 0 };
+    this.compte = { escaliers: 0, clotures: 0, murets: 0, vitres: 0, coffres: 0, autres: 0, poudre: 0 };
+    // la poudre de redstone se relie comme dans le jeu (RedStoneWireBlock.getConnectionState) : meme code que le moteur, sur la grille du decor
+    this.R = new Redstone({ d, monde: { etatEn: (x, y, z) => g.etat(x, y, z) }, surcharge: null });
   }
   etat(x, y, z) { return this.g.etat(x, y, z); }
   // face du voisin (vers `dir` depuis x,y,z) qui touche la cellule, pleine ?
@@ -56,6 +59,10 @@ export class Liaisons {
     } else if (info.muret) {
       n = this.muret(x, y, z, e, forces);
       if (n !== e) this.compte.murets++;
+    } else if (info.fil) {
+      const c = this.R.etatConnexion(e, x, y, z);
+      for (const dir of HORIZ) mettre(dir, d.prop(c, dir));
+      if (n !== e) this.compte.poudre++;
     } else if (info.escalier) {
       mettre('shape', this.formeEscalier(x, y, z, e));
       if (n !== e) this.compte.escaliers++;
@@ -140,6 +147,13 @@ export function passeLiaisons(g, d, cls, cellules) {
     marq[i] = 1;
     const [x, y, z] = g.xyz(i);
     for (const dir in VECT) { const v = VECT[dir], nx = x + v[0], ny = y + v[1], nz = z + v[2]; if (g.dans(nx, ny, nz)) marq[g.idx(nx, ny, nz)] = 1; }
+    // la poudre depend aussi des cellules en diagonale (une marche plus haut ou plus bas)
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+      const nx = x + dx, ny = y + dy, nz = z + dz;
+      if (!g.dans(nx, ny, nz)) continue;
+      const e = g.etat(nx, ny, nz);
+      if (e >= 0 && cls.infoEtat(e).fil) marq[g.idx(nx, ny, nz)] = 1;
+    }
   }
   // quels etats ont un calcul automatique (memo par indice de palette)
   const besoin = new Int8Array(65536).fill(-1);
@@ -148,7 +162,7 @@ export function passeLiaisons(g, d, cls, cellules) {
     if (b < 0) {
       const e = g.etatDePal(p);
       const info = e < 0 ? null : cls.infoEtat(e);
-      b = info && (info.cloture || info.vitre || info.muret || info.escalier || info.portillon || info.neigeux || info.lanterne || info.torcheMur || info.echelle || info.panneauMur || info.banniereMur || info.coffre) ? 1 : 0;
+      b = info && (info.fil || info.cloture || info.vitre || info.muret || info.escalier || info.portillon || info.neigeux || info.lanterne || info.torcheMur || info.echelle || info.panneauMur || info.banniereMur || info.coffre) ? 1 : 0;
       besoin[p] = b;
     }
     return b === 1;

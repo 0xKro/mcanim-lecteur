@@ -710,7 +710,7 @@ export class Acteurs {
   constructor(sim, descripteurs) {
     this.sim = sim;
     const m = sim.monde;
-    this.lec = { etatEn: (x, y, z) => m.etatEn(x, y, z), d: sim.d, get limites() { return { x0: m.x0, x1: m.x0 + m.sx, z0: m.z0, z1: m.z0 + m.sz }; } };   // la boite du monde (qui peut grandir)
+    this.lec = { etatEn: (x, y, z) => m.etatEn(x, y, z), d: sim.d, dyn: (e, x, y, z) => sim.formeDyn(e, x, y, z), get limites() { return { x0: m.x0, x1: m.x0 + m.sx, z0: m.z0, z1: m.z0 + m.sz }; } };   // la boite du monde (qui peut grandir)
     this.liste = descripteurs.map((d, i) => new Acteur(this, i, d));
     this.parNom = new Map(this.liste.map((a) => [a.nom, a]));
     sim.replay.acteurs = this.liste.map((a) => a.nom);

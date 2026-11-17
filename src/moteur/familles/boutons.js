@@ -16,6 +16,21 @@ export function installer(mc, regles) {
   regles.declarer('plaques.delaiPesante', { def: 10, min: 1, max: 1200, entier: true, doc: 'idem pour les plaques pesantes (or, fer) (jeu : 10)' });
   regles.declarer('leviers.actif', { def: true, doc: 'les leviers repondent au clic (jeu : oui)' });
 
+  // ButtonBlock/LeverBlock.updateNeighbours : le bloc lui-meme et le bloc sur lequel il est colle apprennent le changement de signal
+  const devantAttache = (b) => {
+    const face = b.etat.face, facing = b.etat.facing;
+    return face === 'ceiling' ? [0, 1, 0] : face === 'floor' ? [0, -1, 0] : { north: [0, 0, 1], south: [0, 0, -1], west: [1, 0, 0], east: [-1, 0, 0] }[facing];
+  };
+  const notifierAttache = (monde, pos, b) => {
+    const d = devantAttache(b), nom = court(b.nom);
+    monde.notifierVoisins(pos[0], pos[1], pos[2], nom);
+    monde.notifierVoisins(pos[0] + d[0], pos[1] + d[1], pos[2] + d[2], nom);
+  };
+  const notifierPlaque = (monde, pos, b) => {
+    const nom = court(b.nom);
+    monde.notifierVoisins(pos[0], pos[1], pos[2], nom);
+    monde.notifierVoisins(pos[0], pos[1] - 1, pos[2], nom);
+  };
   const typeDe = (monde, b) => monde.champs(court(b.nom))?.type ?? null;
 
   // ---------------------------------------------------------------- boutons
@@ -31,6 +46,7 @@ export function installer(mc, regles) {
     const [x, y, z] = ev.pos, b = monde.bloc(x, y, z);
     if (b.etat.powered === 'true') return 'passe';        // CONSUME : rien ne se passe, mais le clic est mange
     monde.poser(x, y, z, avec(b, { powered: 'true' }), 3);
+    notifierAttache(monde, ev.pos, b);
     monde.planifier(x, y, z, dureeBouton(monde, b));
     sonBouton(monde, ev.pos, b, true);
     return 'fait';
@@ -39,12 +55,24 @@ export function installer(mc, regles) {
     const [x, y, z] = ev.pos, b = monde.bloc(x, y, z);
     if (b.etat.powered !== 'true') return;
     monde.poser(x, y, z, avec(b, { powered: 'false' }), 3);
+    notifierAttache(monde, ev.pos, b);
     sonBouton(monde, ev.pos, b, false);
+  });
+  mc.bloc('ButtonBlock').sur('retire', (ev, monde) => {      // un bouton enfonce qu'on casse : le signal retombe (affectNeighborsAfterRemoval)
+    if (ev.nouveau.startsWith('minecraft:' + ev.bloc) || ev.deplace || !(ev.drapeaux & 1)) return;
+    const b = parseEtat(ev.etat);
+    if (b.etat.powered === 'true') notifierAttache(monde, ev.pos, b);
+  });
+  mc.bloc('LeverBlock').sur('retire', (ev, monde) => {
+    if (ev.nouveau.startsWith('minecraft:lever') || ev.deplace || !(ev.drapeaux & 1)) return;
+    const b = parseEtat(ev.etat);
+    if (b.etat.powered === 'true') notifierAttache(monde, ev.pos, b);
   });
   mc.bloc('ButtonBlock').sur('alimente', (ev, monde) => {   // signal direct : meme effet qu'un clic (appui) ou un relachement
     const [x, y, z] = ev.pos, b = monde.bloc(x, y, z), vrai = !!ev.alimente;
     if ((b.etat.powered === 'true') === vrai) return;
     monde.poser(x, y, z, avec(b, { powered: vrai ? 'true' : 'false' }), 3);
+    notifierAttache(monde, ev.pos, b);
     if (vrai) monde.planifier(x, y, z, dureeBouton(monde, b));
     sonBouton(monde, ev.pos, b, vrai);
   });
@@ -55,6 +83,7 @@ export function installer(mc, regles) {
     const [x, y, z] = ev.pos, b = monde.bloc(x, y, z);
     const vrai = b.etat.powered !== 'true';
     monde.poser(x, y, z, avec(b, { powered: vrai ? 'true' : 'false' }), 3);
+    notifierAttache(monde, ev.pos, b);
     monde.son('block.lever.click', x + 0.5, y + 0.5, z + 0.5, 0.3, vrai ? 0.6 : 0.5);
     return 'fait';
   });
@@ -62,6 +91,7 @@ export function installer(mc, regles) {
     const [x, y, z] = ev.pos, b = monde.bloc(x, y, z), vrai = !!ev.alimente;
     if ((b.etat.powered === 'true') === vrai) return;
     monde.poser(x, y, z, avec(b, { powered: vrai ? 'true' : 'false' }), 3);
+    notifierAttache(monde, ev.pos, b);
     monde.son('block.lever.click', x + 0.5, y + 0.5, z + 0.5, 0.3, vrai ? 0.6 : 0.5);
   });
 
@@ -90,7 +120,7 @@ export function installer(mc, regles) {
   const verifier = (monde, pos) => {
     const [x, y, z] = pos, b = monde.bloc(x, y, z);
     const ancien = signalDe(b), nouveau = force(monde, b, compter(monde, pos));
-    if (ancien !== nouveau) monde.poser(x, y, z, avecSignal(b, nouveau), 2);
+    if (ancien !== nouveau) { monde.poser(x, y, z, avecSignal(b, nouveau), 2); notifierPlaque(monde, pos, b); }
     if (nouveau === 0 && ancien > 0) sonPlaque(monde, pos, b, false);
     else if (nouveau > 0 && ancien === 0) sonPlaque(monde, pos, b, true);
     if (nouveau > 0) monde.planifier(x, y, z, delai(monde, b));
@@ -99,6 +129,11 @@ export function installer(mc, regles) {
     mc.bloc(classe).sur('entre', (ev, monde) => { const b = monde.bloc(...ev.pos); if (signalDe(b) === 0) verifier(monde, ev.pos); });
     mc.bloc(classe).sur('tick', (ev, monde) => { const b = monde.bloc(...ev.pos); if (signalDe(b) > 0) verifier(monde, ev.pos); });
   }
+  mc.bloc('BasePressurePlateBlock').sur('retire', (ev, monde) => {
+    if (ev.nouveau.startsWith('minecraft:' + ev.bloc) || ev.deplace || !(ev.drapeaux & 1)) return;
+    const b = parseEtat(ev.etat);
+    if (signalDe(b) > 0) notifierPlaque(monde, ev.pos, b);
+  });
   // une plaque survit sur une face rigide ou pleine du dessous (BasePressurePlateBlock.canSurvive : canSupportRigidBlock ou canSupportCenter)
   mc.bloc('BasePressurePlateBlock').sur('survit', (ev, monde) => monde.appui(ev.pos[0], ev.pos[1] - 1, ev.pos[2], 'haut', 'rigide') || monde.appui(ev.pos[0], ev.pos[1] - 1, ev.pos[2], 'haut', 'centre'));
   mc.bloc('BasePressurePlateBlock').sur('forme', (ev, monde) => (ev.direction === 'bas' && !monde.survit(...ev.pos) ? 'minecraft:air' : undefined));

@@ -122,6 +122,7 @@ export function rapportDecor({ g, d, cls, ex, decor, diff, net, lia, comble, nom
   if (c.murets) et.push(`${c.murets} murets`);
   if (c.vitres) et.push(`${c.vitres} vitres/barreaux`);
   if (c.coffres) et.push(`${c.coffres} coffres doubles`);
+  if (c.poudre) et.push(`${c.poudre} poudres de redstone (liaisons)`);
   if (net.plantes) et.push(`${net.plantes} plantes retirees`);
   if (net.feuilles) et.push(`${net.feuilles} feuilles sans tronc retirees`);
   const cn = [...comble.values()].reduce((s, v) => s + v, 0);

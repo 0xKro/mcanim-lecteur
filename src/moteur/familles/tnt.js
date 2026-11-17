@@ -21,4 +21,8 @@ export function installer(mc, regles) {
     return 'fait';
   });
   mc.bloc('TntBlock').sur('alimente', (ev, monde) => { if (ev.alimente) monde.allumer(ev.pos[0], ev.pos[1], ev.pos[2], {}); });
+  // TntBlock.neighborChanged / onPlace : un signal (poudre, torche, levier...) amorce le TNT
+  const verifier = (ev, monde) => { const [x, y, z] = ev.pos; if (monde.aSignalVoisin(x, y, z)) monde.allumer(x, y, z, {}); };
+  mc.bloc('TntBlock').sur('voisin', verifier);
+  mc.bloc('TntBlock').sur('pose', (ev, monde) => { if (!ev.memeBloc) verifier(ev, monde); });
 }

@@ -65,6 +65,7 @@ export class Classes {
       plante: cl.has('VegetationBlock') || cl.has('VineBlock') || cl.has('SnowLayerBlock') || cl.has('SugarCaneBlock') || cl.has('KelpBlock') || cl.has('GrowingPlantBlock'),
       plaque: cl.has('PressurePlateBlock') || cl.has('BasePressurePlateBlock'), tapis: cl.has('CarpetBlock'), torche: cl.has('TorchBlock') && !cl.has('WallTorchBlock'),
       bougie: cl.has('CandleBlock'), rail: cl.has('BaseRailBlock'),
+      fil: cl.has('RedstoneWireBlock'), diode: cl.has('DiodeBlock'),   // poudre de redstone ; repeteur et comparateur
     };
     this.memo.set(b, i);
     return i;
@@ -102,6 +103,8 @@ export function lireBloc(texte, d, erreur) {
 // Convention (FORMAT-DECOR.md, B2.3) : `facing` = le cote ou regarde la FACADE du bloc ; pour un escalier : le cote ou il MONTE ; pour un lit : de pied vers tete.
 export function orienter(info, mot) {
   const p = info.props, o = {};
+  // repeteur et comparateur : la direction du decor est celle ou SORT le signal ; le jeu ecrit `facing` du cote de l'ENTREE (l'oppose) : fait ici
+  if (info.diode && OPPOSE[mot]) mot = OPPOSE[mot];
   if (p.has('facing')) {
     if (!p.get('facing').includes(mot)) return `${info.nom} ne s'oriente pas vers "${NOM_FR[mot]}" (permis : ${p.get('facing').map((v) => NOM_FR[v] || v).join(', ')})`;
     o.facing = mot;

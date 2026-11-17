@@ -23,6 +23,8 @@ import { D } from './donnees.js';
 import { Entites } from './entites.js';
 import { exploser } from './explosion.js';
 import { bonOutil } from './cassage.js';
+import { Redstone } from './redstone.js';
+import { Contenus } from './contenus.js';
 
 // Drapeaux de set_block (Block.UPDATE_*)
 export const F = { VOISINS: 1, CLIENTS: 2, INVISIBLE: 4, IMMEDIAT: 8, FORME_CONNUE: 16, SANS_BUTIN: 32, PISTON: 64, SANS_FORME_FIL: 128, SANS_EFFETS_ENTITE: 256, SANS_POSE: 512, TOUS: 3, AUCUN: 260 };
@@ -43,7 +45,13 @@ export class Simulation {
     this.file = new FileTicks();
     this.temps = 0;                               // numero du tick en cours
     this.replay = new Replay({ graine: config.graine ?? 1, ralenti: config.ralenti ?? 1, moteur: MOTEUR });
-    this.u = { pile: [], ajoutes: [], count: 0 };  // mises a jour de voisins en vol (CollectingNeighborUpdater)
+    this.u = { pile: [], ajoutes: [], count: 0 };
+    this.surcharge = null;                        // { x, y, z, e } : etat hypothetique d'une cellule (calcul des formes d'un bloc de piston qui se pose)
+    this.enTick = false;                          // vrai pendant les ticks planifies et aleatoires (Level.isHandlingTick)
+    this.enAttente = new Set();                   // ticks collectes pour ce tick et pas encore executes (willTickThisTick)
+    this.evBlocs = [];                            // file des evenements de blocs (ServerLevel.blockEvent) : { x, y, z, bloc, a, b }
+    this.contenus = new Contenus(this);          // contenu des conteneurs (coffre, entonnoir, dropper...) : contenus.js
+    this.redstone = new Redstone(this);  // mises a jour de voisins en vol (CollectingNeighborUpdater)
     this.stats = { voisins: 0, ticks: 0, aleatoires: 0, poses: 0, plafondVoisins: 0, evenements: 0 };
     this.avertissements = [];
     this.posesCeTick = 0;
@@ -58,6 +66,13 @@ export class Simulation {
     this.nbFluides = 0;                           // ticks de fluide executes (pour le resume)
   }
 
+  // heure du jour de la scene (ciel.heure, 0 a 24 ; midi = 12) au tick courant : le detecteur de lumiere du jour la lit
+  heureMonde() { const f = this.config.heure; return typeof f === 'function' ? f(this.temps / 20 / (this.replay.ralenti || 1)) : typeof f === 'number' ? f : 12; }
+
+  // Forme de collision qui depend du moment : le bloc `moving_piston` (bloc a entite) prend la forme du bloc qu'il porte, decalee par le progres, coupee a sa cellule.
+  // `collisionDyn` est posee par la famille des pistons ; rend une liste de boites ou null.
+  formeDyn(e, x, y, z) { return this.collisionDyn && this.d.nomBloc(e) === 'moving_piston' ? this.collisionDyn(x, y, z) : null; }
+
   avertir(t) { if (this.avertissements.length < 20 && !this.avertissements.includes(t)) this.avertissements.push(t); }
 
   // ------------------------------------------------------------ lumiere (a la demande)
@@ -71,7 +86,8 @@ export class Simulation {
   etat(x, y, z) { return this.monde.etatEn(x, y, z); }                 // numero d'etat du jeu, -1 si cellule cachee inconnue
   blocIdx(x, y, z) { const e = this.monde.etatEn(x, y, z); return e < 0 ? -1 : this.d.blocDe(e); }
   decrire(x, y, z) {
-    const e = this.monde.etatEn(x, y, z);
+    const sc = this.surcharge;
+    const e = sc && sc.x === x && sc.y === y && sc.z === z ? sc.e : this.monde.etatEn(x, y, z);
     if (e < 0) return { nom: 'minecraft:#hidden', chaine: '#hidden', etat: {}, id: -1, indice: 1 };
     return { nom: 'minecraft:' + this.d.nomBloc(e), chaine: this.d.chaine(e), etat: this.d.props(e), id: e, indice: this.monde.indiceEn(x, y, z), instrument: this.d.instrument(e) };
   }
@@ -97,16 +113,22 @@ export class Simulation {
     m.devoiler(x, y, z);
     const change = blocAnc !== blocNou;
     // "affect_neighbors_after_removal" : l'ancien bloc apprend qu'il a ete retire
-    if (change && blocAnc >= 0 && this.reg.a('retire', blocAnc)) this.reg.lancerBloc('retire', blocAnc, evenement({ pos: [x, y, z], etat: this.d.chaine(eAnc), bloc: this.d.nomBloc(eAnc), nouveau: eNou >= 0 ? this.d.chaine(eNou) : '#hidden' }), this.api);
+    if (change && blocAnc >= 0 && this.reg.a('retire', blocAnc)) this.reg.lancerBloc('retire', blocAnc, evenement({ pos: [x, y, z], etat: this.d.chaine(eAnc), bloc: this.d.nomBloc(eAnc), nouveau: eNou >= 0 ? this.d.chaine(eNou) : '#hidden', drapeaux, deplace: !!(drapeaux & F.PISTON) }), this.api);
     if (m.indiceEn(x, y, z) !== nouveau) return true;                   // un gestionnaire a deja remplace le bloc
     if (!(drapeaux & F.SANS_POSE) && blocNou >= 0 && this.reg.a('pose', blocNou)) {
-      this.reg.lancerBloc('pose', blocNou, evenement({ pos: [x, y, z], etat: this.d.chaine(eNou), bloc: this.d.nomBloc(eNou), ancien: eAnc >= 0 ? this.d.chaine(eAnc) : '#hidden' }), this.api);
+      this.reg.lancerBloc('pose', blocNou, evenement({ pos: [x, y, z], etat: this.d.chaine(eNou), bloc: this.d.nomBloc(eNou), ancien: eAnc >= 0 ? this.d.chaine(eAnc) : '#hidden', ancienId: eAnc, drapeaux, memeBloc: blocAnc === blocNou }), this.api);
     }
     if (m.indiceEn(x, y, z) === nouveau) {
-      if (drapeaux & F.VOISINS) this._majVoisins(x, y, z, blocAnc);
+      if (drapeaux & F.VOISINS) {
+        this._majVoisins(x, y, z, blocAnc);
+        if (eNou >= 0 && this.d.sortieAnalogique(eNou)) this.redstone.majSortieAnalogique(x, y, z, blocNou);
+      }
       if (!(drapeaux & F.FORME_CONNUE) && limite > 0) {
         const f = drapeaux & ~(F.VOISINS | F.SANS_BUTIN);
+        // Level.setBlock : formes indirectes de l'ancien etat, formes des voisins, formes indirectes du nouveau (la poudre de redstone les surcharge)
+        this.redstone.formesIndirectes(x, y, z, eAnc, f, limite - 1);
         this._majFormesVoisines(x, y, z, f, limite - 1);
+        this.redstone.formesIndirectes(x, y, z, eNou, f, limite - 1);
       }
     }
     return true;
@@ -138,7 +160,13 @@ export class Simulation {
   }
 
   // ------------------------------------------------------------ voisins et formes (CollectingNeighborUpdater)
-  _majVoisins(x, y, z, blocSource) { this._ajouter({ k: 'multi', x, y, z, bloc: blocSource, i: 0 }); }
+  _majVoisins(x, y, z, blocSource) { this._ajouter({ k: 'multi', x, y, z, bloc: blocSource, i: 0, sauf: -1 }); }
+  // updateNeighborsAtExceptFromFacing : comme _majVoisins, sans le voisin du cote `sauf` (indice de face)
+  majVoisinsSauf(x, y, z, blocSource, sauf) { this._ajouter({ k: 'multi', x, y, z, bloc: blocSource, i: ORDRE_VOISINS[0] === sauf ? 1 : 0, sauf }); }
+  // neighborChanged d'UNE cellule (sans les autres voisins)
+  voisinChangeEn(x, y, z, blocSource) { this._ajouter({ k: 'simple', x, y, z, bloc: blocSource }); }
+  // une mise a jour de forme d'un seul cote (neighborShapeChanged) : le bloc en (x,y,z) apprend que le voisin (nx,ny,nz) a change ; `direction` : indice de face
+  formeVoisinEn(direction, x, y, z, nx, ny, nz, drapeaux, limite) { this._ajouter({ k: 'forme', x, y, z, direction, nx, ny, nz, etatVoisin: this.monde.etatEn(nx, ny, nz), drapeaux, limite }); }
 
   _majFormesVoisines(x, y, z, drapeaux, limite) {
     // BlockStateBase.updateNeighbourShapes : chaque voisin recoit la mise a jour de forme du cote de la cellule
@@ -179,11 +207,15 @@ export class Simulation {
     this.stats.voisins++;
     if (m.k === 'multi') {
       const f = ORDRE_VOISINS[m.i++];
+      if (m.i < 6 && ORDRE_VOISINS[m.i] === m.sauf) m.i++;
       const nx = m.x + FACE_DX[f], ny = m.y + FACE_DY[f], nz = m.z + FACE_DZ[f];
       this._voisinChange(nx, ny, nz, m.bloc, m.x, m.y, m.z);
       return m.i < 6;
     }
+    if (m.k === 'simple') { this._voisinChange(m.x, m.y, m.z, m.bloc, m.x, m.y, m.z); return false; }
     // mise a jour de forme : le bloc en (x,y,z) apprend qu'un voisin (nx,ny,nz) a change
+    // UPDATE_SKIP_SHAPE_UPDATE_ON_WIRE : la poudre de redstone ne recoit pas la forme
+    if ((m.drapeaux & F.SANS_FORME_FIL) && this.redstone.estFil(this.monde.etatEn(m.x, m.y, m.z))) return false;
     const courant = this.monde.indiceEn(m.x, m.y, m.z);
     const nouveau = this._forme(m.x, m.y, m.z, m.direction, m.nx, m.ny, m.nz, m.etatVoisin);
     if (nouveau !== undefined && nouveau !== courant) this._majOuDetruire(m.x, m.y, m.z, courant, nouveau, m.drapeaux, m.limite);
@@ -198,14 +230,36 @@ export class Simulation {
     this.reg.lancerBloc('voisin', b, evenement({ pos: [x, y, z], etat: this.d.chaine(e), bloc: this.d.nomBloc(e), de: [sx, sy, sz], blocSource: blocSource >= 0 ? this.d.noms[blocSource] : '#hidden' }), this.api);
   }
   // BlockBehaviour.updateShape : indice de palette du nouvel etat, ou undefined (inchange)
-  _forme(x, y, z, direction, nx, ny, nz, etatVoisin) {
-    const e = this.monde.etatEn(x, y, z);
+  _forme(x, y, z, direction, nx, ny, nz, etatVoisin, eSur) {
+    const e = eSur ?? this.monde.etatEn(x, y, z);
     if (e < 0) return undefined;
     const b = this.d.blocDe(e);
     if (!this.reg.a('forme', b)) return undefined;
     const r = this.reg.lancerBloc('forme', b, evenement({ pos: [x, y, z], etat: this.d.chaine(e), bloc: this.d.nomBloc(e), direction: NOMS_FACES[direction], voisinPos: [nx, ny, nz], voisin: etatVoisin >= 0 ? this.d.chaine(etatVoisin) : '#hidden' }), this.api);
     if (r === undefined || r === null) return undefined;
     return this._indiceDe(r);
+  }
+  // Block.updateFromNeighbourShapes : l'etat `e0` pose en (x,y,z) apres les mises a jour de forme de ses 6 voisins (ordre du jeu). Rend un numero d'etat (air : le bloc disparait).
+  formeDepuisVoisins(x, y, z, e0) {
+    let e = e0;
+    const avant = this.surcharge;
+    try {
+      for (const f of ORDRE_FORMES) {
+        this.surcharge = { x, y, z, e };
+        const nx = x + FACE_DX[f], ny = y + FACE_DY[f], nz = z + FACE_DZ[f];
+        const r = this._forme(x, y, z, f, nx, ny, nz, this.monde.etatEn(nx, ny, nz), e);
+        if (r === undefined) continue;
+        const e2 = this.monde.tEtat[r];
+        if (e2 >= 0 && this.d.nomBloc(e2) === 'air') return e2;
+        e = e2;
+      }
+    } finally { this.surcharge = avant; }
+    return e;
+  }
+  // affectNeighborsAfterRemoval d'un etat qui n'est plus la (bloc detruit par un piston) : lance l'evenement `retire`
+  retirerEtat(x, y, z, e) {
+    const b = this.d.blocDe(e);
+    if (this.reg.a('retire', b)) this.reg.lancerBloc('retire', b, evenement({ pos: [x, y, z], etat: this.d.chaine(e), bloc: this.d.nomBloc(e), nouveau: 'minecraft:air', drapeaux: F.TOUS, deplace: false }), this.api);
   }
   // Block.updateOrDestroy
   _majOuDetruire(x, y, z, ancien, nouveau, drapeaux, limite) {
@@ -381,7 +435,18 @@ export class Simulation {
       feu: (nom) => { const b = s.d.idBloc(String(nom)); return b < 0 ? [0, 0] : s.d.feu(b); },
       allumer: (x, y, z, opt) => s.allumer(x | 0, y | 0, z | 0, opt),
       butin: (x, y, z, opt) => { const e = s.monde.etatEn(x | 0, y | 0, z | 0); return e < 0 ? [] : s.entites.lacher(x | 0, y | 0, z | 0, e, opt || {}); },
-      lacher: (objet, n, x, y, z) => { s.entites.objet(String(objet), Math.max(1, n | 0), +x, +y, +z); },
+      lacher: (objet, n, x, y, z, opt) => { s.entites.objet(String(objet), Math.max(1, n | 0), +x, +y, +z, opt || {}); },
+      // contenus des conteneurs (coffre, tonneau, entonnoir, dropper, distributeur)
+      contenuTaille: (x, y, z) => s.contenus.taille(x | 0, y | 0, z | 0),
+      contenuListe: (x, y, z) => { const l = s.contenus.lire(x | 0, y | 0, z | 0); return l ? l.map((e) => (e ? { item: e.item, n: e.n } : null)) : []; },
+      contenuAjouter: (x, y, z, item, n) => s.contenus.ajouter(x | 0, y | 0, z | 0, String(item).replace(/^minecraft:/, ''), n | 0),
+      contenuRetirer: (x, y, z, i, n) => s.contenus.retirer(x | 0, y | 0, z | 0, i | 0, n ?? 1),
+      contenuVide: (x, y, z) => s.contenus.vide(x | 0, y | 0, z | 0),
+      contenuPlein: (x, y, z) => s.contenus.plein(x | 0, y | 0, z | 0),
+      contenuVider: (x, y, z) => s.contenus.vider(x | 0, y | 0, z | 0),
+      contenuNotifie: (x, y, z) => { const b = s.blocIdx(x | 0, y | 0, z | 0); if (b >= 0) s.redstone.majSortieAnalogique(x | 0, y | 0, z | 0, b); },
+      entonnoirsInitiaux: () => s.contenus.entonnoirs(),
+      prendreObjets: (boite, fn) => s.entites.prendre(boite, fn),
       fluide: (x, y, z) => s.fluide(x | 0, y | 0, z | 0),
       courant: (x, y, z) => s.courant(x | 0, y | 0, z | 0),
       degats: (nom, quantite, source) => { const a = s.acteurs?.parNom.get(nom); return !!a && a.degats(Number(quantite), String(source || 'generique')); },
@@ -396,6 +461,19 @@ export class Simulation {
       regle: (nom, repli) => s.regles.valeur(nom, repli),
       hasard: { entier: (n) => s.hasard.entierBorne(n), reel: () => s.hasard.reel(), booleen: () => s.hasard.booleen(), flottant: () => s.hasard.flottant() },
       tick: () => s.temps,
+      ...s.redstone.api(),
+      formeDepuisVoisins: (x, y, z, etat) => { const id = typeof etat === 'number' ? etat : s.d.etatId(String(etat)); return id < 0 ? null : s.d.chaine(s.formeDepuisVoisins(x | 0, y | 0, z | 0, id)); },
+      retirerEtat: (x, y, z, etat) => { const id = typeof etat === 'number' ? etat : s.d.etatId(String(etat)); if (id >= 0) s.retirerEtat(x | 0, y | 0, z | 0, id); },
+      dansTick: () => s.enTick,
+      collisionDyn: (fn) => { s.collisionDyn = fn; },
+      etatId: (t) => s.d.etatId(String(t)),
+      boitesEtat: (t) => { const id = s.d.etatId(String(t)); return id < 0 ? [] : s.d.boites(id); },
+      formesIndirectes: (x, y, z, etat, drapeaux, limite) => { const id = typeof etat === 'number' ? etat : s.d.etatId(String(etat)); if (id >= 0) s.redstone.formesIndirectes(x | 0, y | 0, z | 0, id, drapeaux ?? 2, limite ?? 512); },
+      idEntite: () => s.entites.prochain++,
+      ecrireEntite: (id, type, x, y, z, a, etat) => { s.replay.entite(s.temps, id, String(type), x, y, z, a ?? 0, etat === undefined || etat === null ? -1 : s.monde.indicePalette(String(etat))); },
+      acteursListe: () => (s.acteurs ? s.acteurs.liste.map((a) => ({ nom: a.nom, boite: a.boite() })) : []),
+      deplacerActeur: (nom, dx, dy, dz) => { const a = s.acteurs?.parNom.get(nom); if (a) { a.x += dx; a.y += dy; a.z += dz; } return !!a; },
+      evenementBloc: (x, y, z, a, b) => s.evenementBloc(x | 0, y | 0, z | 0, a | 0, b | 0),
       dire: (t) => s.dire(t),
     };
     return api;
@@ -416,8 +494,12 @@ export class Simulation {
     if (this.reg.aMonde('debutTick')) this.reg.lancerMonde('debutTick', evenement({ tick: t }), this.api);
     this._commandes();
     // 2. ticks planifies de blocs
+    this.enTick = true;
     const dus = this.file.collecter(t, MAX_PAR_TICK);
+    this.enAttente.clear();
+    for (const x of dus) this.enAttente.add(this.file.cle(x.type, x.x, x.y, x.z));
     for (const x of dus) {
+      this.enAttente.delete(this.file.cle(x.type, x.x, x.y, x.z));
       const b = this.blocIdx(x.x, x.y, x.z);
       if (b !== x.type) continue;                 // le bloc a change entre-temps : le tick est ignore
       this.stats.ticks++;
@@ -435,12 +517,37 @@ export class Simulation {
     }
     // 3. ticks aleatoires dans la region active
     this._aleatoires();
+    this.enTick = false;
+    // 4. evenements de blocs (pistons, blocs musicaux, cloches) : ceux ajoutes pendant la boucle sont traites dans la meme phase
+    this._evenementsBlocs();
     // 5. entites : les acteurs (intentions, marche, interactions) ; leurs blocs touches (plaques) sont traites a la fin de leur deplacement
     if (this.acteurs) this.acteurs.tick();
     if (this.entites.liste.length) this.entites.tick();
+    // 6. blocs a entite qui changent des blocs (pistons en mouvement) : apres les entites
+    if (this.reg.aMonde('tickBlocsEntites')) this.reg.lancerMonde('tickBlocsEntites', evenement({ tick: t }), this.api);
     // 8. fin de tick
     if (this.reg.aMonde('finTick')) this.reg.lancerMonde('finTick', evenement({ tick: t }), this.api);
     this._ecrireReplay();
+  }
+
+  // ServerLevel.blockEvent : file dedoublonnee (meme position, bloc, a, b)
+  evenementBloc(x, y, z, a = 0, b = 0) {
+    const bloc = this.blocIdx(x, y, z);
+    if (bloc < 0) return false;
+    if (this.evBlocs.some((e) => e.x === x && e.y === y && e.z === z && e.bloc === bloc && e.a === a && e.b === b)) return false;
+    this.evBlocs.push({ x, y, z, bloc, a, b });
+    return true;
+  }
+  _evenementsBlocs() {
+    let garde = 0;
+    while (this.evBlocs.length) {
+      if (garde++ > 100000) { this.avertir("trop d'evenements de blocs dans un tick : coupe"); this.evBlocs.length = 0; break; }
+      const k = this.evBlocs.shift();
+      const e = this.monde.etatEn(k.x, k.y, k.z);
+      if (e < 0 || this.d.blocDe(e) !== k.bloc || !this.reg.a('declenche', k.bloc)) continue;
+      this.stats.evenements++;
+      this.reg.lancerBloc('declenche', k.bloc, evenement({ pos: [k.x, k.y, k.z], etat: this.d.chaine(e), bloc: this.d.nomBloc(e), a: k.a, b: k.b }), this.api);
+    }
   }
 
   _commandes() {
@@ -449,6 +556,7 @@ export class Simulation {
       const k = c[this.iCmd++];
       if (k.tipo === 'alimente') this.alimenter(k.x, k.y, k.z, !!k.bloc);
       else if (k.tipo === 'allume') this.allumer(k.x, k.y, k.z, {});
+      else if (k.tipo === 'frappe') this.evenementPerso('redstone.cible', { pos: [k.x, k.y, k.z], force: k.bloc, fleche: false });
       else if (k.tipo === 'explose') this.exploser(k.x + 0.5, k.y + 0.5, k.z + 0.5, { puissance: k.bloc });
       else this.poser(k.x, k.y, k.z, k.bloc, F.TOUS);
     }
@@ -507,7 +615,7 @@ export class Simulation {
     this.cmds = (cfg.blocs || []).map(([t, x, y, z, bloc], i) => ({ tick: Math.floor(t * 20 * ralenti + 1e-9), x, y, z, bloc, i })).sort((p, q) => p.tick - q.tick || p.i - q.i);
     // commandes `cmd` : [t, "alimente", x, y, z, vrai|faux] (signal direct sur un bloc : porte en fer, cloche, bloc musical...)
     // [t, "allume", x, y, z] : amorce un TNT ; [t, "explose", x, y, z, puissance] : explosion
-    for (const [t, verbe, x, y, z, v] of cfg.cmd || []) if (verbe === 'alimente' || verbe === 'allume' || verbe === 'explose') this.cmds.push({ tick: Math.floor(t * 20 * ralenti + 1e-9), x, y, z, bloc: v, tipo: verbe, i: this.cmds.length });
+    for (const [t, verbe, x, y, z, v] of cfg.cmd || []) if (verbe === 'alimente' || verbe === 'allume' || verbe === 'explose' || verbe === 'frappe') this.cmds.push({ tick: Math.floor(t * 20 * ralenti + 1e-9), x, y, z, bloc: v, tipo: verbe, i: this.cmds.length });
     this.cmds.sort((p, q) => p.tick - q.tick || p.i - q.i);
     this.iCmd = 0;
     this.region = this.cmds.map((c) => [c.x, c.y, c.z]);
@@ -515,6 +623,9 @@ export class Simulation {
     this.aTickAleatoire = this.reg.entrees.some((e) => e.genre === 'bloc' && e.evt === 'tickAleatoire');
     this._calculerRegion();
     this.reg.figer();
+    this.redstone.hookSignal = this.reg.aMonde('redstone.signal');
+    this.contenus.initial(cfg.contenus);
+    this.redstone.amorcer();
     return n;
   }
 

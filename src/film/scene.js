@@ -278,7 +278,7 @@ export function validerScene(s) {
 }
 
 // ---------------------------------------------------------------- monde (simulation)
-export const MONDE_CLES = ['graine', 'regles', 'mods', 'blocs', 'cmd', 'lumiere', 'moteur'];
+export const MONDE_CLES = ['graine', 'regles', 'mods', 'blocs', 'cmd', 'lumiere', 'moteur', 'contenus'];
 export const MAX_BLOCS_MONDE = 2000, MAX_MODS = 8;
 const MOTEUR_ECRITURE = 1;   // version du moteur de simulation (moteur/simulation.js : MOTEUR)
 
@@ -310,16 +310,28 @@ function lireMonde(m, duree) {
       return [b[0], b[1], b[2], b[3], b[4]];
     });
   }
+  if (m.contenus !== undefined) {   // contenu de depart des conteneurs : [[x, y, z, "objet", nombre], ...] (coffre, tonneau, entonnoir, dropper, distributeur)
+    if (!Array.isArray(m.contenus) || m.contenus.length > 500) err('monde.contenus', 'liste [[x, y, z, "diamond", 12], ...] attendue (500 lignes au plus)');
+    o.contenus = m.contenus.map((k, i) => {
+      const c = `monde.contenus[${i}]`;
+      if (!Array.isArray(k) || k.length !== 5) err(c, 'forme attendue : [x, y, z, "objet", nombre]');
+      for (let j = 0; j <= 2; j++) if (!Number.isInteger(k[j]) || Math.abs(k[j]) > 30000000) err(`${c}[${j}]`, 'entier attendu (coordonnee du conteneur)');
+      if (typeof k[3] !== 'string' || !/^(minecraft:)?[a-z0-9_]+$/.test(k[3])) err(`${c}[3]`, "nom d'objet attendu, par exemple 'diamond'");
+      if (!Number.isInteger(k[4]) || k[4] < 1 || k[4] > 1728) err(`${c}[4]`, 'nombre entier de 1 a 1728 attendu');
+      return k.slice();
+    });
+  }
   if (m.cmd !== undefined) {   // commandes datees : [t, "alimente", x, y, z, vrai|faux] (signal direct sur un bloc : porte en fer, cloche, bloc musical)
     if (!Array.isArray(m.cmd) || m.cmd.length > MAX_BLOCS_MONDE) err('monde.cmd', 'liste [[t, "alimente", x, y, z, true], ...] attendue');
     o.cmd = m.cmd.map((k, i) => {
       const c = `monde.cmd[${i}]`;
       const attendu = k && k[1] === 'allume' ? 5 : 6;
-      if (!Array.isArray(k) || k.length !== attendu || !['alimente', 'allume', 'explose'].includes(k[1])) err(c, 'forme attendue : [t, "alimente", x, y, z, true|false], [t, "allume", x, y, z] (TNT) ou [t, "explose", x, y, z, puissance]');
+      if (!Array.isArray(k) || k.length !== attendu || !['alimente', 'allume', 'explose', 'frappe'].includes(k[1])) err(c, 'forme attendue : [t, "alimente", x, y, z, true|false], [t, "allume", x, y, z] (TNT), [t, "explose", x, y, z, puissance] ou [t, "frappe", x, y, z, force] (bloc cible)');
       if (!estNombre(k[0]) || k[0] < 0 || k[0] > duree) err(`${c}[0]`, `temps entre 0 et ${duree} secondes attendu`);
       for (let j = 2; j <= 4; j++) if (!Number.isInteger(k[j]) || Math.abs(k[j]) > 30000000) err(`${c}[${j}]`, 'entier attendu (coordonnee de bloc)');
       if (k[1] === 'alimente' && typeof k[5] !== 'boolean') err(`${c}[5]`, 'true ou false attendu');
       if (k[1] === 'explose' && !(estNombre(k[5]) && k[5] >= 0 && k[5] <= 64)) err(`${c}[5]`, 'puissance de 0 a 64 attendue');
+      if (k[1] === 'frappe' && !(Number.isInteger(k[5]) && k[5] >= 1 && k[5] <= 15)) err(`${c}[5]`, 'force de 1 a 15 attendue (le bloc cible donne 15 au centre de la face)');
       return k.slice();
     });
   }

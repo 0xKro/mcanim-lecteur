@@ -61,7 +61,9 @@ export class Hote {
       if (this.tampon.length < i + 1 + n) { this.besoin = i + 1 + n; return; }   // on attend tout le corps avant de recoller (une seule copie)
       if (rep.ts) rep.transfert_ms = Date.now() - rep.ts;
       rep.donnees = n ? this.tampon.subarray(i + 1, i + 1 + n) : null;     // pas de copie : le tampon n'est jamais modifie ensuite
-      if (n && rep.masque) { rep.force = rep.donnees.subarray(n - rep.masque); rep.donnees = rep.donnees.subarray(0, n - rep.masque); }
+      // corps = RGBA, puis (facultatifs) la force d'exemption (1 octet par pixel), puis la profondeur (flottants 32 bits)
+      if (n && rep.profondeur) { rep.profBrut = rep.donnees.subarray(n - rep.profondeur); rep.donnees = rep.donnees.subarray(0, n - rep.profondeur); }
+      if (n && rep.masque) { rep.force = rep.donnees.subarray(rep.donnees.length - rep.masque); rep.donnees = rep.donnees.subarray(0, rep.donnees.length - rep.masque); }
       this.tampon = this.tampon.subarray(i + 1 + n);
       this.besoin = 0;
       this.attentes.shift().resoudre(rep);

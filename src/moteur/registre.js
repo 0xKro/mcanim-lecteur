@@ -9,10 +9,10 @@
 import { ErreurMonde } from './erreurs.js';
 import { voulaisTu } from './util.js';
 
-export const EVENEMENTS_BLOC = ['tick', 'tickAleatoire', 'voisin', 'forme', 'survit', 'pose', 'retire', 'utilise', 'casse', 'butin', 'entre', 'marcheSur', 'tombeSur', 'signal', 'collision', 'explosion', 'allume', 'alimente', 'etatPose'];
+export const EVENEMENTS_BLOC = ['tick', 'tickAleatoire', 'voisin', 'forme', 'survit', 'pose', 'retire', 'utilise', 'casse', 'butin', 'entre', 'marcheSur', 'tombeSur', 'signal', 'collision', 'explosion', 'allume', 'alimente', 'etatPose', 'declenche'];
 export const EVENEMENTS_ENTITE = ['cree', 'tick', 'degats', 'meurt', 'butin', 'cible', 'attaque', 'utilise', 'meche'];
-export const EVENEMENTS_MONDE = ['debutTick', 'finTick', 'avantExplosion', 'apresExplosion', 'fluide'];
-export const EVENEMENTS_VALEUR = new Set(['forme', 'survit', 'signal', 'collision', 'utilise', 'cible', 'etatPose']);   // rendent une valeur
+export const EVENEMENTS_MONDE = ['debutTick', 'finTick', 'avantExplosion', 'apresExplosion', 'fluide', 'tickBlocsEntites'];
+export const EVENEMENTS_VALEUR = new Set(['forme', 'survit', 'signal', 'collision', 'utilise', 'cible', 'etatPose', 'declenche']);   // rendent une valeur
 const NOM_PERSO = /^[a-z][A-Za-z0-9_]*\.[A-Za-z0-9_.]+$/;   // evenement du mod : "famille.nom"
 
 class Cible {

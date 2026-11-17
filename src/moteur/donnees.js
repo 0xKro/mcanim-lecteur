@@ -45,13 +45,13 @@ export class Donnees {
     this.dureteE = new Float32Array(a); this.resistanceE = new Float32Array(a); this.frictionE = new Float32Array(a);
     this.formeE = new Int16Array(a); this.sonE = new Uint8Array(a); this.solideE = new Uint32Array(a);
     this.faibleE = new Uint32Array(a); this.fortE = new Uint32Array(a); this.fluideE = new Uint8Array(a); this.pousseeE = new Uint8Array(a);
-    this.niveauFluideE = new Uint8Array(a); this.instrumentE = new Uint8Array(a);
+    this.niveauFluideE = new Uint8Array(a); this.instrumentE = new Uint8Array(a); this.jeuE = new Uint8Array(a);   // jeuE : drapeaux du jeu (bit 0 plein, 1 air, 2 conduit la redstone, 3 source de signal, 4 sortie analogique)
     for (let i = 0; i < a; i++) {
       const l = L[idx[i]];
       this.emissionE[i] = l[c.emission]; this.opaciteE[i] = l[c.opacite]; this.drapeauxE[i] = l[c.drapeaux];
       this.dureteE[i] = l[c.durete]; this.resistanceE[i] = l[c.resistance]; this.frictionE[i] = l[c.friction];
       this.formeE[i] = l[c.forme]; this.sonE[i] = l[c.son]; this.solideE[i] = l[c.solide]; this.faibleE[i] = l[c.faible]; this.fortE[i] = l[c.fort];
-      this.instrumentE[i] = l[c.instrument]; this.fluideE[i] = l[c.fluide]; this.niveauFluideE[i] = l[c.niveauFluide]; this.pousseeE[i] = l[c.poussee];
+      this.instrumentE[i] = l[c.instrument]; this.jeuE[i] = l[c.drapeauxJeu]; this.fluideE[i] = l[c.fluide]; this.niveauFluideE[i] = l[c.niveauFluide]; this.pousseeE[i] = l[c.poussee];
     }
     this._etiq = new Map();
     this.air = this.etatId('air');
@@ -136,6 +136,11 @@ export class Donnees {
   boites(id) { const f = this.formeE[id]; return f < 0 ? [] : this.j.formes[f]; }
   // appui sur une face : 0 bas, 1 haut, 2 nord, 3 sud, 4 ouest, 5 est ; type 0 = face pleine, 1 = centre seulement, 2 = rigide (3 jeux de 6 bits)
   solideFace(id, face, type = 0) { return (this.solideE[id] & (1 << (type * 6 + face))) !== 0; }
+  // drapeaux du jeu (BlockStateBase) : conduit la redstone (`isRedstoneConductor`), est une source de signal, a une sortie analogique (comparateur)
+  conducteur(id) { return (this.jeuE[id] & 4) !== 0; }
+  sourceSignal(id) { return (this.jeuE[id] & 8) !== 0; }
+  sortieAnalogique(id) { return (this.jeuE[id] & 16) !== 0; }
+  esAir(id) { return (this.jeuE[id] & 2) !== 0; }
   signalFaible(id) { return this.faibleE[id]; }
   signalFort(id) { return this.fortE[id]; }
   fluide(id) { return this.fluideE[id]; }                         // 0 aucun, 1 eau qui coule, 2 eau, 3 lave qui coule, 4 lave

@@ -10,6 +10,7 @@ const CUBE = [[0, 0, 0, 1, 1, 1]];
 export function boitesLocales(lec, x, y, z) {
   const e = lec.etatEn(x, y, z);
   if (e < 0) return CUBE;
+  if (lec.dyn) { const r = lec.dyn(e, x, y, z); if (r) return r; }   // forme qui change (bloc en mouvement d'un piston)
   return lec.d.boites(e);
 }
 

@@ -41,6 +41,16 @@ export function installer(mc, regles) {
       monde.poser(x, y, z, avec(b, { powered: vrai ? 'true' : 'false', open: vrai ? 'true' : 'false' }), 2);
     }
   });
+  // DoorBlock.neighborChanged : un signal sur l'une des deux moities ouvre la porte ; seul le bloc qui n'est pas la porte elle-meme change (changed != this)
+  mc.bloc('DoorBlock').sur('voisin', (ev, monde) => {
+    const [x, y, z] = ev.pos, b = monde.bloc(x, y, z);
+    const autre = b.etat.half === 'lower' ? 1 : -1;
+    const signal = monde.aSignalVoisin(x, y, z) || monde.aSignalVoisin(x, y + autre, z);
+    if (ev.blocSource !== court(b.nom) && signal !== (b.etat.powered === 'true')) {
+      if (signal !== (b.etat.open === 'true')) sonPorte(monde, ev.pos, b, signal);
+      monde.poser(x, y, z, avec(b, { powered: String(signal), open: String(signal) }), 2);
+    }
+  });
   // DoorBlock.updateShape : la moitie voisine recopie l'etat ; sans moitie, la porte disparait
   mc.bloc('DoorBlock').sur('forme', (ev, monde) => {
     const b = monde.bloc(...ev.pos), half = b.etat.half, dir = ev.direction;
@@ -81,6 +91,15 @@ export function installer(mc, regles) {
     }
   });
 
+  mc.bloc('TrapDoorBlock').sur('voisin', (ev, monde) => {
+    const [x, y, z] = ev.pos, b = monde.bloc(x, y, z), signal = monde.aSignalVoisin(x, y, z);
+    if (signal === (b.etat.powered === 'true')) return;
+    const modifs = { powered: String(signal) };
+    if ((b.etat.open === 'true') !== signal) { modifs.open = String(signal); sonTrappe(monde, ev.pos, b, signal); }
+    monde.poser(x, y, z, avec(b, modifs), 2);
+    if (b.etat.waterlogged === 'true') monde.planifierFluide(x, y, z, 5);
+  });
+
   // ---------------------------------------------------------------- portillons (FenceGateBlock)
   mc.bloc('FenceGateBlock').sur('utilise', (ev, monde) => {
     const [x, y, z] = ev.pos, b = monde.bloc(x, y, z);
@@ -108,6 +127,12 @@ export function installer(mc, regles) {
       if (vrai !== (b.etat.open === 'true')) { const t = typeDe(monde, b); const s = vrai ? t?.fenceGateOpen : t?.fenceGateClose; if (s) monde.son(s, x + 0.5, y + 0.5, z + 0.5, 1, hauteurSon(monde)); }
       monde.poser(x, y, z, avec(b, { powered: vrai ? 'true' : 'false', open: vrai ? 'true' : 'false' }), 2);
     }
+  });
+  mc.bloc('FenceGateBlock').sur('voisin', (ev, monde) => {
+    const [x, y, z] = ev.pos, b = monde.bloc(x, y, z), signal = monde.aSignalVoisin(x, y, z);
+    if (signal === (b.etat.powered === 'true')) return;
+    monde.poser(x, y, z, avec(b, { powered: String(signal), open: String(signal) }), 2);
+    if ((b.etat.open === 'true') !== signal) { const t = typeDe(monde, b); const s2 = signal ? t?.fenceGateOpen : t?.fenceGateClose; if (s2) monde.son(s2, x + 0.5, y + 0.5, z + 0.5, 1, hauteurSon(monde)); }
   });
   // FenceGateBlock.updateShape : in_wall suit les murs voisins sur les cotes du portillon
   mc.bloc('FenceGateBlock').sur('forme', (ev, monde) => {

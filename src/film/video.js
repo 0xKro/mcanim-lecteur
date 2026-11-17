@@ -8,6 +8,7 @@ import { encoderPNG } from '../rendu/png.js';
 import { animer } from './anim.js';
 import { terrainDepuis } from './physique.js';
 import { descripteursActeurs } from './actes.js';   // acteurs a intentions (champ `actes`) pour la simulation
+import { evaluer } from './scene.js';
 import { imageEn, cielEn } from './look.js';
 import { Personnage } from '../perso/modele.js';
 import { resoudreSkin } from '../perso/skin.js';
@@ -62,7 +63,9 @@ export async function simulerScene({ scene, zonePath, baseDir, env = process.env
   // decors de la scene (docs/FORMAT-DECOR.md) : appliques a une copie de la zone AVANT la simulation et le maillage ; rien sans champ `decor`
   let notesDecor = [];
   if (scene.decor) { const r0 = await (await import('../decor/index.js')).zoneAvecDecor({ zone, scene, baseDir, donnees }); zone = r0.zone; notesDecor = r0.notes; }
-  const r = simuler({ zone, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene), baseDir, duree: scene.duree });
+  const hp = scene.ciel?.heure;   // l'heure du jour de la scene : lue par le detecteur de lumiere du jour
+  const heure = hp ? (t) => evaluer(hp, t)[0] : undefined;
+  const r = simuler({ zone, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene), baseDir, duree: scene.duree, options: { heure } });
   return { zone, donnees, replay: r.replay, rapport: r.rapport, notes: [...notesDecor, ...r.replay.avertissements.map((a) => 'monde : ' + a)], secondes: (performance.now() - t0) / 1000 };
 }
 
@@ -153,7 +156,7 @@ export async function preparerFilmReel({ scene, zonePath, kitDir, surcharges, ba
       log(`chauffe : ${n} images avant la premiere image du film`);
     }
     // montage (facultatif) : effets d'image, transitions et incrustations sont appliques sur les images RGBA rendues par l'hote (pas de profondeur : la
-    // profondeur de champ est ignoree, dit en note ; une carte avec acteurs devient un fond uni)
+    // profondeur de champ vient de depthtex0 de l'hote ; une carte avec acteurs devient un fond uni)
     const comp = await creerComposition({ scene, kit: film.kit, baseDir, rs: film.rs, anim: film.anim, gpu: true });
     if (comp) {
       const brut = film.dessiner;
@@ -166,7 +169,7 @@ export async function preparerFilmReel({ scene, zonePath, kitDir, surcharges, ba
         if (carteBrute && !carte) {   // fondu du fond de la carte : le monde rendu par l'hote, puis le fond melange par-dessus
           rgba = await brut(i, opts);
           melangerCouleur(rgba, carteBrute.fond, uFond);
-          comp.finaliser(i, rgba, opts.largeur ?? scene.largeur, opts.hauteur ?? scene.hauteur, null, { el: carteBrute, im });
+          comp.finaliser(i, rgba, opts.largeur ?? scene.largeur, opts.hauteur ?? scene.hauteur, im.champ ? brut.profondeur ?? null : null, { el: carteBrute, im });
           return rgba;
         }
         if (carte) {
@@ -177,7 +180,8 @@ export async function preparerFilmReel({ scene, zonePath, kitDir, surcharges, ba
           return rgba;
         }
         rgba = await brut(i, opts);
-        comp.finaliser(i, rgba, opts.largeur ?? scene.largeur, opts.hauteur ?? scene.hauteur, null, null);
+        // profondeur de champ : l'hote a rendu depthtex0 (src/pack/film.js, profondeurDeChamp), meme format que le tampon du rasteriseur
+        comp.finaliser(i, rgba, opts.largeur ?? scene.largeur, opts.hauteur ?? scene.hauteur, im.champ ? brut.profondeur ?? null : null, null);
         return rgba;
       };
       film.notes.push(...comp.notes);

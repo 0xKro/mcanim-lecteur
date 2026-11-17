@@ -17,7 +17,7 @@ const COTE_OBJET = 0.25;
 export class Entites {
   constructor(sim) {
     this.sim = sim; this.liste = []; this.prochain = 0;
-    this.lec = { d: sim.d, etatEn: (x, y, z) => sim.monde.etatEn(x, y, z) };
+    this.lec = { d: sim.d, etatEn: (x, y, z) => sim.monde.etatEn(x, y, z), dyn: (e, x, y, z) => sim.formeDyn(e, x, y, z) };
   }
   get actives() { return this.liste.length; }
 
@@ -134,6 +134,20 @@ export class Entites {
       s.stats.ramasses = (s.stats.ramasses || 0) + e.n;
       s.api.evenement('acteur.ramasse', { acteur: a.nom, objet: e.item, nombre: e.n });
     }
+  }
+
+  // Un entonnoir aspire les objets au sol dans `boite` [x1,y1,z1,x2,y2,z2] : fn(objet) rend ce qui n'a pas pu entrer ; rend vrai si quelque chose est entre
+  prendre(boite, fn) {
+    let pris = false;
+    for (const e of this.liste) {
+      if (e.type !== 'objet' || e.pris || (this._fini && this._fini.has(e))) continue;
+      if (e.x < boite[0] || e.x > boite[3] || e.y + COTE_OBJET < boite[1] || e.y > boite[4] || e.z < boite[2] || e.z > boite[5]) continue;
+      const reste = fn(e);
+      if (reste < e.n) { pris = true; e.n = reste; }
+      if (reste <= 0) { e.age = 1e9; e.pris = null; e.n = 0; }
+    }
+    if (pris) this.liste = this.liste.filter((e) => !(e.type === 'objet' && e.n <= 0));
+    return pris;
   }
 
   tick() {

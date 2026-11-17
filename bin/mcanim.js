@@ -68,6 +68,7 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   mcanim objets --cherche <mot>       identifiants d'objets du jeu (20 au plus) pour les champs objet / objetG ; --armures : materiaux du champ armure
   mcanim simuler <scene.json>         simule le jeu (champ monde : blocs poses, regles, mods) AVANT de payer le rendu ; gratuit, resume court (blocs changes, avertissements)
   (acteur.actes [[t,"verbe",..]] : un joueur SIMULE par le jeu : va x z | regarde | saute | accroupi | tient "objet" | attends s | utilise x y z (porte, bouton, levier, coffre, cloche...) | pose x y z "bloc" | casse x y z ; options {va, ouvrePortes, duree, max} ; portee 4.5 ; mcanim simuler dit les echecs ; fiches actions, blocs_interactifs, casser_poser)
+  (redstone et pistons comme le jeu : levier, bouton, plaque, poudre (15, -1 par bloc), torche (2 ticks, grille), repeteur (2 a 8 ticks), comparateur, observateur (2 ticks), lampe, pistons (12 blocs, collant, slime), entonnoir, dropper ; monde.contenus [[x,y,z,"objet",n]] ; monde.cmd [t,"frappe",x,y,z,force] ; regles redstone.* pistons.* contenus.* ; fiches redstone, pistons)
   mcanim regles --liste [famille]     parametres du jeu que monde.regles peut changer (nom = defaut [plage] explication) ; --familles : les familles
   mcanim mods verifier <fichier.js>   charge un mod de monde.mods dans le bac a sable et signale l'erreur en une ligne
   mcanim decor verifier|apercu|executer|module ...   DECORS : faire construire sur le terrain (maisons, ponts, tours, aplanir) ; champ de scene decor ["maison.decor.json"] ; verifier = rapport de 15 lignes, apercu = petite image ; gratuits ; fiches decor_bases, decor_operations, decor_terrain, decor_maison
@@ -79,7 +80,7 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   acteur : fige [[debut,fin]] (cet acteur seul s'arrete, pose tenue ; les autres continuent) figeSauf ["tete",...] (pistes qui continuent) ; boucle : phase0 (0..1, demarre a cette phase) ; sons : {pas, volume 0..4, liste [[t,"son",volume,cible]]} cible {"acteur":"nom"} ou [x,y,z]
   montage (facultatif, 1 a 180 s, fichier 64 Ko max) : plans [{de,a,camera,transition,vitesse,arret,image}] (une camera par plan, coupes) ; sousTitres {texte,debut,fin|mots,par,couleurs} et textes [[debut,fin,"texte"]] ;
   incrustations [{type: texte compteur fleche ligne icone equation coeurs faim horloge nom bulle chat succes inventaire hud carte image, t:[debut,fin], ecran|monde|acteur}] ; camera : roulis secousse coupZoom flouFile flouRadial profondeurChamp ; sons.fichiers [[t,"voix.mp3",volume,{voix,sousVoix,fondu,boucle}]] (fiches du site)
-  champs de scene facultatifs : monde {graine, regles, mods, blocs [[t,x,y,z,"bloc"]], lumiere} (simulation du jeu ; lumiere des blocs), image, ciel, gel, textures, shader, packShader (pack .zip, chemin relatif a la scene) ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui, objet objetG [t,"id"|null] (objet tenu en main droite / gauche ; mcanim objets --cherche mot), armure {tete,torse,jambes,pieds} (fiches du site)
+  champs de scene facultatifs : monde {graine, regles, mods, blocs [[t,x,y,z,"bloc"]], cmd, contenus, lumiere} (simulation du jeu ; lumiere des blocs), image, ciel, gel, textures, shader, packShader (pack .zip, chemin relatif a la scene) ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui, objet objetG [t,"id"|null] (objet tenu en main droite / gauche ; mcanim objets --cherche mot), armure {tete,torse,jambes,pieds} (fiches du site)
   hauteur automatique (physique du jeu : saut 0.42, gravite 0.08, pas de 0.6, chute, eau, echelle) a partir de pos [t,x,z] ; acteur : bascule [t,deg] roulis [t,deg]
   (corps entier autour des hanches, 90 = a plat) hauteur [t,blocs] (decalage vertical) reactions:false (coupe les reactions automatiques du corps)
   membres libres : brasD brasG jambeD jambeG [t,avant,cote,torsion] (cote < 0 : croise le corps ; torsion > 0 : rotation interne), tete [t,lacet,tangage,roulis],
@@ -461,7 +462,9 @@ async function commandeSimuler(argv) {
   try {
     let zoneS = lireZone(zone.chemin);
     if (scene.decor) { const { zoneAvecDecor } = await import('../src/decor/index.js'); const r0 = await zoneAvecDecor({ zone: zoneS, scene, baseDir, donnees }); zoneS = r0.zone; r0.notes.forEach(dire); }
-    const r = simuler({ zone: zoneS, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene), baseDir, duree: scene.duree });
+    const hp = scene.ciel?.heure;
+    const { evaluer } = await import('../src/film/scene.js');
+    const r = simuler({ zone: zoneS, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene), baseDir, duree: scene.duree, options: { heure: hp ? (t) => evaluer(hp, t)[0] : undefined } });
     dire(r.rapport);
   } catch (e) { if (e instanceof ErreurMonde) throw new Usage(e.message); throw e; }
 }

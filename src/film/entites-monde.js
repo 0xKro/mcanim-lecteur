@@ -2,6 +2,7 @@
 //   - TNT amorce : le bloc TNT (1 bloc de cote), qui clignote en BLANC quand meche / 5 est pair (TntRenderer : face blanche pleine) et gonfle
 //     pendant les 10 derniers ticks : echelle 1 + 0,3 x (1 - (meche + 1 - partiel) / 10)^4
 //   - bloc qui tombe (sable, gravier, enclume, beton en poudre) : son vrai modele de bloc (enclume orientee, par exemple), pas un cube
+//   - bloc en mouvement d'un piston (type `piston`) : le modele de l'etat deplace (ou la tete du piston), a la position interpolee entre deux ticks
 //   - objet au sol (ItemEntity) : le modele d'objet du jeu (plat extrude ou bloc) avec l'affichage `ground`, qui tourne (age / 20 + decalage) et flotte
 //     (sin(age / 10 + decalage) x 0,1 + 0,1), 1 a 5 copies selon le nombre ; reutilise le rendu des objets tenus (src/objets)
 import { resoudreObjet } from '../objets/definition.js';
@@ -19,7 +20,7 @@ class Mailleur {
     this.idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
   }
   vide() { return this.idx.length === 0; }
-  maillage(texture) { return { positions: Float32Array.from(this.pos), uvs: Float32Array.from(this.uv), couleurs: Float32Array.from(this.col), indices: Uint32Array.from(this.idx), texture, mode: 'decoupe', deuxFaces: true }; }
+  maillage(texture, genre) { return { genre, positions: Float32Array.from(this.pos), uvs: Float32Array.from(this.uv), couleurs: Float32Array.from(this.col), indices: Uint32Array.from(this.idx), texture, mode: 'decoupe', deuxFaces: true }; }
 }
 
 // hasard deterministe d'une entite (decalage de rotation, copies d'une pile) : pas de Math.random
@@ -100,7 +101,7 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
   return {
     maillages(u) {
       const tick = Math.floor(u), f = u - tick, parTex = new Map();
-      const M = (cle, texture) => { if (!parTex.has(cle)) parTex.set(cle, { texture, m: new Mailleur() }); return parTex.get(cle).m; };
+      const M = (cle, texture, genre) => { if (!parTex.has(cle)) parTex.set(cle, { texture, genre, m: new Mailleur() }); return parTex.get(cle).m; };
       for (const lignes of parId.values()) {
         const t0 = E[lignes[0]], k = tick - t0;
         if (k < 0 || k >= lignes.length) continue;
@@ -122,14 +123,14 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
           for (let i = 0; i < 6; i++) {
             const nom = fl ? 'blanc|' + noms[i] : noms[i], tex = fl ? texBlanche(noms[i]) : texOf(noms[i] + '.png');
             if (!tex) continue;
-            M(nom, tex).quad(F[i].map((p) => [x + p[0], cy + p[1], z + p[2]]), [[0, 0], [1, 0], [1, 1], [0, 1]], fl ? 1 : ombre[i] * L);
+            M(nom, tex, 'tnt').quad(F[i].map((p) => [x + p[0], cy + p[1], z + p[2]]), [[0, 0], [1, 0], [1, 1], [0, 1]], fl ? 1 : ombre[i] * L);
           }
-        } else if (type === 'chute') {
+        } else if (type === 'chute' || (type === 'piston' && k < lignes.length - 1)) {   // bloc en mouvement d'un piston : meme dessin ; le dernier enregistrement est celui du tick ou le vrai bloc est pose
           const L = lum(x, y + 0.5, z);
           for (const q of quadsBloc(E[a + 7])) {
             const tex = textureDe(q.tex, null);
             if (!tex) continue;
-            M('b|' + q.tex, tex).quad(q.p.map((p) => [x + p[0] - 0.5, y + p[1], z + p[2] - 0.5]), q.uv, q.ombre * L);
+            M('b|' + q.tex, tex, 'chute').quad(q.p.map((p) => [x + p[0] - 0.5, y + p[1], z + p[2] - 0.5]), q.uv, q.ombre * L);
           }
         } else if (type === 'objet') {
           const nom = replay.noms[E[a + 7]], N = E[a + 6], modele = quadsObjet(nom);
@@ -147,13 +148,13 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
               const A = P[0], B = P[1], C = P[2], ux = B[0] - A[0], uy = B[1] - A[1], uz = B[2] - A[2], wx = C[0] - A[0], wy = C[1] - A[1], wz = C[2] - A[2];
               const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx, l = Math.hypot(nx, ny, nz) || 1;
               const ombre = 0.75 + 0.25 * Math.abs(ny / l);       // eclairage plat des objets : le dessus un peu plus clair
-              M('o|' + q.tex + '|' + (q.tint ?? ''), tex).quad(P, q.uv, ombre * L);
+              M('o|' + q.tex + '|' + (q.tint ?? ''), tex, 'objet').quad(P, q.uv, ombre * L);
             }
           }
         }
       }
       const out = [];
-      for (const { texture, m } of parTex.values()) if (!m.vide()) out.push(m.maillage(texture));
+      for (const { texture, genre, m } of parTex.values()) if (!m.vide()) out.push(m.maillage(texture, genre));
       return out;
     },
   };

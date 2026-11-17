@@ -104,6 +104,14 @@ export function installer(mc, regles) {
     monde.poser(x, y, z, avec(b, { powered: vrai ? 'true' : 'false' }), 3);
   });
 
+  // BellBlock.neighborChanged : un signal fait sonner la cloche (une fois par front montant)
+  mc.bloc('BellBlock').sur('voisin', (ev, monde) => {
+    const [x, y, z] = ev.pos, b = monde.bloc(x, y, z), signal = monde.aSignalVoisin(x, y, z);
+    if (signal === (b.etat.powered === 'true')) return;
+    if (signal) sonner(monde, ev.pos, b.etat.facing);
+    monde.poser(x, y, z, avec(b, { powered: signal ? 'true' : 'false' }), 3);
+  });
+
   // ---------------------------------------------------------------- bloc musical (NoteBlock)
   const jouerNote = (monde, pos, b) => {
     const [x, y, z] = pos, inst = b.etat.instrument, note = Number(b.etat.note);
@@ -125,6 +133,13 @@ export function installer(mc, regles) {
     if (vrai === (b.etat.powered === 'true')) return;
     if (vrai) jouerNote(monde, ev.pos, b);
     monde.poser(x, y, z, avec(b, { powered: vrai ? 'true' : 'false' }), 3);
+  });
+  // NoteBlock.neighborChanged : un signal joue la note (front montant)
+  mc.bloc('NoteBlock').sur('voisin', (ev, monde) => {
+    const [x, y, z] = ev.pos, b = monde.bloc(x, y, z), signal = monde.aSignalVoisin(x, y, z);
+    if (signal === (b.etat.powered === 'true')) return;
+    if (signal) jouerNote(monde, ev.pos, b);
+    monde.poser(x, y, z, avec(b, { powered: signal ? 'true' : 'false' }), 3);
   });
   // NoteBlock.updateShape : l'instrument suit le bloc du dessous
   mc.bloc('NoteBlock').sur('forme', (ev, monde) => {

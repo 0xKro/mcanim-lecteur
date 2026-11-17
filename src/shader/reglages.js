@@ -107,7 +107,7 @@ export function nonGere(reglages) {
   if (tout(/(^|\/)dh_[a-z_]+\.(fsh|vsh)$/i)) manque.push('Distant Horizons');
   if (tout(/gbuffers_weather\.(fsh|vsh)$/i)) manque.push('pluie et neige');
   if (tout(/gbuffers_(hand|hand_water)\.(fsh|vsh)$/i)) manque.push('main du joueur');
-  if (tout(/gbuffers_(beaconbeam|damagedblock|armor_glint|spidereyes)\.(fsh|vsh)$/i)) manque.push('faisceaux, casse de bloc, brillance d\'armure, yeux');
+  if (tout(/gbuffers_(beaconbeam|armor_glint|spidereyes)\.(fsh|vsh)$/i)) manque.push('faisceaux, brillance d\'armure, yeux');
   manque.push('relief et reflets labPBR (normales et speculaire plates)', 'biomes (un seul biome fixe)', 'meteo (toujours beau temps)');
   return manque;
 }

@@ -221,6 +221,7 @@ function construire(el, ctx) {
     case 'chat': return imageChat(ctx, el);
     case 'succes': return imageSucces(ctx, el);
     case 'inventaire': return imageInventaire(ctx, el);
+    case 'coffre': return imageCoffre(ctx, el);
     case 'hud': return imageHud(ctx, el);
     default: return null;
   }
@@ -348,6 +349,29 @@ function imageInventaire(ctx, el) {
   return { img: o, boite: { x: 0, y: 0, w: o.w, h: o.h } };
 }
 
+// Ecran d'un conteneur (coffre) : le fond du jeu (container/generic_54.png : titre, rangees de cases), le titre en gris sombre sans ombre, les icones avec leur nombre.
+// Le jeu ne montre pas le contenu d'un coffre ouvert dans le monde : c'est CET ecran que le joueur voit. Sans "joueur", on garde le haut du panneau et son bord du bas.
+function imageCoffre(ctx, el) {
+  const rows = el.rangees, E = ((el.taille ?? 0.8) * ctx.U) / 176, Sg = Math.max(1, Math.round(E));
+  const hTop = rows * 18 + 17, hBas = el.joueur ? 96 : 7;
+  const w = Math.round(176 * E), hT = Math.round(hTop * E), h = Math.round((hTop + hBas) * E);
+  const o = creerImage(w, h);
+  const tex = textureGui(ctx.kit, 'container/generic_54');
+  if (tex) {
+    composer(o, redimensionner(decouper(tex, 0, 0, 176, hTop), w, hT, 'proche'), 0, 0);
+    composer(o, redimensionner(decouper(tex, 0, el.joueur ? 126 : 215, 176, hBas), w, h - hT, 'proche'), 0, hT);
+  } else {   // texture absente du kit : panneau gris et cases creuses
+    const remplir = (x0, y0, x1, y1, c) => { for (let y = Math.round(y0 * E); y < Math.round(y1 * E); y++) for (let x = Math.round(x0 * E); x < Math.round(x1 * E); x++) { const i = (y * w + x) * 4; o.px[i] = c[0]; o.px[i + 1] = c[1]; o.px[i + 2] = c[2]; o.px[i + 3] = 255; } };
+    remplir(0, 0, 176, hTop + hBas, [198, 198, 198]);
+    for (let k = 0; k < rows * 9; k++) { const x = 7 + (k % 9) * 18, y = 17 + Math.floor(k / 9) * 18; remplir(x, y, x + 18, y + 18, [85, 85, 85]); remplir(x + 1, y + 1, x + 17, y + 17, [139, 139, 139]); }
+  }
+  const titre = rendreTexte(ctx.police, segmentsDeTexte(el.titre ?? 'Coffre', { couleur: [64, 64, 64] }), { S: Sg, alignement: 'gauche' });
+  composer(o, titre.img, Math.round(8 * E) - titre.origine.x, Math.round(6 * E) - titre.origine.y);
+  const px = Math.round(16 * E);
+  el.cases.forEach((c, k) => { if (c) composer(o, imageIcone(ctx, c, px, Sg), Math.round((8 + (k % 9) * 18) * E), Math.round((18 + Math.floor(k / 9) * 18) * E)); });
+  return { img: o, boite: { x: 0, y: 0, w: o.w, h: o.h } };
+}
+
 // HUD de jeu : barre d'objets, coeurs, faim, barre d'experience (+ niveau). Le viseur est dessine a part, au centre de l'image.
 function imageHud(ctx, el) {
   const E = ((el.taille ?? 0.9) * ctx.U) / 182;
@@ -384,6 +408,7 @@ const DEFAUTS_MOUV = {
   nom: { entree: 'fondu', duree: 0.2, sortie: 'fondu', dsortie: 0.15 },
   bulle: { entree: 'glisse', duree: 0.22, depuis: 'bas', distance: 0.04, sortie: 'fondu', dsortie: 0.15 },
   chat: { entree: 'fondu', duree: 0.12, sortie: 'fondu', dsortie: 0.2 },
+  coffre: { entree: 'pop', duree: 0.25, depart: 0.8, sortie: 'fondu', dsortie: 0.15 },
   succes: { entree: 'glisse', duree: 0.35, depuis: 'haut', distance: 0.14, courbe: 'retour', sortie: 'glisse', dsortie: 0.25 },
   defaut: { entree: 'pop', duree: 0.22, depart: 0.4, sortie: 'fondu', dsortie: 0.15 },
 };
@@ -491,9 +516,15 @@ function ancreElement(el, ctx) {
   else if (el.ecranAbs !== undefined) spec = { ecranAbs: el.ecranAbs };
   else spec = { ecran: el.ecran ?? [0.5, 0.5] };
   const q = pointMonde(ctx, spec);
-  if (!q) return null;
+  if (!q) return null;   // ancre derriere la camera : pas dessinee (normal : l'acteur n'est pas dans le plan)
   const mondeAncre = q.w !== null;
-  const occ = el.occlusion ?? (el.type === 'nom' ? !el.traverse : false);
+  if (mondeAncre) {
+    // une incrustation ancree au monde n'est JAMAIS ramenee dans l'image : ancre hors du cadre, ou acteur absent / cache -> pas dessinee
+    const a = el.acteur !== undefined ? ctx.im.acteurs[ctx.scene.acteurs.findIndex((x) => x.nom === el.acteur)] : null;
+    if (a?.absent) return null;
+    if (q.x < 0 || q.x > ctx.W || q.y < 0 || q.y > ctx.H) return null;   // ancre hors du cadre : pas dessinee, jamais ramenee dans l'image (normal : l'acteur n'est pas dans le plan)
+  }
+  const occ = el.occlusion ?? (el.type === 'nom' ? !(el.traverse || el.aTraversMurs) : false);
   if (mondeAncre && occ && !estVisible(ctx, q, 0.7)) return null;
   const mode = el.echelle ?? (el.type === 'nom' ? 'distance' : 'ecran');
   let k = 1;
@@ -515,6 +546,7 @@ function boiteOpaque(img) {
 // ---------------------------------------------------------------- dessin d'un element
 const PIVOT_PAR_TYPE = { chat: [0, 0], hud: [0.5, 1], succes: [0.5, 0], nom: [0.5, 1], bulle: [0.5, 1] };   // la bulle se pose AU-DESSUS du point d ancrage (la tete)
 const TEXTES = new Set(['texte', 'compteur']);
+const libelle = (el) => `${el.type}${el.texte ? ` "${String(el.texte).slice(0, 18)}"` : el.acteur ? ` "${el.acteur}"` : ''}`;
 function noter(ctx, cle, msg) { if (ctx.notes && !ctx.notes.has(cle)) ctx.notes.set(cle, msg); }
 
 // Hauteur (pixels) de la legende `auto` : choisie une fois par plan (montage/evitement.js), gardee pour toutes les puces du plan.
@@ -533,7 +565,7 @@ function hauteurLegende(ctx, el, vis, k, zone) {   // vis, k : gardes pour compa
 }
 
 // Les libelles ancres au monde (texte, compteur, icone...) ne se posent pas sur la bande des legendes : s'ils la touchent ils passent juste au-dessus (ou dessous).
-const LIBELLES = new Set(['texte', 'compteur', 'icone', 'equation', 'bulle', 'horloge', 'minuteur', 'nom']);
+const LIBELLES = new Set(['texte', 'compteur', 'icone', 'equation', 'bulle', 'horloge', 'minuteur']);   // pas 'nom' : une etiquette de nom reste pres de sa tete (la disposition la decale un peu ou la masque)
 const aLegendes = (scene) => (scene._aLegendes ??= !!scene.textes?.some((e) => e.legende && e.evite));
 function hors_bande(ctx, el, vis, k, zone, cy, b, pivot) {
   const Z = zone ?? { x0: 0, y0: 0, x1: ctx.W, y1: ctx.H };
@@ -555,7 +587,8 @@ function hors_bande(ctx, el, vis, k, zone, cy, b, pivot) {
   return cy + d;
 }
 
-function poserElement(film, ctx, el, spr, anc, anim) {
+// Prepare la pose d'un element (taille, place, zone sure) SANS dessiner. Retourne { box (rectangle opaque au repos, pixels de l'image), peindre(dx, dy) }.
+function preparerPose(film, ctx, el, spr, anc, anim) {
   const pivot = el.pivot ?? PIVOT_PAR_TYPE[el.type] ?? [0.5, 0.5];
   const b = spr.boite ?? { x: 0, y: 0, w: spr.img.w, h: spr.img.h };
   const texte = !!(el.legende || TEXTES.has(el.type));
@@ -577,21 +610,27 @@ function poserElement(film, ctx, el, spr, anc, anim) {
     // rectangle opaque au repos (avant l'animation) : on le ramene dans la zone
     const rx = cx + (vis.x - ox) * k, ry = cy + (vis.y - oy) * k;
     const c = contenir(zone, rx, ry, vis.w * k, vis.h * k);
+    // un nom (etiquette d'un acteur) ne se decale pas loin de sa tete : s'il sort de la zone sure de plus de 6 % du petit cote, il n'est pas dessine
+    if (anc.mondeAncre && el.type === 'nom' && c.deplacement > 0.06 * ctx.U) return null;
     if (c.deplacement > 0.5) {
       cx += c.x - rx; cy += c.y - ry;
-      if (c.deplacement > 0.04 * ctx.U && Z.actif) noter(ctx, `${el.type}#${el.ordre ?? el._seq}`, `${el.type}${el.texte ? ` "${String(el.texte).slice(0, 20)}"` : ''} a t=${el.t[0]} s : deplace de ${Math.round(c.deplacement)} px pour rester dans la zone sure (hors de l'interface des applications)`);
+      if (c.deplacement > 0.04 * ctx.U && Z.actif) noter(ctx, `${el.type}#${el.ordre ?? el._seq}`, `${libelle(el)} a t=${el.t[0]} s : deplace de ${Math.round(c.deplacement)} px pour rester dans la zone sure (hors de l'interface des applications)`);
     }
   }
-  let img = spr.img, oxi = ox;
-  if (anim.flou > 0) { img = flouHorizontal(img, anim.flou); oxi += anim.flou; }
-  const kx = k * anim.kx, ky = k * anim.ky;
-  const dx = cx + anim.dx, dy = cy + anim.dy;
-  if (kx === 1 && ky === 1 && anim.rot === 0 && anim.blanc === 0 && Number.isInteger(Math.round(dx - oxi)) ) {
-    poserImage(film, ctx.W, ctx.H, img, Math.round(dx - oxi), Math.round(dy - oy), img.w, img.h, { alpha: anim.a, filtre: 'proche' });
-  } else {
-    const net = Math.abs(kx - 1) < 1e-6 && Math.abs(ky - 1) < 1e-6 && anim.rot === 0;
-    poserAffine(film, ctx.W, ctx.H, img, oxi, oy, net ? Math.round(dx) : dx, net ? Math.round(dy) : dy, kx, ky, anim.rot, { alpha: anim.a, blanc: anim.blanc, lineaire: !net });
-  }
+  const box = { x: cx + (vis.x - ox) * k, y: cy + (vis.y - oy) * k, w: vis.w * k, h: vis.h * k };
+  const peindre = (ddx = 0, ddy = 0) => {
+    let img = spr.img, oxi = ox;
+    if (anim.flou > 0) { img = flouHorizontal(img, anim.flou); oxi += anim.flou; }
+    const kx = k * anim.kx, ky = k * anim.ky;
+    const dx = cx + ddx + anim.dx, dy = cy + ddy + anim.dy;
+    if (kx === 1 && ky === 1 && anim.rot === 0 && anim.blanc === 0 && Number.isInteger(Math.round(dx - oxi)) ) {
+      poserImage(film, ctx.W, ctx.H, img, Math.round(dx - oxi), Math.round(dy - oy), img.w, img.h, { alpha: anim.a, filtre: 'proche' });
+    } else {
+      const net = Math.abs(kx - 1) < 1e-6 && Math.abs(ky - 1) < 1e-6 && anim.rot === 0;
+      poserAffine(film, ctx.W, ctx.H, img, oxi, oy, net ? Math.round(dx) : dx, net ? Math.round(dy) : dy, kx, ky, anim.rot, { alpha: anim.a, blanc: anim.blanc, lineaire: !net });
+    }
+  };
+  return { box, peindre, zone };
 }
 
 function dessinerFleche(film, ctx, el, anim) {
@@ -693,15 +732,27 @@ function dessinerLigne(film, ctx, el, anim) {
   if (el.tete && el.tracer > 0 && p < 1 && derniere && dedans(derniere.x, derniere.y)) segmentEpais(film, ctx.W, ctx.H, derniere.x, derniere.y, derniere.x + 0.01, derniere.y, ep * 2.2, col, anim.a);
 }
 
-// Dessine un element sur l'image de film `film` (RGBA W*H*4, alpha 255) a l'instant ctx.t. Retourne true s'il a dessine quelque chose.
-export function dessinerElement(film, ctx, el) {
+// Priorites de la disposition (disposition.js) : plus petit = plus fort.
+const FIXES = new Set(['hud', 'image', 'coeurs', 'faim']);   // grands elements poses a dessein : obstacles qui ne bougent pas
+function classer(el, anc) {
+  if (el.legende) return { prio: 0, fixe: true };
+  if (FIXES.has(el.type)) return { prio: 2, fixe: true };
+  if (el.type === 'nom') return { prio: 4, fixe: false, maxDep: 0.05 };
+  const monde = !!anc.mondeAncre;
+  if (['texte', 'chat', 'succes', 'bulle'].includes(el.type)) return { prio: monde ? 3 : 1, fixe: false, maxDep: monde ? 0.15 : Infinity };
+  return { prio: monde ? 3 : 2, fixe: false, maxDep: monde ? 0.15 : Infinity };
+}
+
+// Prepare un element a l'instant ctx.t : retourne null (rien a dessiner) ou { el, prio, fixe, box, force, maxDep, peindre(dx, dy) }.
+// Les fleches et les lignes n'ont pas de boite : elles se dessinent par-dessus sans gener la disposition.
+export function preparerElement(film, ctx, el) {
   if (el._cache && ctx.t >= el.t[1]) el._cache = undefined;   // fini : on libere l'image (180 s de legendes ne doivent pas rester en memoire)
   const anim = etatAnimation(el, ctx.t, ctx);
-  if (!anim || anim.a <= 0.002) return false;
-  if (el.type === 'fleche') { dessinerFleche(film, ctx, el, anim); return true; }
-  if (el.type === 'ligne') { dessinerLigne(film, ctx, el, anim); return true; }
+  if (!anim || anim.a <= 0.002) return null;
+  if (el.type === 'fleche') return { el, box: null, peindre: () => dessinerFleche(film, ctx, el, anim) };
+  if (el.type === 'ligne') return { el, box: null, peindre: () => dessinerLigne(film, ctx, el, anim) };
   const anc = ancreElement(el, ctx);
-  if (!anc) return false;
+  if (!anc) return null;
   // cache : les elements sans etat variable (texte fixe, icone, coeurs...) ne sont refaits que si la taille de l'image change ;
   // machine et vague refont l'image a chaque pas de l'entree seulement
   const dyn = el.type === 'compteur' || el.type === 'horloge' || el.type === 'minuteur' || el.type === 'chat';
@@ -709,12 +760,26 @@ export function dessinerElement(film, ctx, el) {
   const cle = `${ctx.W}x${ctx.H}|${ctx.zone.w}` + (dyn ? `|${Math.round(ctx.t * 30)}` : '') + (lettres ? `|m${Math.round((anim.n ?? anim.vague) * 60)}` : '');
   let spr = el._cache && el._cache.cle === cle ? el._cache.spr : undefined;
   if (spr === undefined) { ctx.anim = anim; spr = construire(el, ctx); ctx.anim = null; el._cache = { cle, spr }; }
-  if (!spr) return false;
-  poserElement(film, ctx, el, spr, anc, anim);
-  if (el.type === 'hud' && el.viseur) {
-    const v = sprite(ctx.kit, 'hud/crosshair');
-    if (v) { const E = ((el.taille ?? 0.9) * ctx.U) / 182, w = Math.round(15 * E); poserImage(film, ctx.W, ctx.H, v, Math.round(ctx.W / 2 - w / 2), Math.round(ctx.H / 2 - w / 2), w, w, { alpha: anim.a }); }
-  }
+  if (!spr) return null;
+  const pose = preparerPose(film, ctx, el, spr, anc, anim);
+  if (!pose) return null;
+  const c = classer(el, anc);
+  const peindre = (dx = 0, dy = 0) => {
+    pose.peindre(dx, dy);
+    if (el.type === 'hud' && el.viseur) {
+      const v = sprite(ctx.kit, 'hud/crosshair');
+      if (v) { const E = ((el.taille ?? 0.9) * ctx.U) / 182, w = Math.round(15 * E); poserImage(film, ctx.W, ctx.H, v, Math.round(ctx.W / 2 - w / 2), Math.round(ctx.H / 2 - w / 2), w, w, { alpha: anim.a }); }
+    }
+  };
+  return { el, prio: c.prio, fixe: c.fixe, maxDep: c.maxDep === undefined ? undefined : c.maxDep * ctx.U, box: pose.box, force: anc.mondeAncre ? anc.k : 0, peindre };
+}
+
+// Dessine un element sur l'image de film `film` (RGBA W*H*4, alpha 255) a l'instant ctx.t. Retourne true s'il a dessine quelque chose.
+// (Sans disposition : le montage complet passe par preparerElement + disposer, voir incrust/index.js.)
+export function dessinerElement(film, ctx, el) {
+  const p = preparerElement(film, ctx, el);
+  if (!p) return false;
+  p.peindre(0, 0);
   return true;
 }
 

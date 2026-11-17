@@ -6,7 +6,7 @@ import { creerImage, lireCouleur, CODES_JEU, NOMS_PAR_CODE, COULEURS_JEU } from 
 const BLANC = [255, 255, 255];
 const CASSES = {
   haut: (s) => s.toLocaleUpperCase('fr'), majuscules: (s) => s.toLocaleUpperCase('fr'), bas: (s) => s.toLocaleLowerCase('fr'), minuscules: (s) => s.toLocaleLowerCase('fr'),
-  titre: (s) => s.replace(/(^|[\s'-])(\p{L})/gu, (m, a, b) => a + b.toLocaleUpperCase('fr')),
+  aucune: (s) => s, titre: (s) => s.replace(/(^|[\s'-])(\p{L})/gu, (m, a, b) => a + b.toLocaleUpperCase('fr')),
 };
 export const casses = Object.keys(CASSES);
 
@@ -63,6 +63,24 @@ function fusionner(l) {
 }
 export const appliquerCasse = (segments, casse) => (casse && CASSES[casse] ? segments.map((s) => ({ ...s, texte: CASSES[casse](s.texte) })) : segments);
 
+// ---------------------------------------------------------------- symboles courants sans glyphe
+// Le jeu a deja x (U+00D7), les fleches, les guillemets et les tirets dans ses polices (nonlatin_european.png). Ce tableau ne sert QUE pour un caractere
+// qu'aucune police ne dessine (police d'un texture pack incomplete, symboles rares) : on met un equivalent en lettres plutot qu'un carre ou un "?".
+export const SUBSTITUTIONS = {
+  '×': 'x', '÷': '/', '→': '->', '←': '<-', '↑': '^', '↓': 'v', '⇒': '=>', '✓': 'v', '✔': 'v', '✗': 'x', '✘': 'x', '•': '*', '·': '.', '…': '...',
+  '–': '-', '—': '-', '‘': "'", '’': "'", '“': '"', '”': '"', '«': '"', '»': '"', '★': '*', '☆': '*', '❤': '<3', '♥': '<3', '≥': '>=', '≤': '<=', '≠': '!=', '≈': '~',
+  'œ': 'oe', 'Œ': 'OE', 'æ': 'ae', 'Æ': 'AE', '€': 'EUR', '°': 'o', ' ': ' ', ' ': ' ', ' ': ' ',
+};
+// Remplace (si besoin) un caractere sans glyphe ; retourne la liste des caracteres a poser. Le remplacement est note dans police.substitues (une note par film).
+function substituer(police, c) {
+  const cp = c.codePointAt(0);
+  if (cp < 32 || police.aGlyphe(cp) || police.avances.has(cp)) return [c];
+  const r = SUBSTITUTIONS[c];
+  if (r === undefined) return [c];
+  (police.substitues ??= new Map()).set(c, r);
+  return [...r];
+}
+
 // ---------------------------------------------------------------- mise en page
 // Retourne { lignes: [{ glyphes: [{ cp, x, seg }], largeur }], largeur (max, en pixels de police), nbLignes }.
 // largeurMax en pixels de police (Infinity = pas de coupe). Coupe aux espaces ; un mot plus long que la ligne est coupe n'importe ou.
@@ -71,7 +89,7 @@ export function mettreEnPage(police, segments, { largeurMax = Infinity, gras = f
   segments.forEach((seg) => {
     const g = seg.gras || gras;
     let cur = null;
-    for (const c of seg.texte) {
+    for (const c of [...seg.texte].flatMap((x) => substituer(police, x))) {
       const cp = c.codePointAt(0);
       if (c === '\n') { mots.push({ saut: true, glyphes: [], largeur: 0 }); cur = null; continue; }
       const esp = /\s/.test(c);

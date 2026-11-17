@@ -16,7 +16,7 @@ export async function creerComposition({ scene, kit, baseDir, rs = null, anim, g
   if (!scenePourMontage(scene)) return null;
   const solide = rs && typeof rs.estSolidePourCamera === 'function' ? (x, y, z) => rs.estSolidePourCamera(x, y, z) : null;
   const inc = aIncrustations(scene) ? await creerIncrustations({ scene, kit, baseDir, solide }) : null;
-  const notes = [...notesRythme(scene)];   // rythme compare aux videos de reference (notes courtes)
+  const notes = [...notesRythme(scene, anim.images)];   // rythme compare aux videos de reference (notes courtes)
   const prof = { demandee: 0, ignoree: 0 };
   const parNom = new Map(scene.acteurs.map((a, k) => [a.nom, k]));
   return {

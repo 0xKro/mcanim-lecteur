@@ -72,7 +72,7 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   (redstone et pistons comme le jeu : levier, bouton, plaque, poudre (15, -1 par bloc), torche (2 ticks, grille), repeteur (2 a 8 ticks), comparateur, observateur (2 ticks), lampe, pistons (12 blocs, collant, slime), entonnoir, dropper ; monde.contenus [[x,y,z,"objet",n]] ; monde.cmd [t,"frappe",x,y,z,force] ; regles redstone.* pistons.* contenus.* ; fiches redstone, pistons)
   mcanim regles --liste [famille]     parametres du jeu que monde.regles peut changer (nom = defaut [plage] explication) ; --familles : les familles
   mcanim mods verifier <fichier.js>   charge un mod de monde.mods dans le bac a sable et signale l'erreur en une ligne
-  mcanim decor verifier|apercu|executer|module ...   DECORS : faire construire sur le terrain (maisons, ponts, tours, aplanir) ; champ de scene decor ["maison.decor.json"] ; verifier = rapport de 15 lignes, apercu = petite image ; gratuits ; fiches decor_bases, decor_operations, decor_terrain, decor_maison
+  mcanim decor verifier|apercu|executer|module ... [--scene scene.json]   DECORS (la zone vient de la scene : plus de --zone) : faire construire sur le terrain (maisons, ponts, tours, aplanir) ; champ de scene decor ["maison.decor.json"] ; verifier = rapport de 15 lignes, apercu = petite image ; gratuits ; fiches decor_bases, decor_operations, decor_terrain, decor_maison
   mcanim terrain --scene scene.json   resume du terrain APRES les decors de la scene (les chemins contournent les batiments)
   mcanim kit                          recupere le kit de base
   (options de rendre : --ssaa 2 pour un rendu plus lisse, 3 fois plus lent)
@@ -80,7 +80,7 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
                          exemples : exemples/shader-leger.json, shader-tout.json ; ou le champ de scene "shader": "shader.json", chemin relatif a la scene ; l'option l'emporte)
   acteur : fige [[debut,fin]] (cet acteur seul s'arrete, pose tenue ; les autres continuent) figeSauf ["tete",...] (pistes qui continuent) ; boucle : phase0 (0..1, demarre a cette phase) ; sons : {pas, volume 0..4, liste [[t,"son",volume,cible]]} cible {"acteur":"nom"} ou [x,y,z]
   montage (facultatif, 1 a 180 s, fichier 64 Ko max) : plans [{de,a,camera,transition,vitesse,arret,image}] (une camera par plan, coupes) ; sousTitres {texte,debut,fin|mots,par,couleurs} et textes [[debut,fin,"texte"]] ;
-  incrustations [{type: texte compteur fleche ligne icone equation coeurs faim horloge nom bulle chat succes inventaire hud carte image, t:[debut,fin], ecran|monde|acteur}] ; camera : roulis secousse coupZoom flouFile flouRadial profondeurChamp ; sons.fichiers [[t,"voix.mp3",volume,{voix,sousVoix,fondu,boucle}]] (fiches du site)
+  incrustations [{type: texte compteur fleche ligne icone equation coeurs faim horloge nom bulle chat succes inventaire coffre hud carte image, t:[debut,fin], ecran|monde|acteur}] ; camera : roulis secousse coupZoom flouFile flouRadial profondeurChamp ; sons.fichiers [[t,"voix.mp3",volume,{voix,sousVoix,fondu,boucle}]] (fiches du site)
   champs de scene facultatifs : monde {graine, regles, mods, blocs [[t,x,y,z,"bloc"]], cmd, contenus, lumiere} (simulation du jeu ; lumiere des blocs), image, ciel, gel, textures, shader, packShader (pack .zip, chemin relatif a la scene) ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui, objet objetG [t,"id"|null] (objet tenu en main droite / gauche ; mcanim objets --cherche mot), armure {tete,torse,jambes,pieds} (fiches du site)
   hauteur automatique (physique du jeu : saut 0.42, gravite 0.08, pas de 0.6, chute, eau, echelle) a partir de pos [t,x,z] ; acteur : bascule [t,deg] roulis [t,deg]
   (corps entier autour des hanches, 90 = a plat) hauteur [t,blocs] (decalage vertical) reactions:false (coupe les reactions automatiques du corps)
@@ -427,7 +427,7 @@ async function commandePlanche(argv) {
     const zones = opt['sans-zones'] ? false : (opt.zones || scene.hauteur > scene.largeur);
     const r = await ecrirePlanche({ film, scene, sortie, n, zones });
     dire(`planche ${r.sortie} | ${r.n} images (${r.instants.map((t) => t.toFixed(1)).join(' ')} s) | ${r.taille.join('x')} | ${sec(Date.now() - t0)} s | filigrane : ce n'est PAS le rendu final`);
-    const notes = [...film.notes, ...(film.comp?.notesFinales() ?? [])];
+    const notes = [...film.anim.notes.filter((n) => n.startsWith('camera : ')), ...film.notes, ...(film.comp?.notesFinales() ?? [])];   // + camera : sujet cache, herbe devant l'objectif
     if (notes.length) dire('notes : ' + notes.join(' ; '));
   } finally { await film.fermer(); }
 }

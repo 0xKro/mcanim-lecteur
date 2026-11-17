@@ -34,9 +34,10 @@ export class Police {
   aGlyphe(cp) { return this.glyphes.has(cp) || this.avances.has(cp); }
   // Phrase unique sur les glyphes absents (a afficher une fois).
   noteManquants() {
-    if (!this.manquants.size) return null;
+    const sub = this.substitues?.size ? `police : ${[...this.substitues].map(([c, r]) => `${c} -> ${r}`).join(', ')} (caractere(s) absent(s) de la police, remplace(s) par des lettres)` : null;
+    if (!this.manquants.size) return sub;
     const l = [...this.manquants].slice(0, 8).map((c) => String.fromCodePoint(c)).join(' ');
-    return `police : ${this.manquants.size} glyphe(s) absent(s) (${l}${this.manquants.size > 8 ? '...' : ''}), remplaces par un carre${this.notes.has('unihex') ? ' ; le fournisseur unihex du jeu (police Unifont) n\'est pas dans le kit' : ''}`;
+    return `police : ${this.manquants.size} glyphe(s) absent(s) (${l}${this.manquants.size > 8 ? '...' : ''}), remplaces par un carre${this.notes.has('unihex') ? ' ; le fournisseur unihex du jeu (police Unifont) n\'est pas dans le kit' : ''}${sub ? ' ; ' + sub : ''}`;
   }
 }
 

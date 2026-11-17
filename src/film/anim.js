@@ -9,6 +9,7 @@ import { simulerActeur, creerSol, lisser01 } from './physique.js';
 import { reactionsA } from './reactions.js';
 import { creerVivant } from './acteurs-vivants.js';   // acteurs commandes par la simulation (champ `actes`) : leur trace dans le replay
 import { creerFige } from './fige.js';   // acteur fige seul : horloges propres
+import { sujetsDuPlan, masquageSujets, noteSujetCache, SEUIL_CACHE } from './sujet-visible.js';   // le sujet du plan est-il cache par un bloc ? (correction + note)
 import { notesObstruction } from './obstruction.js';   // camera : herbe, feuilles ou acteur colles a l'objectif (note, sans correction)
 import { valeurObjet } from './objets-scene.js';   // objets tenus et armure : pistes de changements d'un coup
 import { appliquerCibles, aCibles } from './cibles.js';   // articulations libres : cibles des mains et des pieds (cinematique inverse)
@@ -118,7 +119,7 @@ export function animer(scene, terrain = {}, monde = null) {
   const n = scene.images;
   const acteurs = scene.acteurs;
   const parNom = new Map(acteurs.map((a, i) => [a.nom, i]));
-  const notes = [];
+  const notes = [...(scene.notesSaisie ?? [])];   // formes courtes acceptees a la lecture (camera.pos [x,y,z]...)
   const articule = acteurs.map((a) => ['coudeD', 'coudeG', 'genouD', 'genouG'].some((n) => a[n] || a.boucles.some((b) => b.pistes[n])) || aCibles(a) || gesteAvecCoude(a));
   // corps [t, penche, cote, torsion] (plus d'une valeur) : le haut du corps entier tourne autour des hanches ; une seule valeur : le dos du jeu
   const etatsIK = acteurs.map(() => ({}));   // dernier pivot de coude de chaque membre tenu par une cible (continuite d'une image a l'autre)
@@ -305,14 +306,37 @@ export function animer(scene, terrain = {}, monde = null) {
   const segments = [];
   if (scene.plans) {
     let i = 0;
-    for (const p of scene.plans) {
+    for (const [k, p] of scene.plans.entries()) {
       if (p.i0 > i) segments.push({ i0: i, i1: p.i0, c: scene.camera, dec: 0 });   // trou entre deux plans : camera de la scene
-      if (p.i1 > p.i0) segments.push({ i0: p.i0, i1: p.i1, c: p.camera, dec: p.de });
+      if (p.i1 > p.i0) segments.push({ i0: p.i0, i1: p.i1, c: p.camera, dec: p.de, plan: k + 1, de: p.de, a: p.a });
       i = Math.max(i, p.i1);
     }
     if (i < n) segments.push({ i0: i, i1: n, c: scene.camera, dec: 0 });
   } else segments.push({ i0: 0, i1: n, c: scene.camera, dec: 0 });
-  for (const { i0, i1, c: c0, dec } of segments) {
+  // Sujet cache par un bloc plein ? Mesure sur le plan, corrige (camera libre ou cadree) comme la camera de suivi, sinon UNE note (plan, secondes, bloc).
+  const aspect = scene.largeur / scene.hauteur;
+  const yeuxDe = (i, nom) => yeux(parImage[i][parNom.get(nom)]);
+  const camDe = (i) => { const dx = cible[i][0] - pos[i][0], dy = cible[i][1] - pos[i][1], dz = cible[i][2] - pos[i][2], h = Math.hypot(dx, dz); return { x: pos[i][0], y: pos[i][1], z: pos[i][2], lacet: Math.atan2(-dx, dz) / RAD, tangage: Math.atan2(-dy, h) / RAD, fov: fovPar[i] }; };
+  const controlerSujet = (seg, corrigeable) => {
+    if (!terrain.solide) return false;
+    const { i0, i1 } = seg, sj = sujetsDuPlan(seg.c);
+    const mesurer = () => masquageSujets({ pos, yeux: yeuxDe, i0, i1, noms: sj.noms, solide, bloc: terrain.bloc ? (x, y, z) => terrain.bloc(x, y, z) : null, ecran: sj.explicite ? null : { cam: camDe, aspect, tous: acteurs.map((a) => a.nom) } });
+    let r = mesurer();
+    if (sj.explicite && corrigeable && r[0]?.part > SEUIL_CACHE) {
+      const avant = pos.slice(i0, i1).map((q) => q.slice());
+      const cibles = []; for (let i = i0; i < i1; i++) cibles.push(yeuxDe(i, r[0].nom));
+      const essai = planifierCameraSuivi({ cibles, voulues: avant, solide, dt: DT });
+      for (let j = 0; j < i1 - i0; j++) pos[i0 + j] = essai.pos[j];
+      const r2 = mesurer();
+      if (r2[0].part < r[0].part - 0.02) { r = r2; cumuler(essai.stat); for (let j = 0; j < i1 - i0; j++) if (essai.corrigee[j]) corrigee[i0 + j] = true; }
+      else for (let j = 0; j < i1 - i0; j++) pos[i0 + j] = avant[j];
+    }
+    let note = false;
+    for (const m of r.slice(0, 2)) if (m.part > SEUIL_CACHE) { notes.push(noteSujetCache({ plan: seg.plan, de: seg.de ?? i0 * DT, a: seg.a ?? i1 * DT, nom: m.nom, part: m.part, bloc: m.bloc, corrigee: corrigeable })); note = true; }
+    return note;
+  };
+  for (const seg of segments) {
+    const { i0, i1, c: c0, dec } = seg;
     // cadrage par intention (montage/cadrage.js) : la camera est calculee depuis les poses des acteurs de ce plan
     const c = c0.mode === 'cadre' ? cameraDeCadre(c0, (i, nom) => parImage[i][parNom.get(nom)], i0, i1, dec, acteurs.map((a) => a.nom)) : c0;
     if (c.mode === 'suit') {
@@ -333,7 +357,9 @@ export function animer(scene, terrain = {}, monde = null) {
       const plan = planifierCameraSuivi({ cibles, voulues, solide, dt: DT });
       for (let j = 0; j < i1 - i0; j++) { pos[i0 + j] = plan.pos[j]; cible[i0 + j] = cibles[j]; corrigee[i0 + j] = plan.corrigee[j]; }
       cumuler(plan.stat);
-      if (plan.vueCoupee > 0.5 / DT) notes.push(`camera : acteur cache par un bloc pendant ${(plan.vueCoupee * DT).toFixed(1).replace('.', ',')} s malgre les corrections`);
+      for (let i = i0; i < i1; i++) fovPar[i] = evaluer(c.fov, i * DT - dec)[0];
+      const noteSujet = controlerSujet(seg, false);
+      if (!noteSujet && plan.vueCoupee > 0.5 / DT) notes.push(`camera : acteur cache par un bloc pendant ${(plan.vueCoupee * DT).toFixed(1).replace('.', ',')} s malgre les corrections`);
     } else {
       const voulues = [], cibles = [];
       for (let i = i0; i < i1; i++) {
@@ -344,6 +370,8 @@ export function animer(scene, terrain = {}, monde = null) {
       const plan = planifierCameraLibre({ positions: voulues, cibles, solide, dt: DT });
       for (let j = 0; j < i1 - i0; j++) { pos[i0 + j] = plan.pos[j]; cible[i0 + j] = cibles[j]; corrigee[i0 + j] = plan.corrigee[j]; }
       cumuler(plan.stat);
+      for (let i = i0; i < i1; i++) fovPar[i] = evaluer(c.fov, i * DT - dec)[0];
+      controlerSujet(seg, true);
     }
     for (let i = i0; i < i1; i++) fovPar[i] = evaluer(c.fov, i * DT - dec)[0];
   }

@@ -67,7 +67,8 @@ function lirePiste(brut, chemin, { minArite, maxArite, temps = [0, Infinity], co
     if (n < 1 || !estNombre(k[0])) err(ch, 'le premier element doit etre le temps (nombre)');
     const nv = n - 1;
     if (nv < minArite || nv > maxArite) {
-      err(ch, minArite === maxArite ? `${minArite} valeur(s) apres le temps attendue(s), ${nv} trouvee(s)` : `entre ${minArite} et ${maxArite} valeurs apres le temps attendues, ${nv} trouvees`);
+      const exemple = `[0${[10, 72, 5, 1].slice(0, Math.min(minArite, 4)).map((x) => ', ' + x).join('')}]`;
+      err(ch, (minArite === maxArite ? `${minArite} valeur(s) apres le temps attendue(s), ${nv} trouvee(s)` : `entre ${minArite} et ${maxArite} valeurs apres le temps attendues, ${nv} trouvees`) + ` ; une cle s'ecrit [temps, valeurs...], par exemple ${exemple}`);
     }
     for (let j = 1; j < n; j++) if (!estNombre(k[j])) err(`${ch}[${j}]`, 'nombre attendu');
     const t = k[0];
@@ -142,7 +143,10 @@ export function poidsBoucle(b, t) {
 
 // ---------------------------------------------------------------- scene
 // Controle et normalise un objet de scene. Retourne la scene prete a animer (pistes lues).
+// Notes sur les formes courtes acceptees pendant la lecture de la scene en cours (voir lireCamera).
+let notesSaisie = [];
 export function validerScene(s) {
+  notesSaisie = [];
   if (!estObjet(s)) err('', 'un objet JSON est attendu');
   if (s.v !== undefined && s.v !== 1) err('v', `version ${JSON.stringify(s.v)} non geree (seule la version 1 existe)`);
   if (typeof s.format !== 'string' || !FORMATS[s.format]) err('format', `"1920x1080" ou "1080x1920" attendu, pas ${JSON.stringify(s.format)}`);
@@ -224,7 +228,7 @@ export function validerScene(s) {
   });
 
   // montage (facultatif) : plans = une camera par plan ; sans plans, la camera de la scene est obligatoire comme avant
-  const D = { mots: [], err, lirePiste, borner, noms, lireTable: (b, ch) => lireTable(b, ch, LEVIERS_IMAGE), lireCamera: (c, n, base) => lireCamera(c, n, base) };
+  const D = { mots: [], monde: s.monde, err, lirePiste, borner, noms, lireTable: (b, ch) => lireTable(b, ch, LEVIERS_IMAGE), lireCamera: (c, n, base) => lireCamera(c, n, base) };
   const montage = lireMontage(D, s, s.duree, Math.round(s.duree * IMAGES_PAR_SECONDE));
   if (s.jeu !== undefined && typeof s.jeu !== 'boolean') err('jeu', 'true ou false attendu (vie des acteurs au repos : respiration, regard ; defaut : active si la scene a des champs de montage)');
   resoudreGestes(acteurs, D.mots, err);   // "@mot" -> instant du mot dans les sous-titres
@@ -268,7 +272,7 @@ export function validerScene(s) {
     }
   }
   const [largeur, hauteur] = FORMATS[s.format];
-  return {
+  const resultat = {
     v: 1, format: s.format, largeur, hauteur, duree: s.duree, zone: s.zone,
     images: Math.round(s.duree * IMAGES_PAR_SECONDE), acteurs, camera, sons,
     image: s.image !== undefined ? lireTable(s.image, 'image', LEVIERS_IMAGE) : null,
@@ -282,6 +286,9 @@ export function validerScene(s) {
     jeu: jeuDeScene(s, !!(montage.plans || montage.textes.length || montage.incrustations.length)),
     ...(s.zonesSures !== undefined ? { zonesSures: lireZonesSures({ err }, s.zonesSures) } : {}), ...(montage.plans ? { plans: montage.plans } : {}), ...(montage.textes.length ? { textes: montage.textes } : {}), ...(montage.incrustations.length ? { incrustations: montage.incrustations } : {}),   // montage (facultatif)
   };
+  // formes courtes acceptees (camera.pos [x,y,z], regarde [x,y,z]...) : une note par forme, montree avec les notes du film
+  Object.defineProperty(resultat, 'notesSaisie', { value: notesSaisie, enumerable: false });
+  return resultat;
 }
 
 // ---------------------------------------------------------------- monde (simulation)
@@ -505,9 +512,26 @@ function lireBoucle(b, ch, duree) {
   return o;
 }
 
+// Forme courte d'une piste : [x, y, z] (un seul point, tous des nombres) = piste constante [[0, x, y, z]].
+function pisteOuPoint(c, cle, arite, base) {
+  const v = c[cle];
+  if (Array.isArray(v) && v.length === arite && v.every(estNombre)) {
+    notesSaisie.push(`${base}.${cle} : [${v.join(', ')}] lu comme un point fixe, soit la piste [[0, ${v.join(', ')}]] (forme complete : une piste [[t, x, y, z], ...] pour un mouvement)`);
+    return [[0, ...v]];
+  }
+  return v;
+}
 function lireCamera(c, noms, base = 'camera') {
   if (!estObjet(c)) err(base, 'un objet est attendu, par exemple {"suit": "heros", "decalage": [[0, 0, 2, 4]]}');
   const o = { fov: [[0, 70]] };
+  c = { ...c };
+  // formes courtes : pos et cible [x,y,z] = point fixe ; "regarde" avec [x,y,z] = "cible" ; decalage [d,h,a] = decalage fixe
+  if (Array.isArray(c.regarde) && c.regarde.length === 3 && c.regarde.every(estNombre)) {
+    if (c.cible !== undefined) err(`${base}.regarde`, '"regarde" avec des coordonnees et "cible" ensemble : garde "cible" seul');
+    notesSaisie.push(`${base}.regarde : [${c.regarde.join(', ')}] est une position, lue comme "cible" (\"regarde\" prend le NOM d'un acteur)`);
+    c.cible = c.regarde; delete c.regarde;
+  }
+  for (const [cle, arite] of [['pos', 3], ['cible', 3], ['decalage', 3]]) if (c[cle] !== undefined) c[cle] = pisteOuPoint(c, cle, arite, base);
   o.fov = c.fov !== undefined ? lirePiste(c.fov, `${base}.fov`, { minArite: 1, maxArite: 1 }) : { arite: 1, cles: [{ t: 0, v: [70], l: null }] };
   for (const k of o.fov.cles) if (k.v[0] < 10 || k.v[0] > 150) err(`${base}.fov`, `angle de vue entre 10 et 150 degres attendu, pas ${k.v[0]}`);
   if (c.suit !== undefined) {
@@ -517,9 +541,10 @@ function lireCamera(c, noms, base = 'camera') {
     o.decalage = c.decalage !== undefined ? lirePiste(c.decalage, `${base}.decalage`, { minArite: 3, maxArite: 3 }) : { arite: 3, cles: [{ t: 0, v: [0, 2, 4], l: null }] };
   } else if (c.pos !== undefined) {
     o.mode = 'libre';
+    if (!Array.isArray(c.pos)) err(`${base}.pos`, 'piste [[t, x, y, z], ...] attendue, par exemple "pos": [[0, 10, 72, 5]] (ou [x, y, z] pour un point fixe)');
     o.pos = lirePiste(c.pos, `${base}.pos`, { minArite: 3, maxArite: 3 });
     if (c.regarde !== undefined) {
-      if (typeof c.regarde !== 'string' || !noms.has(c.regarde)) err(`${base}.regarde`, `acteur inconnu : ${JSON.stringify(c.regarde)}`);
+      if (typeof c.regarde !== 'string' || !noms.has(c.regarde)) err(`${base}.regarde`, `acteur inconnu : ${JSON.stringify(c.regarde)} ; "regarde" prend le NOM d'un acteur (${[...noms].join(', ')}) ; pour regarder un point : "cible": [x, y, z] (ou [[t, x, y, z], ...])`);
       o.regarde = c.regarde;
     } else if (c.cible !== undefined) o.cible = lirePiste(c.cible, `${base}.cible`, { minArite: 3, maxArite: 3 });
     else err(base, "\"pos\" demande aussi \"cible\" (points a regarder) ou \"regarde\" (nom d'un acteur)");

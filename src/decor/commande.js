@@ -1,6 +1,7 @@
 // Commande `mcanim decor` : verifier, apercu, executer. Gratuit, sorties COURTES (elles coutent des jetons au client).
-//   mcanim decor verifier <decor.json|scene.json> [--zone id]
-//   mcanim decor apercu <decor.json|scene.json> [--vue iso|dessus|face] [--cote sud|nord|est|ouest|sud-est...] [--contexte] [--taille 512x384] [--sortie f.png] [--zone id]
+//   mcanim decor verifier <decor.json|scene.json> [--scene scene.json] [--zone id]
+//   mcanim decor apercu <decor.json|scene.json> [--vue iso|dessus|face] [--cote sud|nord|est|ouest|sud-est...] [--contexte] [--taille 512x384] [--sortie f.png] [--scene scene.json] [--zone id]
+//   La zone vient (dans cet ordre) de --zone, de --scene (la scene qui a la zone), du champ "zone" du decor, ou de LA scene du meme dossier (celle qui cite ce decor, ou la seule scene du dossier).
 //   mcanim decor executer <script.py> --sortie decor.json     (le script ecrit le decor avec decor.py ; le lecteur ne lance JAMAIS de code au rendu)
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,13 +11,34 @@ import { lireDecorsScene, appliquerDecors } from './appliquer.js';
 import { lireDecorTexte } from './lire.js';
 import { ErreurDecor } from './grille.js';
 
-export const AIDE_DECOR = `mcanim decor verifier <decor.json|scene.json> [--zone id]   lit, controle et applique le decor EN MEMOIRE (sans rendre) : emprise, blocs, etats recalcules, avertissements (flottants, portes bloquees, sans appui) ; 15 lignes au plus ; gratuit
+export const AIDE_DECOR = `mcanim decor verifier <decor.json|scene.json> [--scene scene.json] [--zone id]   (zone : prise de la scene, du decor ou de la scene du dossier ; --zone seulement si rien de cela) lit, controle et applique le decor EN MEMOIRE (sans rendre) : emprise, blocs, etats recalcules, avertissements (flottants, portes bloquees, sans appui) ; 15 lignes au plus ; gratuit
   mcanim decor apercu <decor.json|scene.json> [--vue iso|dessus|face] [--cote sud|nord|est|ouest|sud-est|...] [--contexte] [--taille 512x384] [--sortie a.png]   petite image filigranee du decor seul (6 blocs de terrain autour) ou dans son contexte ; gratuit
   mcanim decor executer <script.py> --sortie decor.json   lance le script Python (module decor.py, python -I, 20 s) qui ECRIT le decor, puis le controle ; le lecteur n'execute jamais de code au rendu
   mcanim decor module                                       chemin du module decor.py (a copier a cote de ton script) ; fiches decor_bases, decor_operations, decor_terrain, decor_maison
   mcanim terrain --scene scene.json                         le resume du terrain APRES les decors de la scene (chemins, clairieres)`;
 
 const DELAI_MS = 20000;
+
+// Zone d'un decor : --zone, puis --scene, puis le champ "zone" du decor, puis la scene du meme dossier (celle dont le champ decor cite ce fichier, sinon la seule scene du dossier).
+// Retourne { zoneId, source } ; leve Usage avec la marche a suivre si rien ne la donne.
+export function zoneDuDecor({ fichier, opt = {}, decor = null, Usage }) {
+  if (opt.zone) return { zoneId: opt.zone, source: '--zone' };
+  const zoneDe = (f) => { try { const j = JSON.parse(fs.readFileSync(f, 'utf8').replace(/^﻿/, '')); return j && Array.isArray(j.acteurs) && typeof j.zone === 'string' ? j : null; } catch { return null; } };
+  if (opt.scene) {
+    const j = zoneDe(path.resolve(opt.scene));
+    if (!j) throw new Usage(`--scene ${opt.scene} : pas une scene lisible avec un champ "zone" (identifiant de zone de preparer_zone)`);
+    return { zoneId: j.zone, source: `--scene ${path.basename(opt.scene)}` };
+  }
+  if (decor?.zone) return { zoneId: decor.zone, source: 'champ zone du decor' };
+  const dossier = path.dirname(path.resolve(fichier)), nom = path.basename(fichier);
+  let scenes = [];
+  try { scenes = fs.readdirSync(dossier).filter((f) => /.json$/i.test(f) && !/.decor.json$/i.test(f) && f !== nom).map((f) => ({ f, j: zoneDe(path.join(dossier, f)) })).filter((x) => x.j); } catch { /* dossier illisible */ }
+  const cite = scenes.filter((x) => (Array.isArray(x.j.decor) ? x.j.decor : []).some((d) => typeof d === 'string' && path.basename(d) === nom));
+  const choix = cite.length ? cite : scenes;
+  const zones = [...new Set(choix.map((x) => x.j.zone))];
+  if (zones.length === 1) return { zoneId: zones[0], source: `scene ${choix[0].f}` };
+  throw new Usage(zones.length ? `zone introuvable seule : ${zones.length} zones dans les scenes du dossier (${choix.map((x) => x.f).join(', ')}) ; donne --scene <scene.json> ou --zone <id>` : 'zone introuvable : donne --scene <scene.json> (la scene a le champ "zone"), --zone <id>, ou ajoute le champ "zone" au decor');
+}
 
 // Lit un fichier : un decor (objet avec ops) ou une scene (acteurs). Rend { decors: [{decor, nom}], zoneId, scene, baseDir, donnees, zone }.
 async function preparer(fichier, opt, o) {
@@ -37,8 +59,7 @@ async function preparer(fichier, opt, o) {
       decors = lireDecorsScene(scene.decor, { baseDir, d: donnees, zoneId });
     } else {
       const decor = lireDecorTexte(texte, donnees, path.basename(fichier));
-      zoneId = opt.zone || decor.zone;
-      if (!zoneId) throw new Usage('--zone <id de zone> est attendu (ou le champ "zone" du decor)');
+      zoneId = zoneDuDecor({ fichier, opt, decor, Usage }).zoneId;
       decors = [{ decor, nom: path.basename(fichier) }];
     }
   } catch (e) { if (e instanceof ErreurDecor) throw new Usage(e.message); throw e; }
@@ -56,8 +77,8 @@ export async function commandeDecor(argv, o) {
   try {
     if (sous === 'module') return dire(fileURLToPath(new URL('./decor.py', import.meta.url)));
     if (sous === 'verifier') {
-      const { pos, opt } = lireArgs(reste, { valeurs: ['zone'] });
-      if (pos.length !== 1) throw new Usage('usage : mcanim decor verifier <decor.json|scene.json> [--zone id]');
+      const { pos, opt } = lireArgs(reste, { valeurs: ['zone', 'scene'] });
+      if (pos.length !== 1) throw new Usage('usage : mcanim decor verifier <decor.json|scene.json> [--scene scene.json] [--zone id]');
       const p = await preparer(pos[0], opt, o);
       const r = appliquerDecors(p.zone, p.decors, { donnees: p.donnees });
       // 15 lignes au plus en tout : avec plusieurs decors, chacun garde sa premiere ligne et sa ligne d'avertissements, puis ce qui reste de place
@@ -86,8 +107,8 @@ export async function commandeDecor(argv, o) {
       return dire(lignes.join('\n'));
     }
     if (sous === 'apercu') {
-      const { pos, opt } = lireArgs(reste, { valeurs: ['zone', 'vue', 'cote', 'taille', 'sortie'], drapeaux: ['contexte'] });
-      if (pos.length !== 1) throw new Usage('usage : mcanim decor apercu <decor.json|scene.json> [--vue iso|dessus|face] [--cote ...] [--contexte] [--taille 512x384] [--sortie a.png]');
+      const { pos, opt } = lireArgs(reste, { valeurs: ['zone', 'scene', 'vue', 'cote', 'taille', 'sortie'], drapeaux: ['contexte'] });
+      if (pos.length !== 1) throw new Usage('usage : mcanim decor apercu <decor.json|scene.json> [--vue iso|dessus|face] [--cote ...] [--contexte] [--taille 512x384] [--sortie a.png] [--scene scene.json]');
       let taille = [512, 384];
       if (opt.taille) { const m = /^(\d+)x(\d+)$/.exec(opt.taille); if (!m || +m[1] < 64 || +m[1] > 640 || +m[2] < 64 || +m[2] > 640) throw new Usage('--taille : LARGEURxHAUTEUR entre 64 et 640 (ex. 512x384)'); taille = [+m[1], +m[2]]; }
       const p = await preparer(pos[0], opt, o);
@@ -118,7 +139,7 @@ export async function commandeDecor(argv, o) {
         if (!fs.existsSync(sortie)) throw new Usage(`le script n'a pas ecrit ${opt.sortie} : termine-le par decor.ecrire() (ou d.ecrire("fichier.json"))`);
         const { donneesDuJeu } = await import('../moteur/chargeur.js');
         const donnees = await donneesDuJeu({ log: dire });
-        try { const decor = lireDecorTexte(fs.readFileSync(sortie, 'utf8'), donnees, path.basename(sortie)); return dire(`decor ${path.basename(sortie)} ecrit et controle : ${decor.ops.length} operation(s) apres developpement, ${fs.statSync(sortie).size} octets ; suite : mcanim decor verifier ${opt.sortie} --zone <id>`); } catch (e) { if (e instanceof ErreurDecor) throw new Usage(e.message); throw e; }
+        try { const decor = lireDecorTexte(fs.readFileSync(sortie, 'utf8'), donnees, path.basename(sortie)); return dire(`decor ${path.basename(sortie)} ecrit et controle : ${decor.ops.length} operation(s) apres developpement, ${fs.statSync(sortie).size} octets ; suite : mcanim decor verifier ${opt.sortie} --scene scene.json`); } catch (e) { if (e instanceof ErreurDecor) throw new Usage(e.message); throw e; }
       }
       throw new Usage('Python est introuvable (python / python3) : ecris le decor en JSON, ou installe Python 3.8+');
     }

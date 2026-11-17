@@ -14,7 +14,7 @@ export function groupesDeScene(scene) {
 }
 
 // Groupes de kit dont le montage a besoin : { interface, objets }.
-const AVEC_OBJETS = new Set(['icone', 'equation', 'inventaire', 'hud', 'succes', 'horloge', 'minuteur']);
+const AVEC_OBJETS = new Set(['icone', 'equation', 'inventaire', 'coffre', 'hud', 'succes', 'horloge', 'minuteur']);
 function groupesMontage(scene) {
   const r = { interface: !!scene.textes?.length, objets: false };
   const marche = (liste) => { for (const e of liste ?? []) { r.interface = true; if (AVEC_OBJETS.has(e.type) && !(e.type === 'icone' && !e.objet)) r.objets = true; marche(e.incrustations); } };

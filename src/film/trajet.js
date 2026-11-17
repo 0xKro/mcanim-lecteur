@@ -168,7 +168,7 @@ export function texteTrajets(scene, terrain, monde = null) {
   const t = trajetsDeScene(scene, terrain);
   let note = null;   // articulations libres : amplitudes hors plausible, une ligne (information seule)
   let camera = [];   // camera : herbe, feuilles ou acteur colles a l'objectif (obstruction.js)
-  try { const anim = animer(scene, terrain, monde); note = noteAmplitudes(scene, anim); camera = anim.notes.filter((n) => n.startsWith('camera : de ')); } catch { /* facultatif */ }
+  try { const anim = animer(scene, terrain, monde); note = noteAmplitudes(scene, anim); camera = anim.notes.filter((n) => n.startsWith('camera : ')); } catch { /* facultatif */ }
   const parNom = new Map(scene.acteurs.map((a) => [a.nom, a]));
   return [...t.map((x) => (parNom.get(x.nom).actes && monde?.replay ? texteActeurVivant(x.nom, monde.replay) : texteActeur(x.nom, x.evenements))), ...(note ? [note] : []), ...camera, RAPPEL].join('\n');
 }

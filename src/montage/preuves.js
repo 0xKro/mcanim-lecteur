@@ -10,16 +10,17 @@ export function sceneEssai(plus = {}, { format = '1080x1920', duree = 6 } = {}) 
   return validerScene({ v: 1, format, duree, zone: 'A'.repeat(22), acteurs: [{ nom: 'a', pos: [[0, 0, -1.5, 10], [duree, 0, -1.5, 10]] }], camera: { pos: [[0, 0, 0, 0]], cible: [[0, 0, 0, 10]] }, ...plus });
 }
 
-export const imageEssai = (t) => ({ t, camera: { x: 0, y: 0, z: 0, lacet: 0, tangage: 0, fov: 60 }, acteurs: [{ x: 0, y: -1.5, z: 10 }] });
+export const imageEssai = (t, acteurs = [{ x: 0, y: -1.5, z: 10 }]) => ({ t, camera: { x: 0, y: 0, z: 0, lacet: 0, tangage: 0, fov: 60 }, acteurs });
 
 // Rend les instants `ts` : retourne { W, H, images: [Uint8Array RGBA], notes }.
-export async function rendreInstants({ scene, kit, ts, fond = FOND }) {
+// acteurs : positions [{x, y, z}] des acteurs de la scene (defaut : un acteur a 10 blocs devant la camera).
+export async function rendreInstants({ scene, kit, ts, fond = FOND, acteurs = undefined }) {
   const inc = await creerIncrustations({ scene, kit });
   const W = scene.largeur, H = scene.hauteur, images = [];
   for (const t of ts) {
     const rgba = new Uint8Array(W * H * 4);
     for (let i = 0; i < rgba.length; i += 4) { rgba[i] = fond[0]; rgba[i + 1] = fond[1]; rgba[i + 2] = fond[2]; rgba[i + 3] = 255; }
-    inc.dessiner(rgba, W, H, { t, im: imageEssai(t) });
+    inc.dessiner(rgba, W, H, { t, im: imageEssai(t, acteurs) });
     images.push(rgba);
   }
   return { W, H, images, notes: inc.notes() };

@@ -4,6 +4,7 @@
 import { lireCouleur } from '../incrust/toile.js';
 import { casses } from '../incrust/texte.js';
 import { decouperSousTitres } from './sous-titres.js';
+import { pileMax } from '../moteur/contenus.js';
 import { ENTREES, SORTIES, EMPHASES, NOMS_COURBES, ALIAS_TYPE } from './mouvement.js';
 
 const estNombre = (x) => typeof x === 'number' && Number.isFinite(x);
@@ -162,8 +163,8 @@ function lireStyle(D, o, ch, def = {}) {
 // Defauts des legendes : mesures sur les 4 videos de reference (analyse/10-videos-reference.md) : ligne de 0,065 du petit cote (70 px sur 1080),
 // blanc, contour sombre epais, centree, a 68 % de la hauteur, 1 a 3 mots.
 // Police par defaut des legendes : "sans" (gras rond lisible, comme les 4 videos : capitales tres grasses, ombre douce, contour fin) ; "jeu" = police pixel du jeu
-// (contour epais, taille 0,06). Hauteur de capitale mesuree sur V1 et V3 : 2,45 % de la hauteur de l'image = taille 0,055 de cette police.
-export const STYLE_LEGENDE = { taille: 0.055, couleur: [255, 255, 255, 255], gras: true, police: 'sans', contour: { couleur: [8, 8, 8, 255], ep: 0.05 }, ombre: true, alignement: 'centre', largeurMax: 1, interligne: 9, marge: 0 };
+// (contour epais, taille 0,06). Hauteur de capitale mesuree sur V1 et V3 : 2,45 % de la hauteur de l'image = taille 0,055 de cette police ; releve a 0,06 (capitale 2,9 % mesuree en pixels blancs, comme la police du jeu) : les legendes d'un telephone se lisent a bout de bras.
+export const STYLE_LEGENDE = { taille: 0.06, couleur: [255, 255, 255, 255], gras: true, police: 'sans', contour: { couleur: [8, 8, 8, 255], ep: 0.05 }, ombre: true, alignement: 'centre', largeurMax: 1, interligne: 9, marge: 0 };
 export const STYLE_LEGENDE_JEU = { taille: 0.06, couleur: [255, 255, 255, 255], gras: true, police: 'jeu', contour: { couleur: [8, 8, 8, 255], ep: 0.16 }, ombre: true, alignement: 'centre', largeurMax: 1, interligne: 9, marge: 0 };
 // Decision du proprietaire (16/11/2026) : la police par defaut est celle du jeu (ou celle du texture pack joint) ; "sans" seulement sur demande.
 const styleLegende = (opt) => ({ ...(opt.police === 'sans' ? STYLE_LEGENDE : STYLE_LEGENDE_JEU) });
@@ -284,7 +285,7 @@ export function lireSousTitres(D, brut, duree) {
     const st = b.style !== undefined ? (estObjet(b.style) ? b.style : D.err(`${c}.style`, 'objet de style attendu')) : {};
     if (b.style !== undefined) champsConnus(D, st, [...CLES_STYLE, ...CLES_MOUVEMENT, 'position', 'pop'], `${c}.style`);
     const opt = { ...b, ...st };
-    const style = lireStyle(D, opt, c, styleLegende(opt));
+    const style = lireStyle(D, opt, c, { ...styleLegende(opt), casse: 'majuscules' });   // sous-titres : CAPITALES par defaut (references) ; "casse": "aucune" garde le texte tel quel
     const pos = lirePosition(D, opt.position, `${c}.position`), pop = lirePop(D, opt.pop, `${c}.pop`), mouv = lireMouvement(D, opt, c);
     const calque = nombreEntre(D, b.calque, `${c}.calque`, -100, 100, 50), opacite = nombreEntre(D, b.opacite, `${c}.opacite`, 0, 1, 1);
     const puces = decouperSousTitres(mots, { par, fin: fin ?? Math.min(duree, mots[mots.length - 1].t + 0.6), accent: style.accent ?? null });
@@ -307,11 +308,12 @@ const PAR_TYPE = {
   faim: ['valeur', 'max', 'variante'],
   horloge: ['etiquette', 'progression', ...CLES_STYLE],
   minuteur: ['etiquette', 'progression', 'duree', ...CLES_STYLE],
-  nom: ['texte', 'traverse', ...CLES_STYLE],
+  nom: ['texte', 'traverse', 'aTraversMurs', ...CLES_STYLE],
   bulle: ['lignes', ...CLES_STYLE],
   chat: ['lignes', 'vie', 'fondu', ...CLES_STYLE],
   succes: ['titre', 'texte', 'objet'],
   inventaire: ['cases', 'colonnes', 'surligner', 'selection', 'style'],
+  coffre: ['titre', 'cases', 'contenu', 'rangees', 'joueur'],
   hud: ['coeurs', 'faim', 'xp', 'niveau', 'cases', 'selection', 'viseur'],
   image: ['fichier'],
   carte: ['fond', 'acteurs', 'vue', 'incrustations', 'lumiere'],
@@ -440,7 +442,7 @@ function lireContenu(D, e, o, ch, duree) {
       style(); break;
     case 'nom':
       if (e.acteur === undefined) D.err(`${ch}.acteur`, 'acteur attendu');
-      texte('texte', false); o.traverse = e.traverse === true;
+      texte('texte', false); o.traverse = e.traverse === true || e.aTraversMurs === true;   // aTraversMurs : meme chose (nom donne par les cartes)
       Object.assign(o, lireStyle(D, e, ch, {}), { taille: e.taille }); break;
     case 'bulle': case 'chat': {
       if (!Array.isArray(e.lignes) || !e.lignes.length || e.lignes.length > 16) D.err(`${ch}.lignes`, 'liste de 1 a 16 lignes attendue (texte avec codes de couleur du jeu : §6 or, §b cyan, §7 gris, §l gras)');
@@ -464,6 +466,34 @@ function lireContenu(D, e, o, ch, duree) {
       if (e.selection !== undefined) o.selection = e.selection;
       if (e.style !== undefined) { if (!['barre', 'grille'].includes(e.style)) D.err(`${ch}.style`, '"barre" ou "grille"'); o.style = e.style; }
       break;
+    case 'coffre': {   // ecran d'un conteneur ouvert (le jeu ne montre pas le contenu d'un coffre ouvert dans le monde) : cases d'une liste, ou lues dans monde.contenus
+      if ((e.cases === undefined) === (e.contenu === undefined)) D.err(ch, 'il faut "contenu": [x, y, z] (un conteneur de monde.contenus) OU "cases": ["diamond", ["iron_pickaxe", 1, 0.3], null, ...] (liste), pas les deux');
+      let lignes;
+      if (e.contenu !== undefined) {
+        if (!Array.isArray(e.contenu) || e.contenu.length !== 3 || !e.contenu.every(Number.isInteger)) D.err(`${ch}.contenu`, '[x, y, z] entiers attendus : la position du coffre dans monde.contenus');
+        const dans = (D.monde?.contenus ?? []).filter((k) => Array.isArray(k) && k[0] === e.contenu[0] && k[1] === e.contenu[1] && k[2] === e.contenu[2]);
+        if (!dans.length) D.err(`${ch}.contenu`, `aucune ligne de monde.contenus pour [${e.contenu.join(', ')}] : ajoute-la, par exemple "monde": {"contenus": [[${e.contenu.join(', ')}, "diamond", 12]]}, ou donne "cases" a la place`);
+        // meme remplissage que le jeu (moteur/contenus.js, ajouter) : d'abord les piles du meme objet, puis la premiere case vide
+        const cases = [];
+        for (const k of dans) {
+          let n = k[4]; const objet = String(k[3]).replace(/^minecraft:/, ''), max = pileMax(objet);
+          for (const c of cases) if (c && c.objet === objet && c.nombre < max && n > 0) { const q = Math.min(n, max - c.nombre); c.nombre += q; n -= q; }
+          while (n > 0) { const q = Math.min(n, max); cases.push({ objet, nombre: q }); n -= q; }
+        }
+        lignes = cases;
+      } else {
+        if (!Array.isArray(e.cases) || !e.cases.length || e.cases.length > 54) D.err(`${ch}.cases`, 'liste de 1 a 54 cases attendue : ["diamond", ["emerald", 64], null, ["iron_pickaxe", 1, 0.3]] (objet, nombre, barre de durabilite)');
+        lignes = e.cases.map((c, j) => (c === null ? null : typeof c === 'string' ? { objet: c.replace(/^minecraft:/, '') } : Array.isArray(c) && typeof c[0] === 'string' ? { objet: c[0].replace(/^minecraft:/, ''), nombre: c[1], barre: c[2] } : D.err(`${ch}.cases[${j}]`, 'null, "objet" ou ["objet", nombre, barre]')));
+      }
+      if (lignes.length > 54) D.err(ch, `le conteneur a ${lignes.length} piles : 54 cases au plus (6 rangees)`);
+      const rangees = e.rangees === undefined ? (lignes.length <= 27 ? 3 : 6) : (Number.isInteger(e.rangees) && e.rangees >= 1 && e.rangees <= 6 ? e.rangees : D.err(`${ch}.rangees`, 'entier de 1 a 6 (coffre : 3, grand coffre : 6)'));
+      if (lignes.length > rangees * 9) D.err(`${ch}.rangees`, `${lignes.length} piles ne tiennent pas dans ${rangees} rangee(s) de 9`);
+      o.cases = Array.from({ length: rangees * 9 }, (_, k) => lignes[k] ?? null);
+      o.rangees = rangees;
+      texte('titre', false); o.titre ??= 'Coffre';
+      o.joueur = e.joueur === true;   // true : montre aussi l'inventaire du joueur sous le coffre (comme l'ecran du jeu)
+      break;
+    }
     case 'hud':
       o.coeurs = nombreEntre(D, e.coeurs, `${ch}.coeurs`, 0, 40, 20); o.faim = nombreEntre(D, e.faim, `${ch}.faim`, 0, 40, 20);
       o.xp = nombreEntre(D, e.xp, `${ch}.xp`, 0, 1, 0); o.niveau = e.niveau === undefined ? null : (Number.isInteger(e.niveau) && e.niveau >= 0 && e.niveau <= 999 ? e.niveau : D.err(`${ch}.niveau`, 'entier de 0 a 999'));

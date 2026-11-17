@@ -22,7 +22,8 @@ export class Replay {
     this.palAjouts = []; this.noms = []; this.nomIdx = new Map();
     this._blocs = new Colonne(Int32Array, 6); this._sons = new Colonne(Float64Array, 7); this._parts = new Colonne(Float64Array, 9);
     this._act = new Colonne(Float64Array, 16); this._bev = new Colonne(Float64Array, 8);   // acteurs (un enregistrement par acteur et par tick), evenements de blocs a entite (coffre, cloche...)
-    this._ent = new Colonne(Float64Array, 8);   // entites (TNT amorce, blocs qui tombent) : un enregistrement par entite et par tick
+    this._ent = new Colonne(Float64Array, 8);
+    this._ia = new Colonne(Float64Array, 6);   // creatures a IA : [tick, indice, drapeaux, gonflement, tension, debut d'attaque] (rien sans elles)   // entites (TNT amorce, blocs qui tombent) : un enregistrement par entite et par tick
     this.acteurs = []; this.actes = [];   // noms des acteurs simules ; journal des intentions { tick, acteur, verbe, args, statut, texte }
     this.textes = []; this.avertissements = []; this.stats = {};
     this.mods = [];
@@ -38,6 +39,8 @@ export class Replay {
   blocEntite(tick, type, x, y, z, a = 0, b = 0, c = 0) { this._bev.pousser(tick, x, y, z, this.nom(type), a, b, c); }
   // entite : [tick, id, indice du type, x, y, z, meche, indice de palette du bloc (-1 : aucun)]
   entite(tick, id, type, x, y, z, a = 0, b = -1) { this._ent.pousser(tick, id, this.nom(type), x, y, z, a, b); }
+  ia(tick, i, drapeaux, gonfle, tension, attaque) { this._ia.pousser(tick, i, drapeaux, gonfle, tension, attaque); }
+  get iaVue() { return this._ia.vue(); }
   acte(tick, acteur, verbe, args, statut, texte, fin = tick) { this.actes.push({ tick, fin, acteur, verbe, args, statut, texte }); }
   get nbBlocs() { return this._blocs.n; }
   get blocs() { return this._blocs.vue(); }      // 6 entiers par changement
@@ -59,10 +62,10 @@ export class Replay {
 
   // octets stables du replay
   octets() {
-    const entete = Buffer.from(JSON.stringify({ moteur: this.moteur, graine: this.graine, ticks: this.ticks, ralenti: this.ralenti, palAjouts: this.palAjouts, noms: this.noms, textes: this.textes, mods: this.mods, n: [this._blocs.n, this._sons.n, this._parts.n, this._act.n, this._bev.n], ...(this.acteurs.length ? { acteurs: this.acteurs, actes: this.actes } : {}), ...(this._ent.n ? { ne: this._ent.n } : {}) }), 'utf8');
+    const entete = Buffer.from(JSON.stringify({ moteur: this.moteur, graine: this.graine, ticks: this.ticks, ralenti: this.ralenti, palAjouts: this.palAjouts, noms: this.noms, textes: this.textes, mods: this.mods, n: [this._blocs.n, this._sons.n, this._parts.n, this._act.n, this._bev.n], ...(this.acteurs.length ? { acteurs: this.acteurs, actes: this.actes } : {}), ...(this._ent.n ? { ne: this._ent.n } : {}), ...(this._ia.n ? { ni: this._ia.n } : {}) }), 'utf8');
     const l = Buffer.alloc(4); l.writeUInt32LE(entete.length);
     const tab = (v) => Buffer.from(v.buffer, v.byteOffset, v.byteLength);
-    return Buffer.concat([Buffer.from('MCR1'), l, entete, tab(this.blocs), tab(this.sons), tab(this.particules), tab(this.acteursVue), tab(this.blocsEntite), ...(this._ent.n ? [tab(this.entitesVue)] : [])]);
+    return Buffer.concat([Buffer.from('MCR1'), l, entete, tab(this.blocs), tab(this.sons), tab(this.particules), tab(this.acteursVue), tab(this.blocsEntite), ...(this._ent.n ? [tab(this.entitesVue)] : []), ...(this._ia.n ? [tab(this.iaVue)] : [])]);
   }
   sha256() { return crypto.createHash('sha256').update(this.octets()).digest('base64url'); }
 }

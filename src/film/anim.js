@@ -4,6 +4,7 @@
 // du corps (reactions.js) s'ajoutent aux pistes et boucles de l'acteur.
 import { evaluer, evaluerPhase, poidsBoucle } from './scene.js';
 import { appliquerCreatures, boiteDe } from './creatures.js';   // creatures (champ `type`) et montures
+import { VEHICULES as VEHICULES_MARCHE } from '../creatures/especes.js';   // vehicules : seuil de marche des joueurs
 import { planifierCameraSuivi, planifierCameraLibre } from './camera.js';
 import { compensationAppui, descenteBascule, decalageYeux } from '../perso/modele.js';
 import { simulerActeur, creerSol, lisser01 } from './physique.js';
@@ -22,6 +23,9 @@ import { appliquerMontage, effetsDeScene } from '../montage/effets-camera.js';  
 const RAD = Math.PI / 180;
 const DT = 1 / 30; // 30 images par seconde (IMAGES_PAR_SECONDE de scene.js)
 const VITESSE_MARCHE_MINI = 1.0;     // en dessous : l'acteur est immobile (0,05 bloc par tick dans le jeu)
+// creatures : MoveControl tourne le corps vers sa destination a toute vitesse (une vache marche a 1,7 bloc/s, un golem a 1,3) ; vehicules exclus
+const VITESSE_MINI_CREATURE = 0.1;
+const seuilMarche = (a) => (a.creature && !VEHICULES_MARCHE.has(a.creature.type) ? VITESSE_MINI_CREATURE : VITESSE_MARCHE_MINI);
 const ZERO2 = [0, 0];
 const TEMPS_CAP = 0.2;               // secondes : la camera de suivi tourne un peu moins vite que le corps
 const TEMPS_HAUTEUR_CAMERA = 0.3;    // secondes : la camera de suivi monte et descend un peu moins vite que l'acteur (sauts, chutes)
@@ -128,7 +132,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
 
   // Pied du joueur : plus haut sol sous les 4 coins et le centre (comme la boite du jeu), dalles et escaliers a leur vraie hauteur.
   const solSous = (x, z, yr) => { const m = solFin.sous(x, z, yr); return m ? m.y : null; };
-  const vivants = acteurs.map((a) => (a.actes && monde?.replay ? creerVivant(monde.replay, a.nom) : null));   // trace des acteurs a intentions
+  const vivants = acteurs.map((a) => ((a.actes || a.creature?.ia) && monde?.replay ? creerVivant(monde.replay, a.nom) : null));   // trace des acteurs a intentions
 
   // Etat de chaque acteur, avance image par image.
   const etat = acteurs.map((a) => {
@@ -140,7 +144,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
     for (let i = 1; i < n; i++) {
       evaluer(piste, i * DT, tmp); evaluer(piste, (i - 1) * DT, tmp2);
       const dx = tmp[0] - tmp2[0], dz = tmp[2] - tmp2[2];
-      if (Math.hypot(dx, dz) / DT > VITESSE_MARCHE_MINI) { lacet = Math.atan2(-dx, dz) / RAD; break; }
+      if (Math.hypot(dx, dz) / DT > seuilMarche(a)) { lacet = Math.atan2(-dx, dz) / RAD; break; }
     }
     const sol = solSous(p0[0], p0[2]);
     return { y: Number.isFinite(p0[1]) ? p0[1] : (sol ?? 0), vy: 0, lacet, xPrec: p0[0], zPrec: p0[2], pistePos: piste };
@@ -191,7 +195,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
       // --- direction du corps
       let lacet;
       const dx = x - e.xPrec, dz = z - e.zPrec;
-      if (!figeA && i > 0 && Math.hypot(dx, dz) / DT > VITESSE_MARCHE_MINI && !a.lacet) {   // gel : le corps ne se retourne plus tout seul
+      if (!figeA && i > 0 && Math.hypot(dx, dz) / DT > seuilMarche(a) && !a.lacet) {   // gel : le corps ne se retourne plus tout seul
         const cible = Math.atan2(-dx, dz) / RAD;
         e.lacet += normaliser180(cible - e.lacet) * (1 - Math.pow(0.7, 20 * DT)); // 0,3 par tick de 1/20 s, comme le jeu
       }
@@ -291,7 +295,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
   }
 
   // creatures et montures (film/creatures.js) : etat d'animation du jeu, cavaliers sur leur siege ; rien sans elles
-  if (acteurs.some((a) => a.creature || a.monture)) notes.push(...appliquerCreatures(scene, parImage, { DT, terrain, types: extra.creatures?.types }));
+  if (acteurs.some((a) => a.creature || a.monture)) notes.push(...appliquerCreatures(scene, parImage, { DT, terrain, types: extra.creatures?.types, replay: monde?.replay ?? null }));
 
   if (terrain.fin) terrain.fin();   // monde vivant : la camera planifie dans le monde de la fin de la scene (murs poses, trous faits)
 

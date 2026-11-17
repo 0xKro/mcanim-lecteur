@@ -210,6 +210,7 @@ export function validerScene(s) {
     o.reactions = a.reactions !== false;
     Object.assign(o, lireJeuActeur({ err, noms: tousNoms }, a, ch));   // jeu (vie au repos) et gestes
     lireCreature(a, o, ch, err, { duree: s.duree, noms: tousNoms, typesActeurs });   // creatures (type, variante...) et monture ; rien sans ces champs
+    if (o.creature?.ia && a.pos.length > 1) err(`${ch}.pos`, 'avec "ia": true, pos est le point de depart seulement (une seule cle) : la creature decide de ses deplacements');
     if (o.creature && o.actes) { const x = o.actes.find((v) => !VERBES_CREATURES.includes(v.verbe)); if (x) err(`${ch}.actes`, `une creature ne fait que ${VERBES_CREATURES.join(', ')} (pas "${x.verbe}")`); }
     if (a.accroupi !== undefined) o.accroupi = lirePiste(a.accroupi, `${ch}.accroupi`, { minArite: 1, maxArite: 1 });
     for (const m of MEMBRES) if (a[m] !== undefined) o[m] = borner(lirePiste(a[m], `${ch}.${m}`, { minArite: 1, maxArite: 3 }), `${ch}.${m}`, -PLAFOND, PLAFOND);
@@ -287,7 +288,7 @@ export function validerScene(s) {
     gel: s.gel !== undefined ? lireGel(s.gel, s.duree) : [],
     textures: s.textures !== undefined ? lireTextures(s.textures) : {},
     shader: s.shader !== undefined ? lireRefShader(s.shader) : null,   // chemin du fichier shader.json (docs/FORMAT-SHADER.md)
-    monde: s.monde !== undefined ? lireMonde(s.monde, s.duree) : (acteurs.some((a) => a.actes) || s.decor !== undefined || (estObjet(s.ciel) && s.ciel.meteo !== undefined) ? lireMonde({}, s.duree) : null),   // simulation du jeu (docs/SIMULATION.md) ; absent = rendu d'avant, exactement ; un decor cree `monde: {}` (lumiere de blocs, sols et portes du monde vivant)
+    monde: s.monde !== undefined ? lireMonde(s.monde, s.duree) : (acteurs.some((a) => a.actes || a.creature?.ia) || s.decor !== undefined || (estObjet(s.ciel) && s.ciel.meteo !== undefined) ? lireMonde({}, s.duree) : null),   // simulation du jeu (docs/SIMULATION.md) ; absent = rendu d'avant, exactement ; un decor cree `monde: {}` (lumiere de blocs, sols et portes du monde vivant)
     ...(s.decor !== undefined ? { decor: lireListeDecor(s.decor) } : {}),   // decors (docs/FORMAT-DECOR.md) : fichiers .decor.json ou objets en ligne, appliques dans l'ordre
     packShader: s.packShader !== undefined ? lireRefPackShader(s.packShader) : null,   // vrai pack de shaders (.zip) : rendu OpenGL logiciel, docs/SHADERS-REELS.md
     jeu: jeuDeScene(s, !!(montage.plans || montage.textes.length || montage.incrustations.length)),

@@ -82,7 +82,7 @@ export async function simulerScene({ scene, zonePath, baseDir, env = process.env
   if (scene.decor) { const r0 = await (await import('../decor/index.js')).zoneAvecDecor({ zone, scene, baseDir, donnees }); zone = r0.zone; notesDecor = r0.notes; }
   const hp = scene.ciel?.heure;   // l'heure du jour de la scene : lue par le detecteur de lumiere du jour
   const heure = hp ? (t) => evaluer(hp, t)[0] : undefined;
-  const typesC = scene.acteurs.some((a) => a.creature && a.actes) ? (await (await import('../creatures/donnees.js')).donneesCreatures({ env })).types : null;   // creatures a intentions : leur gabarit
+  const typesC = scene.acteurs.some((a) => a.creature && (a.actes || a.creature.ia)) ? (await (await import('../creatures/donnees.js')).donneesCreatures({ env })).types : null;   // creatures a intentions : leur gabarit
   const r = simuler({ zone, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene, typesC), baseDir, duree: scene.duree, options: { heure, meteo: scene.ciel?.meteo ?? null } });
   return { zone, donnees, replay: r.replay, rapport: r.rapport, notes: [...notesDecor, ...r.replay.avertissements.map((a) => 'monde : ' + a)], secondes: (performance.now() - t0) / 1000 };
 }

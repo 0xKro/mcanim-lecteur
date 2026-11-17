@@ -12,6 +12,7 @@ import { progressionParTick, ticksPourCasser, etapeFissure } from './cassage.js'
 import { dirDeLacet, VEC, OPPOSE, JEU, FR, decale, parseEtat, court } from './familles/_aide.js';
 import { evenement } from './registre.js';
 import { installerUtilisation, BIT } from './utilisation.js';
+import { IA, BUTIN, coupJoueur } from './ia.js';   // creatures `ia: true` (buts du jeu, cibles, combat) ; coup d'epee du joueur (verbe frappe)
 
 export const LARGEUR = 0.6, HAUTEUR = 1.8, HAUTEUR_ACCROUPI = 1.5, OEIL = 1.62, OEIL_ACCROUPI = 1.27;
 export const GRAVITE = 0.08, TRAINEE = 0.98, SAUT = 0.42, PAS = 0.6, FRICTION_AIR = 0.91;
@@ -43,12 +44,14 @@ export class Acteur {
     this.xPrec = this.x; this.zPrec = this.z;
     this.entree = { avance: 0, cap: this.lacet, saute: false };
     // sante, chute, fluides (docs/SIMULATION.md partie 11)
-    this.vieMax = d.vie ?? 20; this.vie = this.vieMax; this.invulnerable = !!d.invulnerable; this.ramasse = d.ramasse === true; this.sac = new Map();
+    this.vieMax = d.vie ?? d.ia?.vie ?? 20; this.vie = this.vieMax; this.invulnerable = !!d.invulnerable; this.ramasse = d.ramasse === true; this.sac = new Map();
     this.hurtTime = 0; this.invulTemps = 0; this.derniereBlessure = 0; this.mort = -1; this.distanceChute = 0; this.air = 300; this.dansEau = false; this.dansLave = false;
     this.initUtilisation(d);
     // creature (champ `type`) : sa boite, ses yeux et sa vitesse (film/actes.js, gabarit) ; joueur sinon
     const gb = d.gabarit ?? null;
     this.L = gb?.l ?? LARGEUR; this.H = gb?.h ?? HAUTEUR; this.O = gb?.oeil ?? OEIL; this.kVit = gb?.vitesse ?? 1;
+    this.typeCreature = d.typeCreature ?? null; this.dernierCoup = -1e9;
+    this.ia = d.ia ? new IA(this, d.ia) : null;
   }
 
   boite(x = this.x, y = this.y, z = this.z) { const h = this.accroupi ? HAUTEUR_ACCROUPI : this.H, L = this.L; return [x - L / 2, y, z - L / 2, x + L / 2, y + h, z + L / 2]; }
@@ -108,6 +111,37 @@ export class Acteur {
   // ---------------------------------------------------------------- attends
   debut_attends(T, a) { T.fin = this.sim.temps + tickDe(a.secondes, this.sim.replay.ralenti); }
   tick_attends(T) { if (this.sim.temps >= T.fin) this.finirTache('ok', ''); }
+
+  // ---------------------------------------------------------------- frappe (Player.attack) : portee 3 blocs, recharge de l'arme, critique en tombant
+  debut_frappe(T, a) {
+    T.max = a.opts.max ? tickDe(a.opts.max, this.sim.replay.ralenti) : 0;
+    if (a.opts.objet) this.main = { objet: a.opts.objet, efficacite: 0 };
+    T.coups = a.opts.coups ?? Infinity; T.n = 0; T.critique = !!a.opts.critique;
+  }
+  tick_frappe(T) {
+    const sim = this.sim, o = this.g.parNom.get(T.acte.cible.acteur);
+    if (!o) throw new EchecActe('cible inconnue');
+    if (o.mort >= 0) { this.finirTache('ok', `${o.nom} est mort`); return; }
+    this.regardTache = { x: o.x, y: o.y + o.H * 0.8, z: o.z };
+    const B = o.boite(), [ex, ey, ez] = this.oeil();
+    const cx = Math.max(B[0], Math.min(ex, B[3])), cy = Math.max(B[1], Math.min(ey, B[4])), cz = Math.max(B[2], Math.min(ez, B[5]));
+    const d = Math.hypot(ex - cx, ey - cy, ez - cz);
+    if (d > 2.6) { const cap = Math.atan2(-(o.x - this.x), o.z - this.z) / RAD; this.entree = { avance: 1, cap, saute: false }; if (this.auSol && this.bute && this.marcheSautable(cap)) this.saut = true; }
+    const depuis = sim.temps - this.dernierCoup, c0 = coupJoueur(this.main.objet, depuis);
+    if (d > 3 || c0.recharge < 1) return;
+    if (T.critique && this.auSol) { this.saut = true; return; }                 // coup critique : sauter, frapper en retombant
+    if (T.critique && !(this.vy < 0)) return;
+    const crit = !this.auSol && this.vy < 0 && !this.dansEau && !this.course && sim.regles.valeur('combat.critiques', true);
+    const c = coupJoueur(this.main.objet, depuis, { critique: crit });
+    this.dernierCoup = sim.temps; this.balancer();
+    const R = sim.regles.valeur('combat.recul', 1);
+    const ok = o.frappe(c.degats, 'joueur:' + this.nom, this.x - o.x, this.z - o.z, 0.4 * R);
+    if (ok) { if (this.course) o.recul(0.5 * R, this.x - o.x, this.z - o.z); o.ia?.blesse(this); o.dernierFrappeur = this; }
+    sim.son(c.critique ? 'entity.player.attack.crit' : c.recharge > 0.9 ? 'entity.player.attack.strong' : 'entity.player.attack.weak', this.x, this.y, this.z, 1, 1);
+    if (c.critique) for (let i = 0; i < 6; i++) sim.particule('crit', o.x, o.y + o.H * 0.6, o.z, (sim.hasard.flottant() - 0.5), 0.2, (sim.hasard.flottant() - 0.5), 1);
+    (sim.stats.coups ??= []).push(`${(sim.temps / 20).toFixed(2)} ${this.nom} frappe ${o.nom} ${+c.degats.toFixed(1)}${c.critique ? ' critique' : ''}${ok ? '' : ' (sans effet)'}`);
+    if (++T.n >= T.coups) this.finirTache('ok', `${T.n} coup(s)`);
+  }
 
   // ---------------------------------------------------------------- va
   debut_va(T, a) {
@@ -619,14 +653,18 @@ export class Acteur {
     sim.dire(`${this.nom} perd ${q} (${source}) : ${this.vie}/${this.vieMax}`);
     sim.stats.degats = (sim.stats.degats || 0) + q;
     if (this.vie <= 0) this.mourir(source);
-    else if (nouveau) sim.son('entity.player.hurt', this.x, this.y, this.z, 1, 1 + (sim.hasard.flottant() - sim.hasard.flottant()) * 0.2);
+    else if (nouveau) sim.son(this.typeCreature ? `entity.${this.typeCreature}.hurt` : 'entity.player.hurt', this.x, this.y, this.z, 1, 1 + (sim.hasard.flottant() - sim.hasard.flottant()) * 0.2);
     return true;
   }
   mourir(source) {
     const sim = this.sim;
     this.mort = 0;
-    sim.son('entity.player.death', this.x, this.y, this.z, 1, 1 + (sim.hasard.flottant() - sim.hasard.flottant()) * 0.2);
+    sim.son(this.typeCreature ? `entity.${this.typeCreature}.death` : 'entity.player.death', this.x, this.y, this.z, 1, 1 + (sim.hasard.flottant() - sim.hasard.flottant()) * 0.2);
     sim.stats.morts = (sim.stats.morts || 0) + 1;
+    if (this.typeCreature && sim.regles.valeur('butin.actif', true)) {   // butin de la creature (LivingEntity.dropAllDeathLoot) : objets au sol
+      for (const [objet, min, max] of BUTIN[this.typeCreature] ?? []) { const n = min + sim.hasard.entierBorne(max - min + 1); if (n > 0) sim.entites.objet(objet, n, this.x, this.y + this.H / 2, this.z); }
+    }
+    if (this.ia) (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${this.nom} meurt (${source})`);
     sim.dire(`${this.nom} meurt (${source})`);
     (sim.stats.mortsListe ??= []).push(`${this.nom} t=${(sim.temps / 20 / sim.replay.ralenti).toFixed(1).replace('.', ',')} ${source}`);
     if (this.tache) this.finirTache('interrompu', 'mort');
@@ -674,13 +712,14 @@ export class Acteur {
     const sim = this.sim;
     if (this.hurtTime > 0) this.hurtTime--;
     if (this.invulTemps > 0) this.invulTemps--;
-    if (this.mort >= 0) { this.tickMort(); this.ecrire(); return; }      // LivingEntity.tickDeath : le corps tombe, 20 ticks, puis un nuage et il disparait
+    if (this.mort >= 0) { this.tickMort(); this.ecrire(); if (this.ia && this.mort < 21) this.sim.replay.ia(this.sim.temps, this.id, 0, 0, 0, 0); return; }      // LivingEntity.tickDeath : le corps tombe, 20 ticks, puis un nuage et il disparait
     this.regardTache = this.tache && (this.tache.etat === 'vise' || this.tache.etat === 'mine') ? this.regardTache : null;
     if (this.delaiCassage > 0) this.delaiCassage--;
     this.demarrerDues();
     this.entree = { avance: 0, cap: this.lacet, saute: false };
     this.tickEffets();
-    this.tickTache();
+    if (this.ia && !this.tache) this.ia.tick();   // IA : seulement quand aucune intention ecrite ne tourne (les actes l'emportent)
+    else { this.tickTache(); if (this.ia) this.ia.ecrire(); }
     this._regard();
     this.physique();
     if (this.ramasse && this.mort < 0) sim.entites.ramasser(this);
@@ -689,6 +728,7 @@ export class Acteur {
   }
   tickMort() {
     const sim = this.sim;
+    if (this.mortSansCorps) { this.mort = 21; return; }
     if (this.mort < 20) this.mort++;
     else if (this.mort === 20) this.mort = 21;
     if (this.mort === 20) {

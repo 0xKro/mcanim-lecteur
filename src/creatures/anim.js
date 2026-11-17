@@ -665,7 +665,7 @@ export function poser(type, P, s, m, anims) {
       break;
     }
     case 'Wither': {
-      ['right_head', 'left_head'].forEach((h, i) => { P.yrot(h, rad(lerpV(m, i, partial))); P.xrot(h, rad(lerpV(m, 2 + i, partial))); });
+      ['right_head', 'left_head'].forEach((h, i) => { P.yrot(h, rad(lerpV(m, i, partial) || s.yRot)); P.xrot(h, rad(lerpV(m, 2 + i, partial) || s.xRot)); });
       const a = cos(age * 0.1), cote = (0.065 + 0.05 * a) * PI;
       P.xrot('ribcage', cote);
       const q = P.get('tail'); q[0] = -2; q[1] = 6.9 + cos(cote) * 10; q[2] = -0.5 + sin(cote) * 10;
@@ -741,8 +741,40 @@ export function poser(type, P, s, m, anims) {
       break;
     }
     default:
+      if (type === 'ender_dragon') { poserDragon(P, s, m); break; }
       if (P.has('head')) tete(P, s);
       if (P.has('right_hind_leg')) quadrupede(P, s);
+  }
+}
+
+// EnderDragonModel.setupAnim (jeu, ecrit d'apres son comportement ; Horizon ne l'a pas) : battement des ailes sur flapTime, cou (5 anneaux)
+// et queue (12 anneaux) qui ondulent ; historique de vol du dragon suppose droit (pas de virage : lacets relatifs nuls). flapTime : tick().
+function poserDragon(P, s, m) {
+  const ft = m.anim.flapO + (m.anim.flap - m.anim.flapO) * (s.partial ?? 0), f = ft * PI * 2;
+  P.xrot('jaw', (sin(f) + 1) * 0.2);
+  let g = sin(f - 1) + 1; g = (g * g + g * 2) * 0.05;
+  const r = P.get('root'); r[1] = (g - 2) * 16; r[2] = -48; r[3] = g * 2 * PI / 180;
+  let y = 20, z = -12, x = 0;
+  for (let n = 0; n < 5; n++) {
+    const q = P.get('neck' + n);
+    q[3] = cos(n * 0.45 + f) * 0.15; q[4] = 0; q[5] = 0; q[0] = x; q[1] = y; q[2] = z;
+    y += sin(q[3]) * 10; z -= cos(q[4]) * cos(q[3]) * 10; x -= sin(q[4]) * cos(q[3]) * 10;
+  }
+  const h = P.get('head'); h[0] = x; h[1] = y; h[2] = z; h[3] = rad(s.xRot ?? 0); h[4] = rad(s.yRot ?? 0); h[5] = 0;
+  const lw = P.get('left_wing'), rw = P.get('right_wing');
+  lw[3] = 0.125 - cos(f) * 0.2; lw[4] = -0.25; lw[5] = -(sin(f) + 0.125) * 0.8;
+  rw[3] = lw[3]; rw[4] = -lw[4]; rw[5] = -lw[5];
+  P.zrot('left_wing_tip', (sin(f + 2) + 0.5) * 0.75); P.zrot('right_wing_tip', -(sin(f + 2) + 0.5) * 0.75);
+  for (const c of ['left', 'right']) {   // EnderDragonModel.poseLimbs
+    P.xrot(c + '_front_leg', 1.3 + g * 0.1); P.xrot(c + '_front_leg_tip', -0.5 - g * 0.1); P.xrot(c + '_front_foot', 0.75 + g * 0.1);
+    P.xrot(c + '_hind_leg', 1 + g * 0.1); P.xrot(c + '_hind_leg_tip', 0.5 + g * 0.1); P.xrot(c + '_hind_foot', 0.75 + g * 0.1);
+  }
+  let p = 0; y = 10; z = 60; x = 0;
+  for (let n = 0; n < 12; n++) {
+    const q = P.get('tail' + n);
+    p += sin(n * 0.45 + f) * 0.05;
+    q[4] = PI; q[3] = p; q[5] = 0; q[0] = x; q[1] = y; q[2] = z;
+    y += sin(q[3]) * 10; z -= cos(q[4]) * cos(q[3]) * 10; x -= sin(q[4]) * cos(q[3]) * 10;
   }
 }
 
@@ -1269,6 +1301,10 @@ export function tick(type, m) {
   if (m.broute > 0) m.broute--;
   if (m.invulnerable > 0) m.invulnerable--;
   const sol = m.auSol, etaitSol = m._sol;
+  if (type === 'ender_dragon') {   // EnderDragon.aiStep : flapTime += 0,2 / (vitesse horizontale x 10 + 1) x 2^vy (assis : 0,1)
+    a.flapO = a.flap;
+    a.flap += m.assis ? 0.1 : 0.2 / ((m.vh ?? 0) * 10 + 1) * Math.pow(2, m.vy ?? 0);
+  }
   switch (fam) {
     case 'Chicken': case 'Parrot': { // Chicken.aiStep / Parrot.calculateFlapping
       const pose = fam === 'Parrot' ? sol || m.passager : sol;
@@ -1411,6 +1447,7 @@ export function tick(type, m) {
       break;
     }
     case 'Rabbit': // Rabbit.baseTick (le saut : tant qu'il n'est pas au sol)
+      if (!m._lapin) { m._lapin = true; m._compteur = Math.floor(alea(m) * 40) + 180; }
       if (m._compteur <= 0) { m._compteur = Math.floor(alea(m) * 40) + 180; st[1] = age; }
       else if (!sol) { demarrerSiArrete(st, 0, age); st[1] = null; }
       else { m._compteur--; st[0] = null; }

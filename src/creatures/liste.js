@@ -37,7 +37,7 @@ export function liste(d, mot = '') {
     L.push(`${TYPES.length} types (champ "type") ; vitesse de marche du jeu en blocs/s entre parentheses ; mcanim creatures --liste <type> pour le detail`);
     for (const [g, ts] of GROUPES) L.push(`${g} : ${ts.filter((t) => ESPECES[t]).map((t) => { const v = vitesseMarche(t, statsDe({ type: t }, d.types)); return v ? `${t} (${v})` : t; }).join(', ')}`);
     L.push(`montures (champ "monture" du cavalier) : ${MONTURES.filter((m) => !m.includes('_minecart')).join(', ')}, wagonnets`);
-    L.push(`anim speciales : ${ANIMS_SPECIALES.join(', ')} ; champs : variante bebe taille charge selle armureCheval colle coffre tondu gonfle agressif anim regarde parties etiquette cris`);
+    L.push(`anim speciales : ${ANIMS_SPECIALES.join(', ')} ; champs : variante bebe taille charge selle armureCheval colle coffre tondu gonfle agressif anim regarde parties etiquette cris porte contenu echange sautille`);
     return L;
   }
   const type = TYPES.includes(mot) ? mot : FR[mot];

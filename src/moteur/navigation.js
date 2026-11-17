@@ -31,8 +31,10 @@ export function blocsOuvrables(d, { fer = false } = {}) {
 const estDanger = (lec, x, y, z) => { const e = lec.etatEn(x, y, z); return e >= 0 && (DANGER.test(lec.d.nomBloc(e)) || lec.d.fluide(e) !== 0); };
 
 // Un point de station valide (pieds en (x, y, z) reels) : la boite de l'acteur est libre, du sol dessous, rien de dangereux
-function stationValide(lec, x, y, z) {
-  const b = [x - LARGEUR / 2 + 1e-3, y + 1e-3, z - LARGEUR / 2 + 1e-3, x + LARGEUR / 2 - 1e-3, y + HAUTEUR - 1e-3, z + LARGEUR / 2 - 1e-3];
+// g : gabarit { L, H, chute } (creatures : leur boite et leur chute permise ; defaut : le joueur)
+const GJ = { L: LARGEUR, H: HAUTEUR, chute: CHUTE_MAX };
+function stationValide(lec, x, y, z, g = GJ) {
+  const b = [x - g.L / 2 + 1e-3, y + 1e-3, z - g.L / 2 + 1e-3, x + g.L / 2 - 1e-3, y + g.H - 1e-3, z + g.L / 2 - 1e-3];
   if (coupe(lec, b)) return false;
   const bx = Math.floor(x), bz = Math.floor(z), by = Math.floor(y + 1e-6);
   if (estDanger(lec, bx, by, bz) || estDanger(lec, bx, by + 1, bz) || estDanger(lec, bx, by - 1, bz)) return false;
@@ -40,22 +42,23 @@ function stationValide(lec, x, y, z) {
 }
 
 // Hauteur de sol de la colonne (cx, cz) pour un acteur dont les pieds sont a fy : montee d'une marche de 1 bloc ou descente de 3 blocs au plus.
-function solColonne(lec, cx, cz, fy) {
-  const s = solSous(lec, cx + 0.5, cz + 0.5, fy, SAUT_PAS + 1e-6, CHUTE_MAX + 1e-6);
+function solColonne(lec, cx, cz, fy, g = GJ) {
+  const s = solSous(lec, cx + 0.5, cz + 0.5, fy, SAUT_PAS + 1e-6, g.chute + 1e-6);
   return s;
 }
 
 // Un segment droit a hauteur constante est-il praticable (boite de l'acteur qui glisse, sol continu) ?
-export function segmentLibre(lec, a, b) {
+export function segmentLibre(lec, a, b, g = GJ) {
   const L = Math.hypot(b[0] - a[0], b[2] - a[2]);
   if (Math.abs(b[1] - a[1]) > 0.02) return false;
   const n = Math.max(1, Math.ceil(L / 0.25));
   for (let i = 1; i <= n; i++) {
     const x = a[0] + (b[0] - a[0]) * i / n, z = a[2] + (b[2] - a[2]) * i / n;
-    if (!stationValide(lec, x, a[1], z)) return false;
+    if (!stationValide(lec, x, a[1], z, g)) return false;
     const s = solSous(lec, x, z, a[1], 0.05, 0.2);
     if (s === null || Math.abs(s - a[1]) > 0.03) return false;
-    for (const [dx, dz] of [[-0.3, -0.3], [0.3, -0.3], [-0.3, 0.3], [0.3, 0.3]]) {
+    const r = g.L / 2;
+    for (const [dx, dz] of [[-r, -r], [r, -r], [-r, r], [r, r]]) {
       const s2 = solSous(lec, x + dx, z + dz, a[1], 0.05, 0.6);
       if (s2 === null) return false;
     }
@@ -65,8 +68,8 @@ export function segmentLibre(lec, a, b) {
 
 // Chemin de `de` = [x, y, z] (pieds) vers le point (bx, bz) [, by]. Rend { chemin: [[x,y,z]...], portes: [[x,y,z]...], complet, raison }.
 // Si le but n'est pas atteignable, `complet` est faux et le chemin mene au point le plus proche (ou est vide).
-export function chercherChemin(lec, de, but, { ouvrePortes = false, ferOuvrable = false, rayon = 0.5, maxNoeuds = 12000 } = {}) {
-  const d = lec.d;
+export function chercherChemin(lec, de, but, { ouvrePortes = false, ferOuvrable = false, rayon = 0.5, maxNoeuds = 12000, gabarit = null } = {}) {
+  const d = lec.d, gb = gabarit ? { L: gabarit.L ?? LARGEUR, H: gabarit.H ?? HAUTEUR, chute: gabarit.chute ?? CHUTE_MAX } : GJ;
   const ouvrables = ouvrePortes ? blocsOuvrables(d, { fer: ferOuvrable }) : new Set();
   const L = ouvrePortes ? lecteurOuvert(lec, ouvrables) : lec;
   const bx = but.x, bz = but.z;
@@ -92,24 +95,24 @@ export function chercherChemin(lec, de, but, { ouvrePortes = false, ferOuvrable 
       const lim = lec.limites;
       if (lim && (cx < lim.x0 || cx >= lim.x1 || cz < lim.z0 || cz >= lim.z1)) continue;   // on reste dans la boite du monde
       const diag = dx !== 0 && dz !== 0;
-      const s = solColonne(L, cx, cz, n.y);
+      const s = solColonne(L, cx, cz, n.y, gb);
       if (s === null) continue;
       // un point de la colonne : le centre de la cellule ; pour le but, on s'arrete sur le point exact
       const x = cx + 0.5, z = cz + 0.5;
-      if (!stationValide(L, x, s, z)) continue;
+      if (!stationValide(L, x, s, z, gb)) continue;
       if (diag) {   // pas de coin coupe : les deux colonnes voisines doivent etre praticables a la meme hauteur
-        const s1 = solColonne(L, n.cx + dx, n.cz, n.y), s2 = solColonne(L, n.cx, n.cz + dz, n.y);
+        const s1 = solColonne(L, n.cx + dx, n.cz, n.y, gb), s2 = solColonne(L, n.cx, n.cz + dz, n.y, gb);
         if (s1 === null || s2 === null || Math.abs(s1 - n.y) > 0.02 || Math.abs(s2 - n.y) > 0.02 || Math.abs(s - n.y) > 0.02) continue;
-        if (!stationValide(L, n.cx + dx + 0.5, s1, n.cz + 0.5) || !stationValide(L, n.cx + 0.5, s2, n.cz + dz + 0.5)) continue;
+        if (!stationValide(L, n.cx + dx + 0.5, s1, n.cz + 0.5, gb) || !stationValide(L, n.cx + 0.5, s2, n.cz + dz + 0.5, gb)) continue;
       }
       // une marche de plus de 0,6 demande un saut : le plafond au-dessus de la case de depart doit etre libre sur 1,25 de plus
       if (s - n.y > 0.6 + 1e-6) {
-        const hb = [n.x - 0.29, n.y + 1e-3, n.z - 0.29, n.x + 0.29, n.y + 1.8 + (s - n.y) - 1e-3, n.z + 0.29];
+        const hb = [n.x - Math.min(0.29, gb.L / 2), n.y + 1e-3, n.z - Math.min(0.29, gb.L / 2), n.x + Math.min(0.29, gb.L / 2), n.y + gb.H + (s - n.y) - 1e-3, n.z + Math.min(0.29, gb.L / 2)];
         if (coupe(L, hb)) continue;
       }
       // la boite qui glisse d'une case a l'autre ne doit rien toucher en chemin (panneau d'une porte fermee a l'arete d'une case, cloture...)
       let libre = true;
-      for (const t of [0.25, 0.5, 0.75]) { if (!stationValide(L, n.x + (x - n.x) * t, t < 0.5 ? n.y : Math.max(n.y, s), n.z + (z - n.z) * t)) { libre = false; break; } }
+      for (const t of [0.25, 0.5, 0.75]) { if (!stationValide(L, n.x + (x - n.x) * t, t < 0.5 ? n.y : Math.max(n.y, s), n.z + (z - n.z) * t, gb)) { libre = false; break; } }
       if (!libre) continue;
       const chute = n.y - s;
       let cout = diag ? 1.4142 : 1;
@@ -135,7 +138,7 @@ export function chercherChemin(lec, de, but, { ouvrePortes = false, ferOuvrable 
   let i = 0;
   while (i < pts.length - 1) {
     let j = pts.length - 1;
-    while (j > i + 1 && !segmentLibre(L, pts[i], pts[j])) j--;
+    while (j > i + 1 && !segmentLibre(L, pts[i], pts[j], gb)) j--;
     lisse.push(pts[j]); i = j;
   }
   // portes sur le chemin : cellules d'une porte fermee que le chemin traverse

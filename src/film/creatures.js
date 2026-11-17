@@ -31,7 +31,7 @@ export function boiteDe(c, types) {
 }
 
 // scene : validee ; parImage[i][k] : poses de la passe 1 ; terrain : celui de anim.js ; types : stats (table des creatures)
-export function appliquerCreatures(scene, parImage, { DT = 1 / 30, terrain = {}, types = {} } = {}) {
+export function appliquerCreatures(scene, parImage, { DT = 1 / 30, terrain = {}, types = {}, replay = null } = {}) {
   const acteurs = scene.acteurs, n = parImage.length;
   const parNom = new Map(acteurs.map((a, k) => [a.nom, k]));
   const notes = [];
@@ -40,26 +40,105 @@ export function appliquerCreatures(scene, parImage, { DT = 1 / 30, terrain = {},
     if (!a.creature || !VEHICULES.has(a.creature.type) || !terrain.eauEn) return;
     for (let i = 0; i < n; i++) { const p = parImage[i][k]; if (!a.creature.type.includes('boat')) continue; const e = terrain.eauEn(p.x, p.z); if (e !== null && e !== undefined && e > p.y) { p.y = e - 0.1; p.eau = true; p.auSol = false; } }
   });
-  // ---- 2. cavaliers : sur le siege de leur monture, tournes comme elle (Entity.positionRider), pose assise
-  const montePar = acteurs.map(() => new Array(n).fill(null));
+  // ---- 2a. qui monte quoi a chaque image (ordre des passagers = ordre des acteurs, comme getPassengers)
+  const montePar = acteurs.map(() => new Array(n).fill(null));       // premier cavalier (conducteur) de chaque monture
+  const passagers = acteurs.map(() => new Array(n).fill(null));      // liste des cavaliers de chaque monture
+  const vehiculeDe = acteurs.map(() => new Array(n).fill(-1));       // monture de chaque cavalier
   acteurs.forEach((a, k) => {
     if (!a.monture) return;
     for (let i = 0; i < n; i++) {
-      const t = i * DT, nomV = valeurA(a.monture, t);
+      const nomV = valeurA(a.monture, i * DT);
       if (!nomV) continue;
-      const kv = parNom.get(nomV), V = parImage[i][kv], p = parImage[i][k];
-      const tv = acteurs[kv].creature?.type;
-      const siege = SIEGES[tv] ?? [0, boiteDe(acteurs[kv].creature, types).h, 0];
-      const ech = acteurs[kv].creature?.bebe ? 0.5 : 1;
+      const kv = parNom.get(nomV);
+      vehiculeDe[k][i] = kv; parImage[i][k].monture = nomV;
+      (passagers[kv][i] ??= []).push(k);
+      montePar[kv][i] ??= a.nom;
+    }
+  });
+  // ---- 3a. creatures : etat d'animation du jeu tick par tick (les cavaliers ne marchent pas : leurs pattes ne suivent pas le trajet)
+  const etats = acteurs.map((a, k) => (a.creature ? etatTicks(a, k) : null));
+  function etatTicks(a, k) {
+    const c = a.creature;
+    const type = c.type, vehicule = VEHICULES.has(type);
+    const nt = Math.ceil(n * DT * 20) + 2;
+    // position au tick j (interpolee entre les images)
+    const P = (j) => {
+      const f = Math.max(0, Math.min(n - 1, j / 20 / DT)), i0 = Math.floor(f), i1 = Math.min(n - 1, i0 + 1), u = f - i0;
+      const a0 = parImage[i0][k], a1 = parImage[i1][k];
+      return { x: a0.x + (a1.x - a0.x) * u, y: a0.y + (a1.y - a0.y) * u, z: a0.z + (a1.z - a0.z) * u, auSol: u < 0.5 ? a0.auSol : a1.auSol, eau: !!(u < 0.5 ? a0.eau : a1.eau), i: u < 0.5 ? i0 : i1 };
+    };
+    const [fm, fa] = MARCHE[type] ?? [4, 0.4];
+    const m = vehicule ? {} : etatInitial(type);
+    const ia = c.ia && replay ? etatsIA(replay, a.nom) : null;   // creature a IA : son etat d'animation tick par tick (moteur/ia.js, replay.ia)
+    if (!vehicule) { let id = 0; for (const ch of a.nom) id = (id * 31 + ch.charCodeAt(0)) | 0; Object.assign(m, { id, age: -1, bebe: !!c.bebe || m.bebe, coffre: !!c.coffre, tondu: !!c.tondu, taille: c.taille ?? 1, apprivoise: c.colle !== undefined && c.colle !== null, assis: false, bloc: !!c.porte }); }
+    // lapin : il ne se deplace qu'en sautant (RabbitMoveControl) : sauts du jeu poses sur le trajet ecrit (sautsLapin)
+    const sauts = type === 'rabbit' && c.sautille !== false ? sautsLapin(P, nt, vehiculeDe[k]) : null;
+    const Q = sauts ? (j) => { const q = P(j), r = sauts.position(j); return { ...q, x: r.x, z: r.z, y: q.y + r.h, auSol: q.auSol && r.h <= 0 }; } : P;
+    let limbPos = 0, limbSpeed = 0, pagaie = 0, prec = Q(0);
+    const snaps = [];
+    const evts = [];   // { j, nom } animations nommees et speciales
+    for (const kf of c.anim ?? []) evts.push({ j: Math.round(kf.t * 20), nom: kf.v });
+    let attaque = -100, blesse = -100;
+    for (let j = 0; j <= nt; j++) {
+      const q = Q(j);
+      const passager = vehiculeDe[k][q.i] >= 0;
+      const dx = passager ? 0 : q.x - prec.x, dz = passager ? 0 : q.z - prec.z, dy = passager ? 0 : q.y - prec.y;
+      const dist = VOLANTS.has(type) ? Math.hypot(dx, dy, dz) : Math.hypot(dx, dz);
+      const avant = limbSpeed;
+      const cible = Math.min(dist * fm, 1);
+      limbSpeed += (cible - limbSpeed) * fa; limbPos += limbSpeed;
+      if (vehicule && dist > 0.01) pagaie += Math.PI / 8;   // Boat.tick : chaque pagaie avance de pi/8 par tick quand on rame
+      for (const e of evts) if (e.j === j) { if (e.nom === 'attaque') { attaque = j; if (!vehicule) m.attaque = 10; } if (e.nom === 'blesse') blesse = j; if (e.nom === 'non' && !vehicule) m.mecontent = 40; if (e.nom === 'broute' && !vehicule) m.broute = 40; }
+      if (!vehicule) {
+        const im = parImage[q.i][k];
+        m.auSol = !!q.auSol; m.vy = dy; m.vh = dist; m.dansEau = q.eau; m.nage = q.eau && !m.auSol ? 1 : 0;
+        const e = ia?.get(j);
+        m.agressif = c.agressif ? !!valeurA(c.agressif, j / 20) : !!(e && e.dr & 1);
+        if (e?.attaque && !vehicule) { m.attaque = 10; attaque = j; }
+        if (e && (e.dr & 4)) m.utilise = e.tension;
+        m.mainD = im.objetD ? String(im.objetD).replace(/^minecraft:/, '') : null; m.mainG = im.objetG ? String(im.objetG).replace(/^minecraft:/, '') : null;
+        m.passager = passager; m.monte = !!montePar[k][q.i];
+        m.gonfle = c.gonfle ? evaluer({ arite: 1, cles: c.gonfle.map((x) => ({ t: x.t, v: [x.v] })) }, j / 20)[0] : (e?.gonfle ?? 0);
+        tick(type, m);
+      }
+      snaps.push({ limbPos, limbSpeed, avant, pagaie, m: vehicule ? null : structuredClone(m) });
+      prec = q;
+    }
+    return { snaps, evts, attaque, blesse, sauts };
+  }
+  // instantane du tick de l'image i (et la fraction de tick)
+  function snapA(k, i) { const tt = i * DT * 20, j = Math.floor(tt), sn = etats[k].snaps; return { sn: sn[Math.min(sn.length - 1, j + 1)], al: tt - j, tt }; }
+
+  // ---- 2b. cavaliers : sur le siege de leur monture a chaque image (Entity.positionRider), pose assise du jeu.
+  // Siege = point d'attache du type (riders.rs passenger_attachment, MIT) + son animation : cheval cabre (AbstractHorse, standAnim),
+  // strider qui se dandine (Strider.getPassengerAttachmentPoint), dromadaire (2 places, assis), bateau (2 places).
+  // Corps : celui de la monture vivante (LivingEntityRenderer.solveBodyRot : 85 degres au plus de la tete), du bateau (Boat.clampRotation,
+  // tete a +-105) ; wagonnet : le sien. La monture est deja a sa place de l'image : le cavalier la suit image par image, sans retard.
+  for (const [k, a] of acteurs.entries()) {
+    if (!a.monture) continue;
+    for (let i = 0; i < n; i++) {
+      const kv = vehiculeDe[k][i];
+      if (kv < 0) continue;
+      const V = parImage[i][kv], p = parImage[i][k], av = acteurs[kv];
+      const tv = av.creature?.type;
+      const liste = passagers[kv][i], rang = liste.indexOf(k), nb = liste.length;
+      const animal = !!a.creature && (types?.[a.creature.type]?.c === 1);
+      const [sx, sy, sz] = siegeDe(av, tv, rang, nb, animal, kv, i);
       const dec = a.creature ? (DECALAGE_TYPE[a.creature.type] ?? 0) : DECALAGE_CAVALIER;
       const ya = -(V.lacet ?? 0) * RAD, cs = Math.cos(ya), sn = Math.sin(ya);
-      const [sx, sy, sz] = siege.map((v) => v * ech);
       p.x = V.x + sx * cs + sz * sn; p.z = V.z + sz * cs - sx * sn;
-      p.y = V.y + (V.dy ?? 0) + sy - dec; p.sol = V.sol; p.auSol = false; p.dy = 0;
-      const libre = a.lacet ? norm180(p.lacet - V.lacet) : 0;
-      p.lacet = V.lacet + Math.max(-105, Math.min(105, libre));
-      p.monture = nomV; p.eau = false;
-      montePar[kv][i] = a.nom;
+      p.y = V.y + (V.dy ?? 0) + (V.hauteur ?? 0) + sy - dec; p.sol = V.sol; p.auSol = false; p.dy = 0;
+      // regard voulu (absolu) : la piste lacet du cavalier + sa tete ; sans piste lacet, il regarde ou va sa monture
+      const tete = p.tete ?? [0, 0];
+      const voulu = (a.lacet ? p.lacet : V.lacet) + (tete[0] ?? 0);
+      let corps;
+      if (tv && tv.includes('minecart')) corps = a.lacet ? p.lacet : V.lacet;
+      else if (tv && tv.includes('boat')) corps = V.lacet;
+      else { const d = Math.max(-85, Math.min(85, norm180(voulu - V.lacet))); corps = voulu - d; if (Math.abs(d) > 50) corps += d * 0.2; }
+      p.lacet = corps;
+      const lim = tv && tv.includes('boat') ? 105 : 85;
+      p.tete = [Math.max(-lim, Math.min(lim, norm180(voulu - corps))), tete[1] ?? 0];
+      p.monture = av.nom; p.eau = false;
       if (!a.creature) {
         // HumanoidModel.setupAnim, isPassenger : bras -36 degres, jambes levees de 81 degres, ecartees et tournees (18 degres)
         p.brasD = [(p.brasD?.[0] ?? 0) + 36, p.brasD?.[1] ?? 0]; p.brasG = [(p.brasG?.[0] ?? 0) + 36, p.brasG?.[1] ?? 0];
@@ -67,58 +146,56 @@ export function appliquerCreatures(scene, parImage, { DT = 1 / 30, terrain = {},
         delete p.genouD; delete p.genouG; delete p.coudeD; delete p.coudeG;
       }
     }
-  });
-  // ---- 3. creatures : etat d'animation du jeu tick par tick
+  }
+  // point d'attache du siege [droite, haut, avant] (blocs, depuis les pieds) de la monture kv a l'image i
+  function siegeDe(av, tv, rang, nb, animal, kv, i) {
+    const ech = av.creature?.bebe ? 0.5 : 1;
+    if (tv === 'camel') {   // Camel.getPassengerAttachmentPoint (camel.rs passenger_attachment_at, body_anchor_y)
+      const e = av.creature?.bebe ? 0.6 : 1, st = etats[kv] ? snapA(kv, i).sn.m : null;
+      let h = boiteDe(av.creature, types).h - (av.creature?.bebe ? 0.09375 : 0.375);
+      if (st?.assis) h += -1.43 * e + 0.2 * e;
+      let z = 0.5;
+      if (nb > 1) { if (rang > 0) z = -0.7; if (animal) z += 0.2; }
+      return [0, h, z * e];
+    }
+    if (tv === 'boat' || tv === 'chest_boat') {   // boats.rs seat
+      let z = tv === 'chest_boat' ? 0.15 : 0;
+      if (nb > 1 && tv === 'boat') { z = rang === 0 ? 0.2 : -0.6; if (animal) z += 0.2; }
+      return [0, SIEGES[tv][1], z];
+    }
+    const base = (SIEGES[tv] ?? [0, boiteDe(av.creature, types).h, 0]).map((v) => v * ech);
+    if (!etats[kv] || VEHICULES.has(tv)) return base;
+    const { sn, al } = snapA(kv, i);
+    if (['horse', 'donkey', 'mule', 'skeleton_horse', 'zombie_horse'].includes(tv) && sn.m) {   // equine.rs rear_offset
+      const st = sn.m.anim.vo[1] + (sn.m.anim.v[1] - sn.m.anim.vo[1]) * al;
+      return [base[0], base[1] + 0.15 * st * ech, base[2] - 0.7 * st * ech];
+    }
+    if (tv === 'strider') {   // Strider.getPassengerAttachmentPoint : le siege suit le dandinement des pattes
+      const h = 0.12 * Math.cos(sn.limbPos * 1.5) * 2 * Math.min(0.25, sn.limbSpeed);
+      return [base[0], base[1] + h * ech, base[2]];
+    }
+    return base;
+  }
+
+  // ---- 3b. creatures : etat de rendu de chaque image
   acteurs.forEach((a, k) => {
     const c = a.creature;
     if (!c) return;
     const type = c.type, vehicule = VEHICULES.has(type);
     const boite = boiteDe(c, types);
-    const nt = Math.ceil(n * DT * 20) + 2;
-    // position au tick j (interpolee entre les images)
-    const P = (j) => {
-      const f = Math.min(n - 1, j / 20 / DT), i0 = Math.floor(f), i1 = Math.min(n - 1, i0 + 1), u = f - i0;
-      const a0 = parImage[i0][k], a1 = parImage[i1][k];
-      return { x: a0.x + (a1.x - a0.x) * u, y: a0.y + (a1.y - a0.y) * u, z: a0.z + (a1.z - a0.z) * u, auSol: u < 0.5 ? a0.auSol : a1.auSol, eau: !!(u < 0.5 ? a0.eau : a1.eau), i: u < 0.5 ? i0 : i1 };
-    };
-    const [fm, fa] = MARCHE[type] ?? [4, 0.4];
-    const m = vehicule ? {} : etatInitial(type);
-    if (!vehicule) { let id = 0; for (const ch of a.nom) id = (id * 31 + ch.charCodeAt(0)) | 0; Object.assign(m, { id, age: -1, bebe: !!c.bebe || m.bebe, coffre: !!c.coffre, tondu: !!c.tondu, taille: c.taille ?? 1, apprivoise: c.colle !== undefined && c.colle !== null, assis: false }); }
-    let limbPos = 0, limbSpeed = 0, pagaie = 0, prec = P(0);
-    const snaps = [];
-    const evts = [];   // { j, nom } animations nommees et speciales
-    for (const kf of c.anim ?? []) evts.push({ j: Math.round(kf.t * 20), nom: kf.v });
-    let attaque = -100, blesse = -100;
-    for (let j = 0; j <= nt; j++) {
-      const q = P(j);
-      const dx = q.x - prec.x, dz = q.z - prec.z, dy = q.y - prec.y;
-      const dist = VOLANTS.has(type) ? Math.hypot(dx, dy, dz) : Math.hypot(dx, dz);
-      const avant = limbSpeed;
-      const cible = Math.min(dist * fm, 1);
-      limbSpeed += (cible - limbSpeed) * fa; limbPos += limbSpeed;
-      if (vehicule && dist > 0.01) pagaie += Math.PI / 8;   // Boat.tick : chaque pagaie avance de pi/8 par tick quand on rame
-      for (const e of evts) if (e.j === j) { if (e.nom === 'attaque') { attaque = j; if (!vehicule) m.attaque = 10; } if (e.nom === 'blesse') blesse = j; if (e.nom === 'non' && !vehicule) m.mecontent = 40; }
-      if (!vehicule) {
-        const im = parImage[q.i][k];
-        m.auSol = !!q.auSol; m.vy = dy; m.vh = dist; m.dansEau = q.eau; m.nage = q.eau && !m.auSol ? 1 : 0;
-        m.agressif = !!valeurA(c.agressif, j / 20);
-        m.mainD = im.objetD ? String(im.objetD).replace(/^minecraft:/, '') : null; m.mainG = im.objetG ? String(im.objetG).replace(/^minecraft:/, '') : null;
-        m.passager = !!im.monture; m.monte = !!montePar[k][q.i];
-        m.gonfle = c.gonfle ? evaluer({ arite: 1, cles: c.gonfle.map((x) => ({ t: x.t, v: [x.v] })) }, j / 20)[0] : 0;
-        tick(type, m);
-      }
-      snaps.push({ limbPos, limbSpeed, avant, pagaie, m: vehicule ? null : structuredClone(m) });
-      prec = q;
-    }
+    const { evts, sauts, attaque, blesse } = etats[k];
     for (let i = 0; i < n; i++) {
       const p = parImage[i][k];
-      const tt = i * DT * 20, j = Math.floor(tt), al = tt - j;
-      const sn = snaps[Math.min(snaps.length - 1, j + 1)];
+      const { sn, al, tt } = snapA(k, i);
       const etat = { cacher: [] };
       p.oeil = boite.y; p.hautBoite = boite.h;
       if (vehicule) {
         etat.pagaies = [sn.pagaie, sn.pagaie];
+        if (c.contenu) etat.contenu = c.contenu;
         p.creature = etat; continue;
+      }
+      if (sauts && vehiculeDe[k][i] < 0) {   // lapin : position du saut (le trajet n'avance qu'en l'air) et hauteur de l'arc
+        const q = sauts.position(tt); p.x = q.x; p.z = q.z; p.dy = (p.dy ?? 0) + q.h; if (q.h > 0) p.auSol = false;
       }
       // regard : tete vers un acteur ou un point (lacet borne a 75 degres, tangage a 40), sinon la piste tete
       let [yRot, xRot] = p.tete ?? [0, 0];
@@ -146,12 +223,12 @@ export function appliquerCreatures(scene, parImage, { DT = 1 / 30, terrain = {},
       etat.parties = parties;
       // animations a images cles nommees : la derniere commencee joue (une animation qui boucle continue jusqu'au nom suivant ou "stop")
       let der = null;
-      for (const e of evts) if (e.j <= tt && !['attaque', 'non', 'blesse'].includes(e.nom)) der = e;
+      for (const e of evts) if (e.j <= tt && !['attaque', 'non', 'blesse', 'broute'].includes(e.nom)) der = e;
       if (der && der.nom && der.nom !== 'stop') etat.nommees = [{ nom: der.nom, ms: (tt - der.j) * 50 }];
       // degats : rougeur 10 ticks
       if (tt - blesse >= 0 && tt - blesse < 10) p.teinte = [1, 0.6, 0.6];
       // creeper qui gonfle (CreeperRenderer.scale, getWhiteOverlayProgress) ; slime, magma : taille et ecrasement (anim.js echelleRendu)
-      const g = c.gonfle ? evaluer({ arite: 1, cles: c.gonfle.map((x) => ({ t: x.t, v: [x.v] })) }, i * DT)[0] : 0;
+      const g = c.gonfle ? evaluer({ arite: 1, cles: c.gonfle.map((x) => ({ t: x.t, v: [x.v] })) }, i * DT)[0] : (sn.m?.gonfle ?? 0);
       if (g > 0 || type === 'slime' || type === 'magma_cube') etat.echelleType = echelleRendu(type, { ...sn.m, gonfle: g }, al);
       if (g > 0) etat.blanc = Math.floor(g * 10) % 2 === 0 ? 0 : Math.max(0.5, Math.min(1, g));
       // golem de fer : le corps oscille en marchant (IronGolemRenderer.setupRotations)
@@ -159,6 +236,13 @@ export function appliquerCreatures(scene, parImage, { DT = 1 / 30, terrain = {},
       if (['donkey', 'mule', 'llama', 'trader_llama'].includes(type) && !c.coffre) etat.cacher.push('left_chest', 'right_chest');
       if (['horse', 'donkey', 'mule', 'skeleton_horse', 'zombie_horse', 'camel'].includes(type) && !montePar[k][i]) etat.cacher.push('left_saddle_line', 'right_saddle_line');
       if (type === 'spider' || type === 'cave_spider') etat.retourne = true;
+      // poissons (CodRenderer, SalmonRenderer, TropicalFishRenderer.setupRotations) : le corps ondule en lacet ; hors de l'eau il se couche
+      // sur le flanc (rotation Z de 90 degres) et se debat plus vite (saumon : x 1,3 d'amplitude, x 1,7 de frequence)
+      if (type === 'cod' || type === 'salmon' || type === 'tropical_fish') {
+        const hors = !sn.m.dansEau, age = etat.s.age;
+        const [fa, fg] = type === 'salmon' && hors ? [1.3, 1.7] : [1, 1];
+        etat.poisson = { lacet: fa * 4.3 * Math.sin(fg * 0.6 * age), avant: type === 'salmon' ? [0, 0, -0.4] : [0, 0, 0], hors, decal: type === 'cod' ? [0.1, 0.1, -0.1] : [0.2, 0.1, 0] };
+      }
       p.creature = etat;
     }
   });
@@ -213,4 +297,37 @@ export function sonsCreature({ a, k, images, sons, ajouter, blocSous, pasAuto })
     }
   }
   return n;
+}
+
+// etats d'IA d'un acteur (replay.ia) : Map tick -> { dr, gonfle, tension, attaque }
+function etatsIA(replay, nom) {
+  const id = replay.acteurs.indexOf(nom), R = replay.iaVue, m = new Map();
+  if (id < 0 || !R) return m;
+  for (let i = 0; i < R.length; i += 6) if (R[i + 1] === id) m.set(R[i] / (replay.ralenti || 1), { dr: R[i + 2], gonfle: R[i + 3], tension: R[i + 4], attaque: R[i + 5] > 0 });
+  return m;
+}
+
+// ---------------------------------------------------------------- sauts du lapin (Rabbit.getJumpPower, RabbitMoveControl, setLandingDelay)
+// Le lapin n'avance qu'en l'air : saut a 0,2 (flanerie, modificateur <= 0,6) ou 0,3 (plus vite), gravite 0,08 et frottement 0,98 par tick,
+// puis 10 ticks au sol (1 tick en fuite, modificateur 2,2). Le temps du trajet ecrit n'avance que pendant les sauts : a la fin de chaque
+// saut le lapin a rattrape sa piste (elle reste la reference). P(j) : position du trajet au tick j ; monte[i] >= 0 : image en monture.
+export function sautsLapin(P, nt, monte = []) {
+  const tau = new Float64Array(nt + 2), h = new Float64Array(nt + 2);
+  const loin = (a, b) => { const p = P(a), q = P(b); return Math.hypot(p.x - q.x, p.z - q.z); };
+  let t = 0, j = 0;
+  while (j <= nt) {
+    if (monte[P(j).i] >= 0 || loin(j, t) < 0.05) { if (loin(j, t) < 0.05 || monte[P(j).i] >= 0) t = j; tau[j] = t; h[j] = 0; j++; continue; }
+    const v = loin(j, Math.min(nt, j + 20)) / 20;   // vitesse de la piste (bloc/tick)
+    const rapide = v > 0.15;
+    let vy = rapide ? 0.3 : 0.2, y = 0;
+    const arc = [];
+    do { y += vy; vy = (vy - 0.08) * 0.98; arc.push(Math.max(0, y)); } while (y > 0 && arc.length < 40);
+    const d = arc.length, repos = rapide ? 1 : 10;
+    const t0 = t, t1 = Math.min(nt, j + d + repos);
+    for (let s = 0; s < d && j <= nt; s++, j++) { tau[j] = t0 + (t1 - t0) * (s + 1) / d; h[j] = arc[s]; }
+    t = t1;
+    for (let s = 0; s < repos && j <= nt; s++, j++) { tau[j] = t; h[j] = 0; }
+  }
+  const lire = (tab, x) => { const a = Math.max(0, Math.min(nt, Math.floor(x))), b = Math.min(nt, a + 1), u = Math.max(0, Math.min(1, x - a)); return tab[a] + (tab[b] - tab[a]) * u; };
+  return { h, position: (x) => { const q = P(lire(tau, x)); return { x: q.x, z: q.z, h: lire(h, x) }; } };
 }

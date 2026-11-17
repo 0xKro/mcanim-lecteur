@@ -14,6 +14,9 @@ import { Poses } from './poses.js';
 import { poser, animerNommee } from './anim.js';
 import { objetPourNotes } from '../objets/habillage.js';
 import { matriceAffichage } from '../objets/placement.js';
+import { cuire as cuireBloc, afficheDe } from '../objets/modele-objet.js';
+import { texture as textureObjet, teinter } from '../objets/fichiers.js';
+import { resoudreObjet } from '../objets/definition.js';
 
 const RAD = Math.PI / 180;
 // ---------------------------------------------------------------- matrices 4x4 (ligne par ligne)
@@ -189,7 +192,13 @@ export function couchesDe(o, modeles, kitDir) {
     case 'stray': ajoute('stray', 'outer', 'skeleton/stray_overlay'); break;
     case 'bogged': if (!o.tondu) ajoute('bogged', 'outer', 'skeleton/bogged_overlay'); break;
     case 'breeze': ajoute('breeze', 'wind', 'breeze/breeze_wind', blanc, { mode: 'melange', defile: 0.02 }); ajoute('breeze', 'eyes', 'breeze/breeze_eyes', blanc, { emissif: true }); break;
-    case 'warden': ajoute('warden', 'bioluminescent', 'warden/warden_bioluminescent_layer', blanc, { emissif: true }); break;
+    case 'warden':   // WardenRenderer : bioluminescence, deux jeux de taches qui pulsent (cos(age x 0,045) x 0,25), coeur qui bat
+      ajoute('warden', 'bioluminescent', 'warden/warden_bioluminescent_layer', blanc, { emissif: true });
+      ajoute('warden', 'pulsating_spots', 'warden/warden_pulsating_spots_1', blanc, { emissif: true, pulse: 'taches1' });
+      ajoute('warden', 'pulsating_spots', 'warden/warden_pulsating_spots_2', blanc, { emissif: true, pulse: 'taches2' });
+      ajoute('warden', 'heart', 'warden/warden_heart', blanc, { emissif: true, pulse: 'coeur' });
+      break;
+    case 'creaking': if (o.yeux !== false) ajoute('creaking', 'eyes', 'creaking/creaking_eyes', blanc, { emissif: true }); break;   // CreakingRenderer : yeux allumes (actif)
     case 'creeper': if (o.charge) ajoute('creeper', 'armor', 'creeper/creeper_armor', [0.5, 0.5, 0.5], { emissif: true, defile: 0.01, gonfle: 2 }); break;
     case 'wither': if (o.charge) ajoute('wither', 'armor', 'wither/wither_armor', [0.5, 0.5, 0.5], { emissif: true, defile: 0.01 }); break;
     default: break;
@@ -208,6 +217,15 @@ export function couchesDe(o, modeles, kitDir) {
     if (mat === 'leather') ajoute(base, couche, `equipment/${dossier}/leather_overlay`, blanc, { armure: true });
   }
   return { couches, notes, echelleBebe };
+}
+
+// intensite d'une couche qui pulse : taches du warden max(0, cos(age x 0,045) x 0,25) (et cos(... + pi)), coeur getHeartAnimation (v[1] / 10)
+function pulsation(nom, pose, et) {
+  const age = et?.s?.age ?? pose.age ?? 0;
+  if (nom === 'taches1') return Math.max(0, Math.cos(age * 0.045) * 0.25);
+  if (nom === 'taches2') return Math.max(0, Math.cos(age * 0.045 + Math.PI) * 0.25);
+  if (nom === 'coeur') { const m = et?.m; if (!m) return 0; const a = et.s?.partial ?? 0; return Math.max(0, (m.anim.vo[1] + (m.anim.v[1] - m.anim.vo[1]) * a) / 10); }
+  return 1;
 }
 
 // ---------------------------------------------------------------- la creature
@@ -262,6 +280,11 @@ export class Creature {
       return mul(mul(B, S(-1, -1, 1)), RY(Math.PI / 2));
     }
     let B = mul(T(pose.x, y, pose.z), RY((180 - lacet) * RAD));
+    if (et.poisson) {   // poisson : ondulation, hors de l'eau couche sur le flanc
+      const q = et.poisson;
+      B = mul(mul(B, RY(q.lacet * RAD)), T(q.avant[0], q.avant[1], q.avant[2]));
+      if (q.hors) B = mul(mul(B, T(q.decal[0], q.decal[1], q.decal[2])), RZ(Math.PI / 2));
+    }
     if (et.echelle && et.echelle !== 1) B = mul(B, S(et.echelle, et.echelle, et.echelle));
     if (pose.roulis) B = mul(B, RZ(pose.roulis * RAD * (et.retourne ? 2 : 1)));   // mort : le corps tombe sur le cote (180 pour les araignees)
     if (pose.bascule) B = mul(B, RX(-pose.bascule * RAD));
@@ -293,6 +316,8 @@ export class Creature {
       let q = 0;
       const teinte = c.teinte;
       const emissif = !!c.emissif;
+      const pulse = c.pulse ? pulsation(c.pulse, pose, et) : 1;   // couches du warden qui pulsent (WardenRenderer)
+      if (pulse <= 0.002) continue;
       for (let i = 0; i < c.noeuds.length; i++) {
         const n = c.noeuds[i];
         const p = (n.nom && P.pose(n.nom)) || n.base;
@@ -307,7 +332,7 @@ export class Creature {
           let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
           let mx = M[0] * nx + M[1] * ny + M[2] * nz, my = M[4] * nx + M[5] * ny + M[6] * nz, mz = M[8] * nx + M[9] * ny + M[10] * nz;
           const l = Math.hypot(mx, my, mz) || 1; mx /= l; my /= l; mz /= l;
-          let o = emissif ? 1 : ombre(mx, my, mz) * lumiere;
+          let o = emissif ? pulse : ombre(mx, my, mz) * lumiere;
           for (let s = 0; s < 4; s++) {
             const b = k + s * 5, X = n.q[b] / 16, Y = n.q[b + 1] / 16, Z = n.q[b + 2] / 16, v = q * 4 + s;
             positions[v * 3] = M[0] * X + M[1] * Y + M[2] * Z + M[3];
@@ -349,7 +374,45 @@ export class Creature {
         for (const mo of c.morceaux) sorties.push(maillageObjet(mo, M, lumiere, brut, pose, this.entite));
       }
     }
+    if (this.kitDir) sorties.push(...this.blocs(pose, lumiere, brut, cachePoses.get(this.couches[0].racine)));
     return sorties;
+  }
+
+  // Bloc d'un wagonnet (AbstractMinecartRenderer : echelle 0,75, decalage d'affichage), bloc porte par l'enderman (CarriedBlockLayer),
+  // objet des bras croises du villageois (CrossedArmsItemLayer, affichage "ground").
+  blocs(pose, lumiere, brut, P) {
+    const out = [], et = pose.creature ?? {};
+    if (this.type.includes('minecart')) {
+      const id = et.contenu ?? this.o.contenu ?? CONTENU_WAGONNET[this.type];
+      if (!id) return out;
+      const y = pose.y + (pose.dy ?? 0) + (pose.hauteur ?? 0);
+      let B = mul(T(pose.x, y + 0.375, pose.z), RY((180 - (pose.lacet ?? 0)) * RAD));
+      if (pose.bascule) B = mul(B, RX(-pose.bascule * RAD));
+      const dec = DECALAGE_WAGONNET[id] ?? 6;
+      const M = mul(mul(mul(B, S(0.75, 0.75, 0.75)), T(-0.5, (dec - 8) / 16, 0.5)), RY(Math.PI / 2));
+      for (const mo of morceauxBloc(this.kitDir, id)) out.push(maillageObjet(mo, M, lumiere, brut, pose, this.entite));
+      return out;
+    }
+    if (this.type === 'enderman' && this.o.porte) {
+      let M = mul(this.base(pose), T(0, 0.6875, -0.75));
+      M = mul(mul(M, RX(20 * RAD)), RY(45 * RAD));
+      M = mul(mul(mul(M, T(0.25, 0.1875, 0.25)), S(-0.5, -0.5, 0.5)), RY(Math.PI / 2));
+      for (const mo of morceauxBloc(this.kitDir, this.o.porte)) out.push(maillageObjet(mo, M, lumiere, brut, pose, this.entite));
+    }
+    if (['villager', 'wandering_trader'].includes(this.type) && this.o.echange) {
+      const Ma = this.matrice(pose, 'arms', P);
+      if (!Ma) return out;
+      let M = mul(mul(Ma, RX(0.75)), S(1.07, 1.07, 1.07));
+      M = mul(mul(M, T(0, 0.13, -0.34)), RX(Math.PI));
+      const o = objetPourNotes(this.kitDir, this.o.echange, false);
+      for (const c of o.couches) {
+        const aff = afficheSol(this.kitDir, this.o.echange) ?? c.affiche;
+        const A = matriceAffichage(aff, false);
+        const Mc = mul(M, [A[0], A[1], A[2], A[3], A[4], A[5], A[6], A[7], A[8], A[9], A[10], A[11], 0, 0, 0, 1]);
+        for (const mo of c.morceaux) out.push(maillageObjet(mo, Mc, lumiere, brut, pose, this.entite));
+      }
+    }
+    return out;
   }
 
   // Matrice (monde) d'une partie nommee de la couche principale pour une pose (main d'un biped : objet tenu ; tete : etiquette)
@@ -384,3 +447,60 @@ function maillageObjet(mo, M, lumiere, brut, pose, entite) {
 }
 // nom d'entite du jeu (entity.properties des packs de shaders) : bateau de chene -> oak_boat
 export function entiteDuType(type, choix = []) { return type === 'boat' || type === 'chest_boat' ? `${choix[0] ?? 'oak'}_${type}` : type; }
+
+// ---------------------------------------------------------------- blocs portes ou transportes (enderman, wagonnets) et objet des bras croises
+// Boite du jeu (ModelPart.Cube) : 6 faces, UV deplies a partir de texOffs (u0, v0) ; patron releve sur une boite 2x4x1 du jeu.
+const PATRON_BOITE = [[2,0,1,3,0],[0,0,1,1,0],[0,0,0,1,1],[2,0,0,3,1],[2,4,0,5,1],[0,4,0,3,1],[0,4,1,3,0],[2,4,1,5,0],[0,0,0,1,1],[0,0,1,0,1],[0,4,1,0,5],[0,4,0,1,5],[2,0,0,3,1],[0,0,0,1,1],[0,4,0,1,5],[2,4,0,3,5],[2,0,1,4,1],[2,0,0,3,1],[2,4,0,3,5],[2,4,1,4,5],[0,0,1,6,1],[2,0,1,4,1],[2,4,1,4,5],[0,4,1,6,5]];
+export function quadsBoite(x0, y0, z0, w, h, d, u0, v0) {
+  const U = { 0: 0, 1: d, 3: d + w, 4: 2 * d + w, 5: d + 2 * w, 6: 2 * d + 2 * w }, V = { 0: 0, 1: d, 5: d + h };
+  return PATRON_BOITE.flatMap(([x, y, z, u, v]) => [x0 + x / 2 * w, y0 + y / 4 * h, z0 + z * d, u0 + U[u], v0 + V[v]]);
+}
+// morceau { local (px), normales, uvs, indices, t } a partir de quads plats (20 nombres par quad, UV en px de la texture t)
+function morceauQuads(q, t) {
+  const nQ = q.length / 20, local = new Float32Array(nQ * 12), normales = new Float32Array(nQ * 12), uvs = new Float32Array(nQ * 8), indices = new Uint32Array(nQ * 6);
+  for (let i = 0; i < nQ; i++) {
+    const k = i * 20, ax = q[k], ay = q[k + 1], az = q[k + 2];
+    const ux = q[k + 5] - ax, uy = q[k + 6] - ay, uz = q[k + 7] - az, wx = q[k + 10] - ax, wy = q[k + 11] - ay, wz = q[k + 12] - az;
+    let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx; const l = Math.hypot(nx, ny, nz) || 1;
+    for (let s = 0; s < 4; s++) { const b = k + s * 5, v = i * 4 + s; local.set([q[b], q[b + 1], q[b + 2]], v * 3); normales.set([nx / l, ny / l, nz / l], v * 3); uvs.set([q[b + 3] / t.largeur, q[b + 4] / t.hauteur], v * 2); }
+    indices.set([i * 4, i * 4 + 1, i * 4 + 2, i * 4, i * 4 + 2, i * 4 + 3], i * 6);
+  }
+  return { local, normales, uvs, indices, t };
+}
+const COFFRES = { chest: 'chest/normal', trapped_chest: 'chest/trapped', ender_chest: 'chest/ender' };
+const TEINTES_BLOC = { grass_block: 0x91BD59, oak_leaves: 0x48B518, birch_leaves: 0x80A755, spruce_leaves: 0x619961, jungle_leaves: 0x48B518, acacia_leaves: 0x48B518, dark_oak_leaves: 0x48B518, mangrove_leaves: 0x92C648, vine: 0x48B518, fern: 0x91BD59, short_grass: 0x91BD59, tall_grass: 0x91BD59 };
+const cacheBlocs = new Map();
+// Morceaux d'un bloc (repere du bloc 0..1, y vers le haut, en px) : coffre = ChestModel (fond 14x10x14, couvercle, serrure ; devant vers +z),
+// autre bloc = son modele block/<id> du kit (rendu d'un bloc seul : BlockRenderDispatcher.renderSingleBlock)
+export function morceauxBloc(kitDir, id) {
+  const cle = kitDir + '|' + id;
+  if (cacheBlocs.has(cle)) return cacheBlocs.get(cle);
+  let r = [];
+  if (COFFRES[id]) {
+    const t = textureEntite(kitDir, COFFRES[id]);
+    if (t) r = [morceauQuads([...quadsBoite(1, 0, 1, 14, 10, 14, 0, 19), ...quadsBoite(1, 9, 1, 14, 5, 14, 0, 0), ...quadsBoite(7, 7, 15, 2, 4, 1, 0, 0)], t)];
+  } else {
+    const c = cuireBloc(kitDir, { model: 'minecraft:block/' + id, tints: [TEINTES_BLOC[id] ?? null] });
+    const groupes = new Map();
+    for (const q of c.quads) { if (!groupes.has(q.tex + '|' + (q.tint ?? ''))) groupes.set(q.tex + '|' + (q.tint ?? ''), []); groupes.get(q.tex + '|' + (q.tint ?? '')).push(q); }
+    for (const [k, qs] of groupes) {
+      let t = textureObjet(kitDir, k.split('|')[0]);
+      if (!t) continue;
+      const tint = qs[0].tint; if (tint !== null && tint !== undefined) t = teinter(t, tint);
+      const flat = [];
+      for (const q of qs) for (let s = 0; s < 4; s++) flat.push(q.p[s][0] * 16, q.p[s][1] * 16, q.p[s][2] * 16, q.uv[s][0] * t.largeur, q.uv[s][1] * t.hauteur);
+      r.push(morceauQuads(flat, t));
+    }
+  }
+  cacheBlocs.set(cle, r);
+  return r;
+}
+// bloc de chaque wagonnet (getDefaultDisplayBlockState) et decalage d'affichage (getDefaultDisplayOffset : 6 ; coffre 8 ; entonnoir 1)
+export const CONTENU_WAGONNET = { chest_minecart: 'chest', furnace_minecart: 'furnace', tnt_minecart: 'tnt', hopper_minecart: 'hopper', spawner_minecart: 'spawner', command_block_minecart: 'command_block' };
+const DECALAGE_WAGONNET = { chest: 8, trapped_chest: 8, ender_chest: 8, hopper: 1 };
+// affichage "ground" du modele d'un objet (ItemDisplayContext.GROUND)
+function afficheSol(kitDir, id) {
+  const d = resoudreObjet(kitDir, id, {});
+  const e = d.entrees?.[0];
+  return e?.model ? afficheDe(kitDir, e.model, false, 'ground') : null;
+}

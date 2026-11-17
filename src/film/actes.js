@@ -16,7 +16,7 @@ import { voulaisTu } from '../moteur/util.js';
 import { boiteDe, statsDe } from './creatures.js';
 import { MODIF_FLANERIE as FLANERIE } from '../creatures/especes.js';
 
-export const VERBES = ['va', 'regarde', 'saute', 'accroupi', 'tient', 'attends', 'utilise', 'pose', 'casse', 'lance', 'tire', 'jette', 'prend', 'depose'];
+export const VERBES = ['va', 'regarde', 'saute', 'accroupi', 'tient', 'attends', 'utilise', 'pose', 'casse', 'lance', 'tire', 'jette', 'prend', 'depose', 'frappe'];
 const EFFETS = ['speed', 'slowness', 'jump_boost', 'invisibility', 'glowing', 'regeneration', 'poison', 'strength', 'night_vision', 'absorption'];
 export const MAX_ACTES = 200;
 const VITESSES = ['marche', 'court', 'accroupi'];
@@ -32,6 +32,7 @@ const OPTIONS = {
   pose: ['va', 'ouvrePortes', 'face', 'max'],
   casse: ['va', 'ouvrePortes', 'max'],
   tient: ['eff'],
+  frappe: ['coups', 'critique', 'max', 'objet'],
 };
 const estNombre = (x) => typeof x === 'number' && Number.isFinite(x);
 const estObjet = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
@@ -61,7 +62,8 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
       if (o === 'niveau' && !(Number.isInteger(v) && v >= 1 && v <= 10)) erreur(`${c}.${o}`, 'niveau entier de 1 a 10 attendu (1 = Vitesse I)');
       if (o === 'secondes' && !(estNombre(v) && v > 0 && v <= 3600)) erreur(`${c}.${o}`, 'duree de l effet en secondes (0 a 3600) attendue');
       if (o === 'charge' && !(estNombre(v) && v >= 0.05 && v <= 10)) erreur(`${c}.${o}`, 'duree de tension en secondes (0,05 a 10) attendue ; 1 s = puissance pleine');
-      if (['predit', 'strict'].includes(o) && typeof v !== 'boolean') erreur(`${c}.${o}`, 'true ou false attendu');
+      if (o === 'coups' && !(Number.isInteger(v) && v >= 1 && v <= 100)) erreur(`${c}.${o}`, 'nombre de coups entier de 1 a 100 attendu (defaut : jusqu a la mort de la cible)');
+      if (['predit', 'strict', 'critique'].includes(o) && typeof v !== 'boolean') erreur(`${c}.${o}`, 'true ou false attendu');
       if (o === 'fente' && !['entree', 'combustible', 'sortie'].includes(v)) erreur(`${c}.${o}`, '"entree", "combustible" ou "sortie" attendu');
       if (o === 'objet' && !(typeof v === 'string' && ID_OBJET.test(v))) erreur(`${c}.${o}`, 'identifiant d objet du jeu attendu (mcanim objets --cherche mot)');
       if (o === 'eff' && !(Number.isInteger(v) && v >= 0 && v <= 10)) erreur(`${c}.${o}`, 'niveau d\'efficacite entier de 0 a 10 attendu');
@@ -138,6 +140,11 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
         a.resume = `${verbe} ${a.cible === null ? 'devant' : a.cible.acteur ?? a.cible.x + ',' + a.cible.y + ',' + a.cible.z}`;
         break;
       }
+      case 'frappe': {   // coup d'epee (Player.attack) : s'approche a 3 blocs, frappe quand l'arme est rechargee, jusqu'a la mort de la cible ou {coups}
+        if (!(args.length === 1 && typeof args[0] === 'string')) erreur(c, 'frappe : nom de l acteur vise attendu, par exemple [1, "frappe", "zombie", {"coups": 3, "critique": true}]');
+        if (!noms.has(args[0])) erreur(`${c}[2]`, `acteur inconnu ${JSON.stringify(args[0])} (acteurs : ${[...noms].join(', ')})`);
+        a.cible = { acteur: args[0] }; a.resume = `frappe ${args[0]}`; break;
+      }
       case 'jette': {
         if (args.length > 1 || (args.length === 1 && !(Number.isInteger(args[0]) && args[0] >= 1 && args[0] <= 64))) erreur(c, 'jette : nombre entier de pieces de 1 a 64 attendu, par exemple [2, "jette", 3]');
         a.n = args[0] ?? 1; a.resume = `jette ${a.n}`; break;
@@ -163,15 +170,23 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
 // types (facultatif) : statistiques des creatures ; une creature a intentions recoit son gabarit (boite, yeux, vitesse de marche du type :
 // (movement_speed x flanerie)^2 / 0,098, l'acceleration du joueur au sol etant 0,1 x 0,98)
 export function descripteursActeurs(scene, types = null) {
-  return scene.acteurs.filter((a) => a.actes).map((a) => {
+  return scene.acteurs.filter((a) => a.actes || a.creature?.ia).map((a) => {
     const k = a.pos.cles[0];
-    const premier = a.actes.find((x) => x.verbe === 'va' || x.verbe === 'regarde' && x.cible && x.cible.x !== undefined);
+    const premier = (a.actes ?? []).find((x) => x.verbe === 'va' || x.verbe === 'regarde' && x.cible && x.cible.x !== undefined);
     const but = premier ? (premier.verbe === 'va' ? [premier.x, premier.z] : [premier.cible.x, premier.cible.z]) : null;
     const lacet = a.lacet ? a.lacet.cles[0].v[0] : but && Math.hypot(but[0] - k.x, but[1] - k.z) > 0.5 ? Math.atan2(-(but[0] - k.x), but[1] - k.z) * 180 / Math.PI : 0;
-    return { nom: a.nom, pos: Number.isFinite(k.y) ? [k.x, k.y, k.z] : [k.x, k.z], lacet, objet: a.objetD?.cles?.[0]?.id ?? null, actes: a.actes, vie: a.vie, invulnerable: a.invulnerable, ramasse: a.ramasse, faim: a.faim, sac: a.sac, ...(a.creature ? { gabarit: gabaritCreature(a.creature, types) } : {}) };
+    return { nom: a.nom, pos: Number.isFinite(k.y) ? [k.x, k.y, k.z] : [k.x, k.z], lacet, objet: a.objetD?.cles?.[0]?.id ?? (a.creature?.ia ? ARME_IA[a.creature.type] ?? null : null), actes: a.actes ?? [], vie: a.vie, invulnerable: a.invulnerable, ramasse: a.ramasse, faim: a.faim, sac: a.sac, ...(a.creature ? { gabarit: gabaritCreature(a.creature, types), typeCreature: a.creature.type, ...(a.creature.ia ? { ia: iaDe(a, types) } : {}) } : {}) };
   });
 }
 
+
+// arme en main d'une creature a IA sans objetD (Mob.populateDefaultEquipmentSlots) : arc des squelettes, arbalete du pillard, hache du vindicateur
+const ARME_IA = { skeleton: 'bow', stray: 'bow', bogged: 'bow', parched: 'bow', pillager: 'crossbow', vindicator: 'iron_axe', wither_skeleton: 'stone_sword' };
+// IA d'une creature (moteur/ia.js) : type, comportement, cible forcee, points (garde, maison, travail), creeper charge, casque, vitesse du type
+function iaDe(a, types) {
+  const c = a.creature, st = statsDe(c, types);
+  return { type: c.type, comportement: c.comportement ?? null, cible: c.cible ?? null, garde: c.garde ?? null, maison: c.maison ?? null, travail: c.travail ?? null, charge: !!c.charge, casque: !!a.armure?.tete?.cles?.some((k) => k.id), vitesseAttr: st?.v ?? 0.25, vie: st?.pv ?? 20 };
+}
 
 // gabarit d'une creature pour le moteur : { l, h, oeil, vitesse (facteur de l'acceleration du joueur) }
 export function gabaritCreature(c, types) {

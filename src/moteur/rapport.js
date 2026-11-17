@@ -27,6 +27,14 @@ export function texteRapport({ sim, replay, duree }) {
   if (S.arbres || S.foudres || S.neige || S.gels) M.push(`nature : arbres ${S.arbres || 0}, foudres ${S.foudres || 0}, neige ${S.neige || 0}, gel ${S.gels || 0}`);
   if (S.morts) M.push(`morts ${S.morts} (${(S.mortsListe || []).slice(0, 2).join(', ')})`);
   if (M.length) L.push('monde : ' + M.join(' ; '));
+  // IA des creatures : une ligne de compteurs, puis les evenements (attaques, tirs, explosions, morts, brulures) en abrege
+  if (S.ia || S.iaJournal || S.coups) {
+    const I = S.ia || {};
+    L.push(`ia : cibles ${I.cibles || 0}, attaques ${I.attaques || 0}, tirs ${I.tirs || 0}, explosions ${I.explosions || 0}, fuites ${I.fuites || 0}, paniques ${I.paniques || 0}, brulures ${I.brulures || 0}${I.portesCassees ? ', portes cassees ' + I.portesCassees : ''}${S.coups ? ', coups du joueur ' + S.coups.length : ''}`);
+    const J = [...(S.iaJournal || []), ...(S.coups || [])].sort((p, q) => parseFloat(p) - parseFloat(q));
+    const tri = J.filter((l) => / (meurt|explose|brule)/.test(l)).concat(J.filter((l) => !/ (meurt|explose|brule)/.test(l))).slice(0, 6);
+    if (tri.length) L.push('ia : ' + tri.map((l) => l.replace(/^(d+).(d)d? /, '$1,$2s ')).join(' ; ').slice(0, 300));
+  }
   const ev = (replay.sons.length / 7) | 0, pa = (replay.particules.length / 9) | 0;
   if (ev || pa) L.push(`sons ${ev}, particules ${pa} ; voisins mis a jour ${sim.stats.voisins}, ticks planifies ${sim.stats.ticks}, aleatoires ${sim.stats.aleatoires}`);
   const rl = replay.ralenti;

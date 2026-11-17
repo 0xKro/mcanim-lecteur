@@ -6,7 +6,8 @@ import { voulaisTu } from '../moteur/util.js';
 export const TYPES = Object.keys(ESPECES).filter((t) => t !== 'mannequin');
 const ARMURES_CHEVAL = ['leather', 'iron', 'golden', 'diamond', 'netherite', 'copper'];
 // noms speciaux de `anim` (en plus des animations a images cles du type) : coup de bras / attaque, tete qui dit non, degats
-export const ANIMS_SPECIALES = ['attaque', 'non', 'blesse', 'stop'];
+export const COMPORTEMENTS_IA = ['passif', 'agressif', 'fuit', 'garde'];
+export const ANIMS_SPECIALES = ['attaque', 'non', 'blesse', 'broute', 'stop'];
 const estNombre = (x) => typeof x === 'number' && Number.isFinite(x);
 const estObjet = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 
@@ -39,7 +40,7 @@ export function lireCreature(a, o, ch, err, { duree, noms, typesActeurs }) {
   }
   if (a.etiquette !== undefined) { if (typeof a.etiquette !== 'string' || a.etiquette.length > 40) err(`${ch}.etiquette`, 'texte de 40 caracteres au plus attendu (nom affiche au-dessus de la tete)'); o.etiquette = a.etiquette; }
   if (type === null) {
-    for (const k of ['variante', 'bebe', 'taille', 'charge', 'selle', 'armureCheval', 'colle', 'coffre', 'tondu', 'gonfle', 'anim', 'parties', 'agressif']) if (a[k] !== undefined) err(`${ch}.${k}`, 'champ des creatures : il faut aussi "type" (par exemple "type": "zombie")');
+    for (const k of ['variante', 'bebe', 'taille', 'charge', 'selle', 'armureCheval', 'colle', 'coffre', 'tondu', 'gonfle', 'anim', 'parties', 'agressif', 'porte', 'contenu', 'echange', 'sautille', 'ia', 'comportement', 'garde', 'maison', 'travail']) if (a[k] !== undefined) err(`${ch}.${k}`, 'champ des creatures : il faut aussi "type" (par exemple "type": "zombie")');
     return;
   }
   const c = { type };
@@ -74,6 +75,18 @@ export function lireCreature(a, o, ch, err, { duree, noms, typesActeurs }) {
       c.parties[nom] = { arite: 3, cles: p.map((k) => ({ t: k[0], v: [k[1], k[2], k[3]], l: typeof k[4] === 'string' ? k[4] : undefined })) };
     }
   }
+  // bloc porte par l'enderman, bloc dans un wagonnet (displayBlockState), objet dans les bras croises d'un villageois (echange)
+  const idBloc = (v) => typeof v === 'string' && /^(minecraft:)?[a-z0-9_]{1,60}$/.test(v);
+  if (a.porte !== undefined && a.porte !== null) { if (type !== 'enderman' || !idBloc(a.porte)) err(`${ch}.porte`, 'enderman seulement : id de bloc attendu, par exemple "minecraft:grass_block"'); c.porte = a.porte.replace(/^minecraft:/, ''); }
+  if (a.contenu !== undefined && a.contenu !== null) { if (!type.includes('minecart') || !idBloc(a.contenu)) err(`${ch}.contenu`, 'wagonnet seulement : id de bloc attendu, par exemple "minecraft:chest"'); c.contenu = a.contenu.replace(/^minecraft:/, ''); }
+  if (a.echange !== undefined && a.echange !== null) { if (!['villager', 'wandering_trader'].includes(type) || !idBloc(a.echange)) err(`${ch}.echange`, 'villageois seulement : id d\'objet montre dans les bras croises (echange), par exemple "minecraft:emerald"'); c.echange = a.echange.replace(/^minecraft:/, ''); }
+  if (a.sautille !== undefined) { if (type !== 'rabbit' || typeof a.sautille !== 'boolean') err(`${ch}.sautille`, 'lapin seulement : true (defaut, il avance en sautant comme dans le jeu) ou false'); c.sautille = a.sautille; }
+  // IA (moteur/ia.js) : ia true|false, cible forcee, comportement, points garde / maison / travail
+  if (a.ia !== undefined) { if (typeof a.ia !== 'boolean') err(`${ch}.ia`, 'true (la creature agit seule, comme dans le jeu) ou false (tout aux pistes, defaut)'); if (a.ia && VEHICULES.has(type)) err(`${ch}.ia`, 'un vehicule n a pas d IA'); if (a.ia) c.ia = true; }
+  const avecIa = (k) => { if (a[k] !== undefined && !a.ia) err(`${ch}.${k}`, 'champ de l IA : il faut aussi "ia": true'); };
+  if (a.cible !== undefined && a.cible !== null) { avecIa('cible'); if (typeof a.cible !== 'string' || !noms.has(a.cible) || a.cible === a.nom) err(`${ch}.cible`, 'nom d un autre acteur attendu (la creature le prend pour cible)'); c.cible = a.cible; }
+  if (a.comportement !== undefined && a.comportement !== null) { avecIa('comportement'); if (!COMPORTEMENTS_IA.includes(a.comportement)) err(`${ch}.comportement`, `"${a.comportement}" inconnu${voulaisTu(String(a.comportement), COMPORTEMENTS_IA)} (permis : ${COMPORTEMENTS_IA.join(', ')})`); c.comportement = a.comportement; }
+  for (const k of ['garde', 'maison', 'travail']) if (a[k] !== undefined && a[k] !== null) { avecIa(k); if (!Array.isArray(a[k]) || a[k].length !== 3 || !a[k].every(estNombre)) err(`${ch}.${k}`, 'point [x, y, z] attendu (pieds)'); c[k] = a[k]; }
   if (VEHICULES.has(type) && (a.actes !== undefined)) err(`${ch}.actes`, 'un vehicule ne marche pas : donner sa piste pos (ou le faire monter)');
   o.creature = c;
   o.reactions = false;   // les reactions du joueur (genoux, bras) ne vont pas aux creatures
@@ -96,6 +109,10 @@ export function evenementsDeScene(scene) {
     if (t.includes('minecart')) ev.add('entity.minecart.riding');
     if (t === 'iron_golem') ev.add('entity.iron_golem.attack');
     if (t === 'villager') ev.add('entity.villager.no');
+  }
+  // IA et combat : tirs, portes des zombies, coups du joueur
+  if (scene.acteurs.some((a) => a.creature?.ia) || scene.acteurs.some((a) => a.actes?.some((x) => x.verbe === 'frappe'))) {
+    for (const s2 of ['entity.skeleton.shoot', 'entity.snow_golem.shoot', 'entity.zombie.attack_wooden_door', 'entity.zombie.break_wooden_door', 'entity.player.attack.strong', 'entity.player.attack.weak', 'entity.player.attack.crit', 'entity.player.hurt', 'entity.player.death', 'entity.arrow.hit', 'entity.arrow.hit_player', 'entity.generic.explode']) ev.add(s2);
   }
   return [...ev].sort();
 }

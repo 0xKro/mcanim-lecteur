@@ -12,8 +12,10 @@ const borne = (x, a, b) => (x < a ? a : x > b ? b : x);
 // Retourne les reglages normalises au temps t, ou null si tout est neutre (alors le rendu ne fait rien du tout).
 export function imageEn(scene, t) {
   const im = scene.image;
-  if (!im) return null;
-  const v = (nom) => (im[nom] ? evaluer(im[nom], t) : undefined);
+  // montage : un plan peut avoir son propre `image` (temps relatifs au plan) qui remplace les leviers du meme nom
+  const pl = scene.plans && scene.plans.find((p) => p.image && t >= p.de && t < p.a);
+  if (!im && !pl) return null;
+  const v = (nom) => (pl?.image?.[nom] ? evaluer(pl.image[nom], t - pl.de) : im?.[nom] ? evaluer(im[nom], t) : undefined);
   const p = normaliserImage({
     saturation: v('saturation')?.[0], contraste: v('contraste')?.[0], luminosite: v('luminosite')?.[0],
     teinte: v('teinte'), vignette: v('vignette')?.[0], flou: v('flou')?.[0], fondu: v('fondu'),

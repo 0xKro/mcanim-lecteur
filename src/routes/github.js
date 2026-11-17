@@ -22,7 +22,7 @@ export async function run(ctx) {
   const { net, version, groups } = ctx;
   const notes = {};
   const tasks = [];
-  const assetGroups = new Set([...groups].filter((g) => ['blockstates', 'models', 'textures', 'colormap', 'skins', 'environnement', 'objets', 'armures'].includes(g)));
+  const assetGroups = new Set([...groups].filter((g) => ['blockstates', 'models', 'textures', 'colormap', 'skins', 'environnement', 'objets', 'armures', 'interface'].includes(g)));
   if (assetGroups.size) tasks.push(fromTarball(ctx, `${version}-assets-tiny`, assetGroups).then((n) => { notes.tarballAssetsTiny = n; }));
   const dataGroups = new Set([...groups].filter((x) => x === 'worldgen' || x === 'biomes'));
   if (dataGroups.size) tasks.push(fromTarball(ctx, `${version}-${ctx.opts.dataTag || "data-json"}`, dataGroups).then((n) => { notes.tarballDataJson = n; }));

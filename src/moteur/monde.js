@@ -131,7 +131,7 @@ export class Monde {
     this.version++;
     this.changes.push(x, y, z, ancien, indice);
     // les cellules de la bordure copient leur voisin de la boite (cache sous la surface) : on ne les touche pas
-    if (this.suivi) this.sales.push(i);
+    if (this.suivi && this.sales) this.sales.push(i);
     if (this.lumiere) this.lumiere.changer(x, y, z, ancien, indice);
     return ancien;
   }

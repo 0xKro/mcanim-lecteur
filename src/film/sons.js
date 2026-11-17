@@ -81,7 +81,7 @@ function choisir(liste, graine) {
 // ---------------------------------------------------------------- planification
 // images : sortie de animer(). zone : objet Zone (bloc(x,y,z)). Retourne { evenements, notes, nbPas }.
 // evenement : { t, fichier, gain, pan (-1 gauche .. +1 droite) }
-export function planifierSons({ scene, images, zone, sons, sims = null }) {
+export function planifierSons({ scene, images, zone, sons, sims = null, remap = null }) {
   const evenements = [], notes = [];
   let nbPas = 0;
   const DT = 1 / 30;
@@ -150,7 +150,7 @@ export function planifierSons({ scene, images, zone, sons, sims = null }) {
         }
       }
     });
-    if (sims) { const absents = new Set(); sonsDeTrajet({ scene, images, zone, sons, sims, evenements, gainPan, manquantes: absents }); if (absents.size) notes.push(`sons de la physique absents du kit, ignores : ${[...absents].join(', ')}`); }
+    if (sims) { const absents = new Set(); sonsDeTrajet({ scene, images, zone, sons, sims, evenements, gainPan, manquantes: absents, remap }); if (absents.size) notes.push(`sons de la physique absents du kit, ignores : ${[...absents].join(', ')}`); }
     if (manquantes.size) notes.push(`sons de pas absents du kit : ${[...manquantes].join(', ')} (herbe utilisee)`);
   }
   for (const s of scene.sons.liste) {
@@ -199,9 +199,10 @@ export function mixer({ evenements, duree, sons, volume = VOLUME_MIXAGE }) {
 // pas de son de chute sans degats (living_fall.rs : sons seulement si degats > 0, "small_fall" jusqu'a 4, "big_fall" au dela) ; eau :
 // "splash" a l'entree, "swim" tous les 1,67 bloc nage (movement_emission.rs:116-146) ; echelle : "block.ladder.step" tous les 1,67 bloc monte.
 // Un son absent du kit est ignore.
-function sonsDeTrajet({ scene, images, zone, sons, sims, evenements, gainPan, manquantes }) {
+function sonsDeTrajet({ scene, images, zone, sons, sims, evenements, gainPan, manquantes, remap = null }) {
   const DT = 1 / 30, TICK = 1 / 20;
   const ajouter = (evt, t, pos, gain, graine) => {
+    if (remap) t = remap.filmDe(t);   // montage : le temps d'action (ralenti, arret) est converti en instant du film
     const liste = sons.fichiers(evt);
     if (!liste.length) { manquantes.add(evt); return; }
     const im = images[Math.min(images.length - 1, Math.max(0, Math.round(t / DT)))];

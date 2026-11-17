@@ -104,6 +104,7 @@ export function exporterMaj(scene, dossier, maj) {
     octets += sommets.byteLength + a.c.nbQuads * 24; quads += a.c.nbQuads;
     ajouts.push({ id: a.id, couche: a.nom, num, quads: a.c.nbQuads });
   }
-  fs.writeFileSync(path.join(dossier, 'maj.json'), JSON.stringify({ mortes: maj.mortes, retraits: maj.retraits, ajouts }));
+  // la palette s'allonge quand une scene pose un bloc nouveau (torche...) : l'hote en a besoin pour mc_Entity
+  fs.writeFileSync(path.join(dossier, 'maj.json'), JSON.stringify({ mortes: maj.mortes, retraits: maj.retraits, ajouts, palette: scene.monde ? scene.monde.palette : scene.zone.palette }));
   return { ms: performance.now() - t0, octets, pieces: ajouts.length, quads };
 }

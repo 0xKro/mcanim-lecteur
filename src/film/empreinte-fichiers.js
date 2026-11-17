@@ -29,7 +29,18 @@ export const REGISTRE = [
   { role: 'packShader', lister: (brut) => (typeof brut.packShader === 'string' ? [brut.packShader] : []) },
   // mods de comportement (monde.mods) : le fichier change le jeu, donc l'image. Octets normalises (\n, sans BOM) : voir moteur/mods.js
   { role: 'mod', normaliser: true, lister: (brut) => (Array.isArray(brut.monde?.mods) ? brut.monde.mods.filter((m) => typeof m === 'string') : []) },
+  // montage : fichiers audio (voix, musique, effets) et images PNG des incrustations (icone / image avec `fichier`, y compris dans les cartes) : leur CONTENU est dans l'empreinte
+  { role: 'audio', lister: (brut) => (Array.isArray(brut.sons?.fichiers) ? brut.sons.fichiers.map((e) => e?.[1]).filter((f) => typeof f === 'string') : []) },
+  { role: 'incrust-image', lister: (brut) => fichiersIncrustations(brut.incrustations) },
 ];
+function fichiersIncrustations(liste) {
+  const sortie = [];
+  for (const e of Array.isArray(liste) ? liste : []) {
+    if (typeof e?.fichier === 'string') sortie.push(e.fichier);
+    if (Array.isArray(e?.incrustations)) sortie.push(...fichiersIncrustations(e.incrustations));
+  }
+  return sortie;
+}
 
 // Lignes VIRTUELLES (rien a lire sur le disque) : ce qui change l'image sans etre dans le fichier de scene. Une scene avec `monde` depend des
 // tables de donnees du jeu (moteur/donnees-empreinte.json : SHA-256 du fichier) et de la version du moteur ; un changement de donnees

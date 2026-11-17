@@ -1,7 +1,8 @@
 // Fichier de scene : lecture, controle, pistes d'images cles, boucles.
 // Le format est decrit dans docs/CONCEPTION.md (partie 3). Les messages d'erreur donnent le chemin du champ fautif.
 
-export const LIMITE_OCTETS = 20 * 1024;
+export const LIMITE_OCTETS = 64 * 1024;   // montage : plans, legendes et incrustations demandent plus de place (avant : 20 Ko)
+export const DUREE_MAX = 180;              // secondes (avant : 30)
 export const IMAGES_PAR_SECONDE = 30;
 export const FORMATS = { '1920x1080': [1920, 1080], '1080x1920': [1080, 1920] };
 const LISSAGES = new Set(['d', 's', 'x', 'l']);
@@ -14,6 +15,9 @@ export const BASCULE_MAX = 180, HAUTEUR_MAX = 10;
 // Articulations libres : angles a 3 valeurs (epaule, hanche, tete, tronc), cibles de mains et de pieds ; plafond absurde +-360 (limites.js, cibles.js).
 import { PLAFOND } from './limites.js';
 import { lireCibles, MEMBRES_CIBLES } from './cibles.js';
+import { lireMontage, lireEffetsCamera } from '../montage/format.js';   // plans, textes, sousTitres, incrustations, effets de camera (facultatifs)
+import { lireZonesSures } from '../montage/zones.js';   // zonesSures : marges de l'interface des applications (profils instagram, tiktok, youtube, toutes, aucune)
+import { lireEntreesFichiers } from '../montage/audio.js';   // sons.fichiers : fichiers audio du montage
 import { lireHabillage } from './objets-scene.js';   // objet, objetG, armure (docs/CONCEPTION.md, tableau de l'acteur)
 const PISTES_BOUCLE = [...MEMBRES, ...ARTICULATIONS, 'tete', 'corps', 'lacet', 'bascule', 'roulis', 'hauteur'];
 export const MAX_CLES_SKINS = 16, MAX_GELS = 8, MAX_TEXTURES = 32;
@@ -30,7 +34,7 @@ const estNombre = (x) => typeof x === 'number' && Number.isFinite(x);
 const estObjet = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 
 // ---------------------------------------------------------------- lecture
-// Texte -> objet. Refuse un fichier de plus de 20 Ko ou qui n'est pas du JSON.
+// Texte -> objet. Refuse un fichier de plus de 64 Ko ou qui n'est pas du JSON.
 export function lireJson(texte) {
   const octets = Buffer.byteLength(texte, 'utf8');
   if (octets > LIMITE_OCTETS) err('', `fichier trop gros (${octets} octets, maximum ${LIMITE_OCTETS})`);
@@ -138,7 +142,7 @@ export function validerScene(s) {
   if (!estObjet(s)) err('', 'un objet JSON est attendu');
   if (s.v !== undefined && s.v !== 1) err('v', `version ${JSON.stringify(s.v)} non geree (seule la version 1 existe)`);
   if (typeof s.format !== 'string' || !FORMATS[s.format]) err('format', `"1920x1080" ou "1080x1920" attendu, pas ${JSON.stringify(s.format)}`);
-  if (!estNombre(s.duree) || s.duree < 1 || s.duree > 30) err('duree', `entre 1 et 30 secondes attendu, pas ${JSON.stringify(s.duree)}`);
+  if (!estNombre(s.duree) || s.duree < 1 || s.duree > DUREE_MAX) err('duree', `entre 1 et ${DUREE_MAX} secondes attendu, pas ${JSON.stringify(s.duree)}`);
   if (typeof s.zone !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(s.zone)) err('zone', 'identifiant de zone attendu (22 caracteres : lettres, chiffres, - et _)');
   if (!Array.isArray(s.acteurs) || s.acteurs.length < 1) err('acteurs', 'au moins un acteur est attendu');
   if (s.acteurs.length > 10) err('acteurs', 'dix acteurs au maximum');
@@ -200,7 +204,15 @@ export function validerScene(s) {
     return o;
   });
 
-  const camera = lireCamera(s.camera, noms);
+  // montage (facultatif) : plans = une camera par plan ; sans plans, la camera de la scene est obligatoire comme avant
+  const D = { err, lirePiste, borner, noms, lireTable: (b, ch) => lireTable(b, ch, LEVIERS_IMAGE), lireCamera: (c, n, base) => lireCamera(c, n, base) };
+  const montage = lireMontage(D, s, s.duree, Math.round(s.duree * IMAGES_PAR_SECONDE));
+  const camera = s.camera === undefined && montage.plans ? null : lireCamera(s.camera, noms);
+  if (!camera) {   // les plans doivent couvrir toute la scene : pas de camera de repli
+    let fin = 0;
+    for (const p of montage.plans) { if (p.de > fin + 1e-6) err('plans', `trou entre ${fin} et ${p.de} s : sans "camera" a la racine, les plans doivent couvrir toute la scene`); fin = p.a; }
+    if (fin < s.duree - 1e-6) err('plans', `les plans s'arretent a ${fin} s, la scene dure ${s.duree} s : sans "camera" a la racine, ils doivent la couvrir entierement`);
+  }
   const sons = { pas: false, volume: 1, liste: [] };
   if (s.sons !== undefined) {
     if (!estObjet(s.sons)) err('sons', 'un objet est attendu, par exemple {"pas": true}');
@@ -227,6 +239,12 @@ export function validerScene(s) {
         return o;
       });
     }
+    // fichiers audio du montage (voix, musique, effets) : [[t, "voix.mp3", volume?, options?], ...] ; normalise : cible de sonie en LUFS (defaut -16) ou false
+    if (s.sons.fichiers !== undefined) sons.fichiers = lireEntreesFichiers(s.sons.fichiers, { duree: s.duree, erreur: err });
+    if (s.sons.normalise !== undefined) {
+      if (s.sons.normalise !== false && !(estNombre(s.sons.normalise) && s.sons.normalise >= -40 && s.sons.normalise <= -5)) err('sons.normalise', 'cible de sonie en LUFS (-40 a -5, defaut -16) ou false');
+      sons.normalise = s.sons.normalise;
+    }
   }
   const [largeur, hauteur] = FORMATS[s.format];
   return {
@@ -239,6 +257,7 @@ export function validerScene(s) {
     shader: s.shader !== undefined ? lireRefShader(s.shader) : null,   // chemin du fichier shader.json (docs/FORMAT-SHADER.md)
     monde: s.monde !== undefined ? lireMonde(s.monde, s.duree) : null,   // simulation du jeu (docs/SIMULATION.md) ; absent = rendu d'avant, exactement
     packShader: s.packShader !== undefined ? lireRefPackShader(s.packShader) : null,   // vrai pack de shaders (.zip) : rendu OpenGL logiciel, docs/SHADERS-REELS.md
+    ...(s.zonesSures !== undefined ? { zonesSures: lireZonesSures({ err }, s.zonesSures) } : {}), ...(montage.plans ? { plans: montage.plans } : {}), ...(montage.textes.length ? { textes: montage.textes } : {}), ...(montage.incrustations.length ? { incrustations: montage.incrustations } : {}),   // montage (facultatif)
   };
 }
 
@@ -417,26 +436,29 @@ function lireBoucle(b, ch, duree) {
   return o;
 }
 
-function lireCamera(c, noms) {
-  if (!estObjet(c)) err('camera', 'un objet est attendu, par exemple {"suit": "heros", "decalage": [[0, 0, 2, 4]]}');
+function lireCamera(c, noms, base = 'camera') {
+  if (!estObjet(c)) err(base, 'un objet est attendu, par exemple {"suit": "heros", "decalage": [[0, 0, 2, 4]]}');
   const o = { fov: [[0, 70]] };
-  o.fov = c.fov !== undefined ? lirePiste(c.fov, 'camera.fov', { minArite: 1, maxArite: 1 }) : { arite: 1, cles: [{ t: 0, v: [70], l: null }] };
-  for (const k of o.fov.cles) if (k.v[0] < 10 || k.v[0] > 150) err('camera.fov', `angle de vue entre 10 et 150 degres attendu, pas ${k.v[0]}`);
+  o.fov = c.fov !== undefined ? lirePiste(c.fov, `${base}.fov`, { minArite: 1, maxArite: 1 }) : { arite: 1, cles: [{ t: 0, v: [70], l: null }] };
+  for (const k of o.fov.cles) if (k.v[0] < 10 || k.v[0] > 150) err(`${base}.fov`, `angle de vue entre 10 et 150 degres attendu, pas ${k.v[0]}`);
   if (c.suit !== undefined) {
-    if (typeof c.suit !== 'string' || !noms.has(c.suit)) err('camera.suit', `acteur inconnu : ${JSON.stringify(c.suit)} (acteurs : ${[...noms].join(', ')})`);
-    if (c.pos !== undefined) err('camera.pos', '"suit" et "pos" ensemble : choisissez l\'un ou l\'autre');
+    if (typeof c.suit !== 'string' || !noms.has(c.suit)) err(`${base}.suit`, `acteur inconnu : ${JSON.stringify(c.suit)} (acteurs : ${[...noms].join(', ')})`);
+    if (c.pos !== undefined) err(`${base}.pos`, "\"suit\" et \"pos\" ensemble : choisissez l'un ou l'autre");
     o.mode = 'suit'; o.suit = c.suit;
-    o.decalage = c.decalage !== undefined ? lirePiste(c.decalage, 'camera.decalage', { minArite: 3, maxArite: 3 }) : { arite: 3, cles: [{ t: 0, v: [0, 2, 4], l: null }] };
+    o.decalage = c.decalage !== undefined ? lirePiste(c.decalage, `${base}.decalage`, { minArite: 3, maxArite: 3 }) : { arite: 3, cles: [{ t: 0, v: [0, 2, 4], l: null }] };
   } else if (c.pos !== undefined) {
     o.mode = 'libre';
-    o.pos = lirePiste(c.pos, 'camera.pos', { minArite: 3, maxArite: 3 });
+    o.pos = lirePiste(c.pos, `${base}.pos`, { minArite: 3, maxArite: 3 });
     if (c.regarde !== undefined) {
-      if (typeof c.regarde !== 'string' || !noms.has(c.regarde)) err('camera.regarde', `acteur inconnu : ${JSON.stringify(c.regarde)}`);
+      if (typeof c.regarde !== 'string' || !noms.has(c.regarde)) err(`${base}.regarde`, `acteur inconnu : ${JSON.stringify(c.regarde)}`);
       o.regarde = c.regarde;
-    } else if (c.cible !== undefined) o.cible = lirePiste(c.cible, 'camera.cible', { minArite: 3, maxArite: 3 });
-    else err('camera', '"pos" demande aussi "cible" (points a regarder) ou "regarde" (nom d\'un acteur)');
-  } else err('camera', 'il faut "suit" (avec "decalage") ou "pos" (avec "cible" ou "regarde")');
+    } else if (c.cible !== undefined) o.cible = lirePiste(c.cible, `${base}.cible`, { minArite: 3, maxArite: 3 });
+    else err(base, "\"pos\" demande aussi \"cible\" (points a regarder) ou \"regarde\" (nom d'un acteur)");
+  } else err(base, 'il faut "suit" (avec "decalage") ou "pos" (avec "cible" ou "regarde")');
   if (c.suit !== undefined && c.regarde !== undefined) { /* "suit" vise deja la tete : "regarde" ignore */ }
+  // effets de camera (facultatifs) : roulis, secousse, coupZoom, flouFile, flouAuto, flouRadial, profondeurChamp (montage/format.js)
+  const ef = lireEffetsCamera({ err, lirePiste, borner, noms, lireTable: null }, c, base);
+  if (ef) o.effets = ef;
   return o;
 }
 

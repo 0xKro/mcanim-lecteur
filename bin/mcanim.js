@@ -50,8 +50,12 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   mcanim rendre <scene.json> --jeton <jeton> [--sortie f.mp4] [--pack pack.zip] [--skin nom=fichier.png] [--shader shader.json]
   mcanim rendre ... --pack-shader pack.zip [--echelle 1|0.5] [--profil NOM] [--option NOM=VALEUR ...] [--repli]   VRAI pack de shaders (le code du pack tourne sur
                                       un OpenGL logiciel ; lent : quelques secondes par image ; 0.5 = le pack tourne a mi-taille puis l'image est agrandie)
-  mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360] [--shader shader.json | --pack-shader pack.zip ...]   UNE image de la scene, petite, filigranee, SANS jeton
+  mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360] [--zones] [--shader shader.json | --pack-shader pack.zip ...]   UNE image de la scene, petite, filigranee, SANS jeton
                                       (verifie couleurs, masques, cadrage avant de payer ; le rendu complet exige le jeton)
+  mcanim planche <scene.json> [--n 12] [--sortie f.png] [--sans-zones]   PLANCHE DE CONTACT gratuite et filigranee : N images (ou une par plan si la scene a des plans), avec incrustations, effets et transitions, en UNE image ; revoir un montage rapide sans payer
+  (vertical : textes et incrustations restent dans la ZONE SURE des applications, champ zonesSures "toutes" par defaut = instagram + tiktok + youtube ; "aucune" pour la desactiver ; --zones / planche montrent les masques d'interface)
+  (textes et incrustations ANIMES par defaut : entree, emphase, sortie ; entree/sortie/emphase/anim/courbe/retard par element, "anim":"aucune" pour couper ; fiches sous_titres, incrustations)
+  mcanim son duree <fichier audio>   duree, sonie (LUFS), crete et silences d'un fichier mp3/wav/... : pour caler les sous-titres sur une voix (gratuit)
   mcanim skin <ref> [--sortie skin.png] [--zones]   exporte le skin 64x64 (a retoucher) et affiche ou sont visage, cheveux, corps
   mcanim texture <jeu/chemin> [--sortie f.png]      exporte une texture du jeu (ex. block/oak_leaves) a retoucher
   mcanim shader --guide               reference courte pour traduire un pack de shaders en shader.json (cles, methode)
@@ -69,6 +73,8 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   --shader shader.json : ombres du soleil, ciel, brume, rayons de lumiere, bloom, eau, feuilles qui bougent... (format : docs/FORMAT-SHADER.md ;
                          exemples : exemples/shader-leger.json, shader-tout.json ; ou le champ de scene "shader": "shader.json", chemin relatif a la scene ; l'option l'emporte)
   acteur : fige [[debut,fin]] (cet acteur seul s'arrete, pose tenue ; les autres continuent) figeSauf ["tete",...] (pistes qui continuent) ; boucle : phase0 (0..1, demarre a cette phase) ; sons : {pas, volume 0..4, liste [[t,"son",volume,cible]]} cible {"acteur":"nom"} ou [x,y,z]
+  montage (facultatif, 1 a 180 s, fichier 64 Ko max) : plans [{de,a,camera,transition,vitesse,arret,image}] (une camera par plan, coupes) ; sousTitres {texte,debut,fin|mots,par,couleurs} et textes [[debut,fin,"texte"]] ;
+  incrustations [{type: texte compteur fleche ligne icone equation coeurs faim horloge nom bulle chat succes inventaire hud carte image, t:[debut,fin], ecran|monde|acteur}] ; camera : roulis secousse coupZoom flouFile flouRadial profondeurChamp ; sons.fichiers [[t,"voix.mp3",volume,{voix,sousVoix,fondu,boucle}]] (fiches du site)
   champs de scene facultatifs : monde {graine, regles, mods, blocs [[t,x,y,z,"bloc"]], lumiere} (simulation du jeu ; lumiere des blocs), image, ciel, gel, textures, shader, packShader (pack .zip, chemin relatif a la scene) ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui, objet objetG [t,"id"|null] (objet tenu en main droite / gauche ; mcanim objets --cherche mot), armure {tete,torse,jambes,pieds} (fiches du site)
   hauteur automatique (physique du jeu : saut 0.42, gravite 0.08, pas de 0.6, chute, eau, echelle) a partir de pos [t,x,z] ; acteur : bascule [t,deg] roulis [t,deg]
   (corps entier autour des hanches, 90 = a plat) hauteur [t,blocs] (decalage vertical) reactions:false (coupe les reactions automatiques du corps)
@@ -341,7 +347,7 @@ async function commandeTexture(argv) {
 
 // Une image de la scene a l'instant t, sans jeton : petite, avec un filigrane. Le rendu complet (mcanim rendre) exige toujours un jeton.
 async function commandeApercu(argv) {
-  const { pos, opt } = lireArgs(argv, { valeurs: ['t', 'sortie', 'taille', 'pack', 'skin', 'shader', 'pack-shader', 'echelle', 'profil'], multiples: ['option'], drapeaux: ['repli'] });
+  const { pos, opt } = lireArgs(argv, { valeurs: ['t', 'sortie', 'taille', 'pack', 'skin', 'shader', 'pack-shader', 'echelle', 'profil'], multiples: ['option'], drapeaux: ['repli', 'zones'] });
   if (pos.length !== 1) throw new Usage('usage : mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360]');
   const t = opt.t === undefined ? 0 : Number(opt.t);
   if (!Number.isFinite(t) || t < 0) throw new Usage('--t : un nombre de secondes >= 0, par exemple --t 3.5');
@@ -362,12 +368,58 @@ async function commandeApercu(argv) {
   if (habillage.note) dire(habillage.note);
   const sortie = path.resolve(opt.sortie || 'apercu.png');
   const { apercuImage } = await import('../src/film/video.js');
-  const r = await apercuImage({ scene, zonePath: zone.chemin, kitDir: kit, t, sortie, taille: opt.taille, surcharges, baseDir, shader: reel ? null : shader, ...(reel ? { packShader: reel.chemin, optionsPack: reel.optionsPack, echelle: reel.echelle, log: dire } : {}) }).catch((e) => { if (/^--(t|taille)/.test(e.message)) throw new Usage(e.message); throw e; });
+  const r = await apercuImage({ scene, zonePath: zone.chemin, kitDir: kit, t, sortie, taille: opt.taille, surcharges, baseDir, zones: !!opt.zones, shader: reel ? null : shader, ...(reel ? { packShader: reel.chemin, optionsPack: reel.optionsPack, echelle: reel.echelle, log: dire } : {}) }).catch((e) => { if (/^--(t|taille)/.test(e.message)) throw new Usage(e.message); throw e; });
   const repli = r.skins.filter((s) => s.repli);
   dire(`apercu ${r.sortie} | t=${r.t.toFixed(2)} s (image ${r.image}) | ${r.taille.join('x')} | ${sec(Date.now() - t0)} s | filigrane : ce n'est PAS le rendu final, mcanim rendre demande un jeton`);
   const notesA = (r.notes || []).filter((n) => /^options non prises/.test(n));
   if (repli.length) notesA.push(noteSkinsDeRepli(repli));
   if (notesA.length) dire('notes : ' + notesA.join(' ; '));
+}
+
+// Planche de contact (gratuite, filigranee) : N images de la scene, ou une par plan, en une seule image.
+async function commandePlanche(argv) {
+  const { pos, opt } = lireArgs(argv, { valeurs: ['n', 'sortie', 'pack', 'skin', 'shader'], drapeaux: ['zones', 'sans-zones'] });
+  if (pos.length !== 1) throw new Usage('usage : mcanim planche <scene.json> [--n 12] [--sortie planche.png]   (une image par plan si la scene a des plans et pas de --n)');
+  const n = opt.n === undefined ? undefined : Number(opt.n);
+  if (n !== undefined && !(Number.isInteger(n) && n >= 1 && n <= 48)) throw new Usage('--n : entier de 1 a 48');
+  const t0 = Date.now();
+  const { scene } = lireScene(lireTexte(pos[0]));
+  const baseDir = path.dirname(path.resolve(pos[0]));
+  const surcharges = {};
+  if (opt.skin) { const i = opt.skin.indexOf('='); if (i < 1) throw new Usage('--skin attend nom=fichier.png'); surcharges[opt.skin.slice(0, i)] = path.resolve(opt.skin.slice(i + 1)); }
+  verifierFichiers(scene, baseDir, surcharges);
+  const shader = controlerShader(scene, baseDir, opt.shader);
+  const zone = await obtenirZone(scene.zone);
+  let kit = await trouverKit({ groupes: groupesDeScene(scene) });
+  if (opt.pack) kit = await appliquerPack(kit, path.resolve(opt.pack));
+  const habillage = planifierHabillage(scene, kit);
+  if (habillage.erreur) throw new Usage(habillage.erreur);
+  const { preparerFilm } = await import('../src/film/video.js');
+  const { ecrirePlanche } = await import('../src/montage/planche.js');
+  const film = await preparerFilm({ scene, zonePath: zone.chemin, kitDir: kit, surcharges, baseDir, travailleurs: 0, shader });
+  try {
+    const sortie = path.resolve(opt.sortie || path.basename(pos[0]).replace(/\.json$/i, '') + '-planche.png');
+    // vertical : les masques d'interface (TikTok, Reels, Shorts) sont dessines par defaut ; --sans-zones les cache
+    const zones = opt['sans-zones'] ? false : (opt.zones || scene.hauteur > scene.largeur);
+    const r = await ecrirePlanche({ film, scene, sortie, n, zones });
+    dire(`planche ${r.sortie} | ${r.n} images (${r.instants.map((t) => t.toFixed(1)).join(' ')} s) | ${r.taille.join('x')} | ${sec(Date.now() - t0)} s | filigrane : ce n'est PAS le rendu final`);
+    const notes = [...film.notes, ...(film.comp?.notesFinales() ?? [])];
+    if (notes.length) dire('notes : ' + notes.join(' ; '));
+  } finally { await film.fermer(); }
+}
+
+// Duree et sonie d'un fichier audio (gratuit) : pour caler les sous-titres (sousTitres.mots) sur une voix.
+async function commandeSon(argv) {
+  const args = argv[0] === 'duree' ? argv.slice(1) : argv;
+  if (args.length !== 1) throw new Usage('usage : mcanim son duree <fichier audio>');
+  const f = path.resolve(args[0]);
+  if (!fs.existsSync(f)) throw new Usage(`fichier introuvable : ${args[0]}`);
+  const { trouverFfmpeg } = await import('../src/film/ffmpeg.js');
+  const { mesurerSon } = await import('../src/montage/audio.js');
+  const m = await mesurerSon(f, trouverFfmpeg());
+  const si = m.silences.length ? ' | silences > 0,3 s : ' + m.silences.map(([a, b]) => `${a}-${b}`).join(' ') + ' s' : '';
+  dire(`${path.basename(f)} : ${String(m.duree).replace('.', ',')} s | sonie ${m.lufs === null ? 'trop faible' : m.lufs + ' LUFS'} | crete ${m.creteDb} dBFS | ${m.canaux} canal(aux) ${m.frequence} Hz${si}`);
+  dire('pour la scene : "sons":{"fichiers":[[0,"' + path.basename(f) + '",1,{"voix":true}]]} ; sousTitres.mots = [[temps,"mot"],...] calcules sur ces durees (mcanim planche pour verifier)');
 }
 
 // Aide gratuite : cherche des identifiants d'objets (et de materiaux d'armure) pour ne pas deviner les noms.
@@ -484,6 +536,8 @@ async function main() {
     case 'rendre': return commandeRendre(reste);
     case 'skin': return commandeSkin(reste);
     case 'texture': return commandeTexture(reste);
+    case 'planche': return commandePlanche(reste);
+    case 'son': return commandeSon(reste);
     case 'apercu': return commandeApercu(reste);
     case 'shader': return commandeShader(reste);
     case 'kit': return commandeKit();

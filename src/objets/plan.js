@@ -8,7 +8,17 @@ import { nomMateriau, couchesTexture, materiauxDuKit, EMPLACEMENTS } from './arm
 // Groupes a la demande (kit.js) dont la scene a besoin : ['objets'], ['armures'], les deux ou [].
 export function groupesDeScene(scene) {
   const { objets, armures } = idsDeScene(scene);
-  return [...(objets.size ? ['objets'] : []), ...(armures.size ? ['armures'] : [])];
+  const m = groupesMontage(scene);   // textes et incrustations : groupe `interface` (police, sprites) ; icones d'objets : `objets`
+  return [...(objets.size || m.objets ? ['objets'] : []), ...(armures.size ? ['armures'] : []), ...(m.interface ? ['interface'] : [])];
+}
+
+// Groupes de kit dont le montage a besoin : { interface, objets }.
+const AVEC_OBJETS = new Set(['icone', 'equation', 'inventaire', 'hud', 'succes', 'horloge', 'minuteur']);
+function groupesMontage(scene) {
+  const r = { interface: !!scene.textes?.length, objets: false };
+  const marche = (liste) => { for (const e of liste ?? []) { r.interface = true; if (AVEC_OBJETS.has(e.type) && !(e.type === 'icone' && !e.objet)) r.objets = true; marche(e.incrustations); } };
+  marche(scene.incrustations);
+  return r;
 }
 
 // Recherche d'objets pour `mcanim objets --cherche` : tous les mots doivent etre dans l'identifiant ; quelques mots francais ou generiques

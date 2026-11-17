@@ -11,6 +11,8 @@ import { creerFige } from './fige.js';   // acteur fige seul : horloges propres
 import { notesObstruction } from './obstruction.js';   // camera : herbe, feuilles ou acteur colles a l'objectif (note, sans correction)
 import { valeurObjet } from './objets-scene.js';   // objets tenus et armure : pistes de changements d'un coup
 import { appliquerCibles, aCibles } from './cibles.js';   // articulations libres : cibles des mains et des pieds (cinematique inverse)
+import { carteTemps } from '../montage/temps.js';   // montage : ralenti, accelere, arret du temps du monde par plan (facultatif)
+import { appliquerMontage, effetsDeScene } from '../montage/effets-camera.js';   // montage : secousse, coup de zoom, roulis, flous, transitions (facultatif)
 
 const RAD = Math.PI / 180;
 const DT = 1 / 30; // 30 images par seconde (IMAGES_PAR_SECONDE de scene.js)
@@ -141,11 +143,12 @@ export function animer(scene, terrain = {}) {
   const parImage = [], infosImage = [];
   const gel = scene.gel ?? [];
   const horloge = horlogeMonde(gel);
+  const remap = carteTemps(scene);   // null sans `plans` avec vitesse/arret : le temps d'action est alors le temps du film, comme avant
   // physique verticale de chaque acteur (physique.js) : saut, marche d'escalier, chute, eau, echelle ; la piste pos donne l'horizontale
   const figes = acteurs.map((a) => creerFige(a, gel));   // acteurs figes seuls (champ fige) : null pour les autres, calcul inchange
   const sims = acteurs.map((a, k) => simulerActeur({ piste: pistePos(a), terrain, duree: scene.duree, gel: figes[k] ? figes[k].simGel : gel, tempsPos: figes[k]?.simTemps ?? null }));
   for (let i = 0; i < n; i++) {
-    const t = i * DT;
+    const t = remap ? remap.tw[i] : i * DT;
     const { tw, fige } = horloge.etat(t);
     // sans gel on garde exactement le calcul d'avant (h = null)
     const h = gel.length ? { tw, monde: horloge.monde } : null;
@@ -263,43 +266,61 @@ export function animer(scene, terrain = {}) {
   }
 
   // ---- passe 2 : camera (on connait tout le film : planification sur tout le plan, voir camera.js)
-  const c = scene.camera;
+  // Un seul plan (sans `plans`) : toute la scene avec la camera de la scene, comme avant. Avec `plans` : un plan de camera par segment, qui REPREND
+  // A ZERO (cap, hauteur lissee, collisions : rien ne se propage d'un plan a l'autre, pas d'interpolation a travers une coupe) ; les temps des pistes
+  // de camera d'un plan sont relatifs a son debut.
   const yeux = (p) => {
     if (!p.bascule && !p.roulis && !p.hauteur && !p.troncComplet) return [p.x, p.y + 1.62 - 0.35 * p.accroupi, p.z];   // corps droit : la formule d'avant, au bit pres
     const [ox, oy, oz] = decalageYeux(p);
     return [p.x + ox, p.y + oy, p.z + oz];
   };
   const pos = new Array(n), cible = new Array(n);
+  const fovPar = new Array(n);
   let corrigee = new Array(n).fill(false);
   let statCamera = null;
-  if (c.mode === 'suit') {
-    const k = parNom.get(c.suit);
-    let cap = parImage[0][k].lacet;   // direction suivie par la camera : celle du corps, un peu adoucie
-    // hauteur de reference de la camera : celle de l'acteur, adoucie (sauts, chutes, marches : la camera ne saute pas avec lui)
-    const ys = parImage.map((poses) => poses[k].y);
-    const ysLisse = lisserHauteur(ys, TEMPS_HAUTEUR_CAMERA);
-    const voulues = parImage.map((poses, i) => {
-      const A = poses[k];
-      cap += normaliser180(A.lacet - cap) * (1 - Math.exp(-DT / TEMPS_CAP));
-      const [droite, haut, arriere] = evaluer(c.decalage, i * DT);
-      const psi = cap * RAD, fx = -Math.sin(psi), fz = Math.cos(psi);
-      cible[i] = yeux(A);
-      return [A.x - fz * droite - fx * arriere, ysLisse[i] + haut, A.z + fx * droite - fz * arriere];
-    });
-    const plan = planifierCameraSuivi({ cibles: cible, voulues, solide, dt: DT });
-    for (let i = 0; i < n; i++) pos[i] = plan.pos[i];
-    corrigee = plan.corrigee; statCamera = plan.stat;
-    if (plan.vueCoupee > 0.5 / DT) notes.push(`camera : acteur cache par un bloc pendant ${(plan.vueCoupee * DT).toFixed(1).replace('.', ',')} s malgre les corrections`);
-  } else {
-    const voulues = [];
-    for (let i = 0; i < n; i++) {
-      const t = i * DT;
-      voulues.push(Array.from(evaluer(c.pos, t)));
-      cible[i] = c.regarde ? yeux(parImage[i][parNom.get(c.regarde)]) : Array.from(evaluer(c.cible, t));
+  const cumuler = (st) => { if (!st) return; statCamera = statCamera ?? {}; for (const [k, v] of Object.entries(st)) statCamera[k] = (statCamera[k] ?? 0) + v; };
+  const segments = [];
+  if (scene.plans) {
+    let i = 0;
+    for (const p of scene.plans) {
+      if (p.i0 > i) segments.push({ i0: i, i1: p.i0, c: scene.camera, dec: 0 });   // trou entre deux plans : camera de la scene
+      if (p.i1 > p.i0) segments.push({ i0: p.i0, i1: p.i1, c: p.camera, dec: p.de });
+      i = Math.max(i, p.i1);
     }
-    const plan = planifierCameraLibre({ positions: voulues, cibles: cible, solide, dt: DT });
-    for (let i = 0; i < n; i++) pos[i] = plan.pos[i];
-    corrigee = plan.corrigee; statCamera = plan.stat;
+    if (i < n) segments.push({ i0: i, i1: n, c: scene.camera, dec: 0 });
+  } else segments.push({ i0: 0, i1: n, c: scene.camera, dec: 0 });
+  for (const { i0, i1, c, dec } of segments) {
+    if (c.mode === 'suit') {
+      const k = parNom.get(c.suit);
+      let cap = parImage[i0][k].lacet;   // direction suivie par la camera : celle du corps, un peu adoucie
+      // hauteur de reference de la camera : celle de l'acteur, adoucie (sauts, chutes, marches : la camera ne saute pas avec lui)
+      const ys = parImage.slice(i0, i1).map((poses) => poses[k].y);
+      const ysLisse = lisserHauteur(ys, TEMPS_HAUTEUR_CAMERA);
+      const cibles = [];
+      const voulues = parImage.slice(i0, i1).map((poses, j) => {
+        const A = poses[k];
+        cap += normaliser180(A.lacet - cap) * (1 - Math.exp(-DT / TEMPS_CAP));
+        const [droite, haut, arriere] = evaluer(c.decalage, (i0 + j) * DT - dec);
+        const psi = cap * RAD, fx = -Math.sin(psi), fz = Math.cos(psi);
+        cibles.push(yeux(A));
+        return [A.x - fz * droite - fx * arriere, ysLisse[j] + haut, A.z + fx * droite - fz * arriere];
+      });
+      const plan = planifierCameraSuivi({ cibles, voulues, solide, dt: DT });
+      for (let j = 0; j < i1 - i0; j++) { pos[i0 + j] = plan.pos[j]; cible[i0 + j] = cibles[j]; corrigee[i0 + j] = plan.corrigee[j]; }
+      cumuler(plan.stat);
+      if (plan.vueCoupee > 0.5 / DT) notes.push(`camera : acteur cache par un bloc pendant ${(plan.vueCoupee * DT).toFixed(1).replace('.', ',')} s malgre les corrections`);
+    } else {
+      const voulues = [], cibles = [];
+      for (let i = i0; i < i1; i++) {
+        const t = i * DT - dec;
+        voulues.push(Array.from(evaluer(c.pos, t)));
+        cibles.push(c.regarde ? yeux(parImage[i][parNom.get(c.regarde)]) : Array.from(evaluer(c.cible, t)));
+      }
+      const plan = planifierCameraLibre({ positions: voulues, cibles, solide, dt: DT });
+      for (let j = 0; j < i1 - i0; j++) { pos[i0 + j] = plan.pos[j]; cible[i0 + j] = cibles[j]; corrigee[i0 + j] = plan.corrigee[j]; }
+      cumuler(plan.stat);
+    }
+    for (let i = i0; i < i1; i++) fovPar[i] = evaluer(c.fov, i * DT - dec)[0];
   }
 
   // ---- images finales : orientation de la camera vers la cible
@@ -314,10 +335,11 @@ export function animer(scene, terrain = {}) {
       tangageCam = Math.atan2(-dy, h) / RAD;
     }
     if (corrigee[i]) corrections++;
-    images.push({ t, fige: infosImage[i].fige, tm: infosImage[i].tm, acteurs: parImage[i], camera: { x: pos[i][0], y: pos[i][1], z: pos[i][2], lacet: lacetCam, tangage: tangageCam, fov: evaluer(c.fov, t)[0] }, corrigee: corrigee[i] });
+    images.push({ t, fige: infosImage[i].fige, tm: infosImage[i].tm, acteurs: parImage[i], camera: { x: pos[i][0], y: pos[i][1], z: pos[i][2], lacet: lacetCam, tangage: tangageCam, fov: fovPar[i] }, corrigee: corrigee[i] });
   }
   if (terrain.bloc && terrain.solide) notes.push(...notesObstruction(scene, images, terrain));   // seulement avec un vrai terrain
-  return { images, corrections, notes, camera: statCamera, sims };
+  if (effetsDeScene(scene)) appliquerMontage(scene, images);   // secousse, coup de zoom, roulis, flous, profondeur de champ, transitions (rien sans ces champs)
+  return { images, corrections, notes, camera: statCamera, sims, remap };
 }
 
 // Piste [x, y, z] d'un acteur ; y vaut NaN quand la cle n'impose pas la hauteur.

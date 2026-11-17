@@ -16,4 +16,8 @@ export function verifierFichiers(scene, baseDir = process.cwd(), surcharges = {}
   if (scene.packShader && !existe(scene.packShader)) manque('packShader', scene.packShader);
   for (const [nom, f] of Object.entries(scene.textures ?? {})) if (!existe(f)) manque(`textures["${nom}"]`, f);
   (scene.monde?.mods ?? []).forEach((f, i) => { if (!existe(f)) manque(`monde.mods[${i}]`, f); });
+  // montage : fichiers audio et images des incrustations
+  (scene.sons?.fichiers ?? []).forEach((e, i) => { if (!existe(e.fichier)) manque(`sons.fichiers[${i}][1]`, e.fichier); });
+  const images = (liste, chemin) => (liste ?? []).forEach((e, i) => { if (e.fichier && !existe(e.fichier)) manque(`${chemin}[${i}].fichier`, e.fichier); if (e.incrustations) images(e.incrustations, `${chemin}[${i}].incrustations`); });
+  images(scene.incrustations, 'incrustations');
 }

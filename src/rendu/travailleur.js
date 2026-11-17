@@ -35,6 +35,8 @@ parentPort.on('message', (m) => {
   const pixels = m.pixels;
   const st = rast.rendre({ pixels, W: m.W, H: m.H, cam: m.cam, draws: pieces.size ? statiques.concat([...pieces.values()], dyn) : statiques.concat(dyn), rangeeDe, nW, params: m.params, force: m.force || null });
   if (m.ana) analyser(pixels, rast.zbuf, m.W, m.H, m.ana.tp, m.ana.par, rangeeDe, nW);
+  // profondeur demandee (montage) : mes rangees du tampon 1/w, copiees dans le tableau partage
+  if (m.prof) for (let y = 0; y < m.H; y++) if (((y >> 4) % nW) === rangeeDe) m.prof.set(rast.zbuf.subarray(y * m.W, (y + 1) * m.W), y * m.W);
   // post-traitement `image` sur mes bandes (la couleur selective vient du tampon `force` partage)
   if (m.post) post.appliquer(pixels, m.W, m.H, m.post, m.force || null, { rangeeDe, nW });
   parentPort.postMessage({ type: 'fini', id: m.id, stats: { ...st } });

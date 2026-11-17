@@ -323,7 +323,7 @@ class Scene {
   }
 
   // ---- rendu ----
-  async rendre({ camera, largeur = 1920, hauteur = 1080, temps = 0, maillagesDynamiques = [], brume, ciel, soleil, loin, mip = true, ssaa = 1, copie = true, lumiere, image, heure, jour, cielFixe, gamma } = {}) {
+  async rendre({ camera, largeur = 1920, hauteur = 1080, temps = 0, maillagesDynamiques = [], brume, ciel, soleil, loin, mip = true, ssaa = 1, copie = true, lumiere, image, heure, jour, cielFixe, gamma, profondeur = false } = {}) {
     const tDebut = performance.now();
     const sortieW = largeur, sortieH = hauteur;
     largeur *= ssaa; hauteur *= ssaa;
@@ -332,6 +332,10 @@ class Scene {
       this.pixels = new Uint32Array(new SharedArrayBuffer(largeur * hauteur * 4)); this.W = largeur; this.H = hauteur;
       this.force = null;
     }
+    // profondeur (facultatif, montage : profondeur de champ) : 1/w par pixel (0 = ciel), copie partagee des rangees de chaque worker ; rien sans `profondeur`
+    let profBuf = null;
+    if (profondeur) { if (!this._prof || this._prof.length !== largeur * hauteur) this._prof = new Float32Array(new SharedArrayBuffer(largeur * hauteur * 4)); profBuf = this._prof; }
+    this.profondeurDerniere = profondeur ? { donnees: profBuf, W: largeur, H: hauteur, ssaa } : null;
     this.textures.mettreAJour(temps);
     this._nouvelles = []; this._masquesNouveaux = [];
     const meshes = [...this.persistants.values(), ...maillagesDynamiques];
@@ -404,6 +408,7 @@ class Scene {
       for (const k of this._masquesNouveaux) this._masquesLocaux.set(k.id, k.data);
       const draws = this.tousDraws().concat(dyn.map((d) => ({ ...d, tex: this._texLocales.get(d.texId), masque: d.masqueId ? this._masquesLocaux.get(d.masqueId) : null })));
       this.dernieresStats = r.rendre({ pixels: this.pixels, W: largeur, H: hauteur, cam, draws, rangeeDe: 0, nW: 1, params, force });
+      if (profBuf) profBuf.set(r.zbuf);
       if (postSh) analyser(this.pixels, r.zbuf, largeur, hauteur, tp, postSh, 0, 1);
     } else {
       const promesses = this.travailleursListe.map((w, i) => new Promise((ok, ko) => {
@@ -412,7 +417,7 @@ class Scene {
         w.on('message', h);
         w.once('error', ko);
         // les masques sont envoyes a tous les workers la premiere fois (liste cumulee tant que l'image n'a pas ete rendue)
-        w.postMessage({ type: 'image', id: cle, pixels: this.pixels, W: largeur, H: hauteur, cam, dynamiques: dyn, texturesNouvelles: this._nouvelles, masquesNouveaux: this._masquesNouveaux, params, force, post: postParWorkers && !postSh ? image : null, ana: postSh ? { tp, par: postSh } : null });
+        w.postMessage({ type: 'image', id: cle, pixels: this.pixels, W: largeur, H: hauteur, cam, dynamiques: dyn, texturesNouvelles: this._nouvelles, masquesNouveaux: this._masquesNouveaux, params, force, post: postParWorkers && !postSh ? image : null, ana: postSh ? { tp, par: postSh } : null, prof: profBuf });
       }));
       const fin = await Promise.all(promesses);
       this.dernieresStats = { workers: fin.map((r) => r.stats) };

@@ -16,6 +16,9 @@ import { trouverFfmpeg } from './ffmpeg.js';
 import { appliquerTextures } from './cache.js';
 import { filigrane, tailleApercu } from './apercu.js';
 import { lireShader } from '../shader/format.js';
+import { creerComposition } from '../montage/composition.js';
+import { melangerCouleur } from '../montage/effets-image.js';   // montage : effets d'image, transitions, incrustations (rien sans ces champs)
+import { mixerFichiers } from '../montage/audio.js';   // montage : fichiers audio de sons.fichiers
 
 // Fichier de shader a utiliser : l'option (chemin deja resolu) l'emporte sur le champ `shader` de la scene (relatif au fichier de scene).
 export function fichierShader(scene, baseDir, option) {
@@ -77,16 +80,29 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
     const { personnages, parRef, infos } = await preparerPersonnages(scene, { kitDir: kit, surcharges, baseDir });
     const terrain = terrainDepuis(rs);
     const anim = animer(scene, terrain);
+    const comp = await creerComposition({ scene, kit, baseDir, rs, anim });   // null sans plans, textes, incrustations ni effets de camera
+    if (comp) notes.push(...comp.notes);
     const lumiere = personnages.map(() => null);
     // une image : personnages (skin du moment, lumiere du lieu), ciel, lumiere globale, puis post-traitement `image`
     const dessiner = async (i, { largeur, hauteur, ssaa = 1, copie = true }) => {
       const im = anim.images[i];
+      const carteBrute = comp ? comp.carteA(i) : null;   // carte plein cadre (montage) : fond uni, avec ou sans acteurs
+      const uFond = carteBrute ? comp.fonduCarte(i, carteBrute) : 1;   // 0,15 s de fondu du monde vers le fond de la carte
+      const carte = uFond >= 1 ? carteBrute : null;
+      if (carte && !carte.acteurs.length) {
+        const rgba = new Uint8Array(largeur * hauteur * 4);
+        for (let k = 0; k < rgba.length; k += 4) { rgba[k] = carte.fond[0]; rgba[k + 1] = carte.fond[1]; rgba[k + 2] = carte.fond[2]; rgba[k + 3] = 255; }
+        comp.finaliser(i, rgba, largeur, hauteur, null, { el: carte, im });
+        return rgba;
+      }
       if (sim) await rs.appliquerReplay(sim.replay.tickDe(im.tm));   // les blocs changes jusqu'a cet instant du monde (refait les sections touchees)
       const cielM = sim ? cielEn(scene, im.t, { lightmap: rs.maillage.lightmap }) : null;
       if (cielM && rs.maillage.lightmap) rs.tableLumiere(cielM.heure ?? 12, cielM.gamma);   // la lumiere des acteurs suit la meme table que le terrain
-      const maillages = im.acteurs.map((p, k) => {
-        let l = 1;
-        if (typeof rs.luminositeEn === 'function') {
+      const imC = carte ? comp.imageCarte(carte, im) : null;   // carte avec acteurs : ils sont sur l'etage, la camera les regarde de face
+      const maillages = (carte ? imC.ks : im.acteurs.map((_, k) => k)).map((k) => {
+        const p = (carte ? imC : im).acteurs[k];
+        let l = carte ? carte.lumiere : 1;
+        if (!carte && typeof rs.luminositeEn === 'function') {
           const brut = rs.luminositeEn(p.x, p.y + 0.9, p.z);
           l = lumiere[k] === null ? brut : lumiere[k] + (brut - lumiere[k]) * 0.25;
           lumiere[k] = l;
@@ -95,15 +111,22 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
         return perso.maillage({ ...p, age: im.tm * 20 }, l);
       });
       const ciel = sim ? cielM : cielEn(scene, im.t);
-      return rs.rendre({
-        camera: im.camera, largeur, hauteur, temps: im.tm, maillagesDynamiques: maillages, ssaa, copie,
+      const veutProf = comp ? comp.veutProfondeur(i) : false;
+      const fond = carte ? carte.fond : null;   // carte : ciel et brume de la couleur du fond, terrain hors de portee
+      const rgbaRendu = await rs.rendre({
+        camera: carte ? imC.camera : im.camera, largeur, hauteur, temps: im.tm, maillagesDynamiques: maillages, ssaa, copie, ...(veutProf ? { profondeur: true } : {}),
         image: imageEn(scene, im.t), heure: ciel?.heure, jour: ciel?.jour, cielFixe: ciel?.fixe, lumiere: ciel?.lumiere, gamma: ciel?.gamma,
         // le ciel est celui du jeu ; couleurs de ciel et de brume imposees seulement par couleurCiel
         ciel: ciel?.fixe ? ciel.ciel : undefined, soleil: ciel?.fixe ? ciel.soleil : undefined,
         brume: ciel?.fixe ? ciel.brume : (ciel?.brume?.debut !== undefined ? { debut: ciel.brume.debut } : undefined),
+        // carte : ciel, brume et lumiere imposes (fond uni, acteurs eclaires normalement)
+        ...(fond ? { ciel: { zenith: fond, horizon: fond, bas: fond }, soleil: false, cielFixe: true, brume: { debut: 30, fin: 50, couleur: fond }, lumiere: [1, 1, 1] } : {}),
       });
+      if (comp && carteBrute && !carte) { melangerCouleur(rgbaRendu, carteBrute.fond, uFond); comp.finaliser(i, rgbaRendu, largeur, hauteur, null, { el: carteBrute, im }); }
+      else if (comp) comp.finaliser(i, rgbaRendu, largeur, hauteur, veutProf ? rs.profondeurDerniere : null, carte ? { el: carte, im: imC } : null);
+      return rgbaRendu;
     };
-    return { rs, anim, infos, kit, notes, dessiner, sim, fermer: () => rs.fermer() };
+    return { rs, anim, infos, kit, notes, dessiner, sim, comp, fermer: () => rs.fermer() };
   } catch (e) { await rs.fermer(); throw e; }
 }
 
@@ -120,6 +143,36 @@ export async function preparerFilmReel({ scene, zonePath, kitDir, surcharges, ba
       film.reglerChauffe(n);
       log(`chauffe : ${n} images avant la premiere image du film`);
     }
+    // montage (facultatif) : effets d'image, transitions et incrustations sont appliques sur les images RGBA rendues par l'hote (pas de profondeur : la
+    // profondeur de champ est ignoree, dit en note ; une carte avec acteurs devient un fond uni)
+    const comp = await creerComposition({ scene, kit: film.kit, baseDir, rs: film.rs, anim: film.anim, gpu: true });
+    if (comp) {
+      const brut = film.dessiner;
+      film.comp = comp;
+      film.dessiner = async (i, opts = {}) => {
+        const carteBrute = comp.carteA(i), im = film.anim.images[i];
+        const uFond = carteBrute ? comp.fonduCarte(i, carteBrute) : 1;
+        const carte = uFond >= 1 ? carteBrute : null;
+        let rgba;
+        if (carteBrute && !carte) {   // fondu du fond de la carte : le monde rendu par l'hote, puis le fond melange par-dessus
+          rgba = await brut(i, opts);
+          melangerCouleur(rgba, carteBrute.fond, uFond);
+          comp.finaliser(i, rgba, opts.largeur ?? scene.largeur, opts.hauteur ?? scene.hauteur, null, { el: carteBrute, im });
+          return rgba;
+        }
+        if (carte) {
+          const L = opts.largeur ?? scene.largeur, H = opts.hauteur ?? scene.hauteur;
+          rgba = new Uint8Array(L * H * 4);
+          for (let k = 0; k < rgba.length; k += 4) { rgba[k] = carte.fond[0]; rgba[k + 1] = carte.fond[1]; rgba[k + 2] = carte.fond[2]; rgba[k + 3] = 255; }
+          comp.finaliser(i, rgba, L, H, null, { el: carte, im: carte.acteurs.length ? comp.imageCarte(carte, im) : im });
+          return rgba;
+        }
+        rgba = await brut(i, opts);
+        comp.finaliser(i, rgba, opts.largeur ?? scene.largeur, opts.hauteur ?? scene.hauteur, null, null);
+        return rgba;
+      };
+      film.notes.push(...comp.notes);
+    }
   } catch (e) { await film.fermer(); throw e; }
   return film;
 }
@@ -134,14 +187,20 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
   const ffmpeg = trouverFfmpeg(env);
   const film = packShader ? await preparerFilmReel({ scene, zonePath, kitDir, surcharges, baseDir, env, packShader, echelle, optionsPack, log }) : await preparerFilm({ scene, zonePath, kitDir, surcharges, baseDir, env, travailleurs, shader });
   const { rs, anim, infos } = film;
-  let tmpAudio = null;
+  let tmpAudio = null, mesuresAudio = null;
   try {
     const images = anim.images;
 
     // --- son
     const sons = new Sons(film.kit, ffmpeg);
-    const plan = planifierSons({ scene, images, zone: rs.zone, sons, sims: anim.sims });
-    const pcm = mixer({ evenements: plan.evenements, duree: scene.duree, sons, volume: VOLUME_MIXAGE * (scene.sons.volume ?? 1) });
+    const plan = planifierSons({ scene, images, zone: rs.zone, sons, sims: anim.sims, remap: anim.remap });
+    let pcm = mixer({ evenements: plan.evenements, duree: scene.duree, sons, volume: VOLUME_MIXAGE * (scene.sons.volume ?? 1) });
+    // fichiers audio du montage (voix, musique, effets) : mixes par-dessus les bruits du jeu, ducking et sonie finale (montage/audio.js)
+    let notesAudio = [];
+    if (scene.sons.fichiers?.length) {
+      const m = mixerFichiers({ pcm, entrees: scene.sons.fichiers, duree: scene.duree, baseDir, ffmpeg, normalise: scene.sons.normalise });
+      pcm = m.pcm; notesAudio = m.notes; mesuresAudio = m.mesures;
+    }
     tmpAudio = path.join(os.tmpdir(), `mcanim-audio-${process.pid}-${Date.now()}.raw`);
     fs.writeFileSync(tmpAudio, pcm);
 
@@ -151,7 +210,7 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
       '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${largeur}x${hauteur}`, '-r', '30', '-i', '-',
       '-f', 's16le', '-ar', String(FREQUENCE), '-ac', '2', '-i', tmpAudio,
       '-map', '0:v', '-map', '1:a',
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-crf', '24', '-maxrate', '8M', '-bufsize', '16M',
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', '26', '-maxrate', '4M', '-bufsize', '8M',
       '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', sortie];
     const ff = spawn(ffmpeg, args, { stdio: ['pipe', 'ignore', 'pipe'] });
     let erreurFf = '';
@@ -182,7 +241,7 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
     await fini;
     return {
       sortie, images: n, duree: scene.duree, secondes: (Date.now() - t0) / 1000, secondesRendu: (Date.now() - tRendu) / 1000,
-      corrections: anim.corrections, camera: anim.camera, skins: infos, notes: [...anim.notes, ...plan.notes, ...film.notes], pas: plan.nbPas, evenementsSon: plan.evenements.length,
+      corrections: anim.corrections, camera: anim.camera, skins: infos, notes: [...anim.notes, ...plan.notes, ...notesAudio, ...film.notes, ...(film.comp?.notesFinales() ?? [])], audio: mesuresAudio, pas: plan.nbPas, evenementsSon: plan.evenements.length,
       memoireMaxMo: Math.round(process.resourceUsage().maxRSS / 1024), taille: fs.statSync(sortie).size,
       ...(packShader ? { echelle, secondesParImage: (Date.now() - tRendu) / 1000 / n, memoireHoteMo: film.memoireHoteMo?.() ?? null, chauffe: film.chauffe?.() ?? null, tempsParImage: film.stats && film.stats.images ? { hoteMs: Math.round(film.stats.hoteMs / film.stats.images), transfertMs: Math.round(film.stats.transfertMs / film.stats.images * 10) / 10, nodeMs: Math.round(film.stats.nodeMs / film.stats.images) } : null } : {}),
     };
@@ -194,7 +253,7 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
 
 // Une seule image de la scene, petite et filigranee, SANS jeton (mcanim apercu). Ecrit un PNG ; retourne { sortie, image, t, taille, secondes }.
 //   t : secondes (0 a la duree). taille : "WxH" (640 de large au plus). Le rendu complet, lui, demande toujours un jeton.
-export async function apercuImage({ scene, zonePath, kitDir, t, sortie, taille, surcharges = {}, baseDir = process.cwd(), env = process.env, shader, packShader, optionsPack, echelle = 1, log = () => {} }) {
+export async function apercuImage({ scene, zonePath, kitDir, t, sortie, taille, surcharges = {}, baseDir = process.cwd(), env = process.env, shader, packShader, optionsPack, echelle = 1, zones = false, log = () => {} }) {
   const t0 = Date.now();
   if (!(t >= 0 && t <= scene.duree)) throw new Error(`--t : entre 0 et ${scene.duree} secondes (duree de la scene)`);
   const [largeur, hauteur] = tailleApercu(taille, scene);
@@ -210,6 +269,7 @@ export async function apercuImage({ scene, zonePath, kitDir, t, sortie, taille, 
   try {
     const i = Math.min(film.anim.images.length - 1, Math.round(t * 30));
     const rgba = await film.dessiner(i, { largeur, hauteur, copie: true });
+    if (zones) { const { dessinerMasques } = await import('../montage/zones.js'); const { chargerPolice } = await import('../incrust/police.js'); dessinerMasques(rgba, largeur, hauteur, await chargerPolice(film.kit)); }   // --zones : silhouettes de l'interface des applications
     filigrane(rgba, largeur, hauteur);
     fs.mkdirSync(path.dirname(sortie), { recursive: true });
     fs.writeFileSync(sortie, encoderPNG({ largeur, hauteur, rgba }));

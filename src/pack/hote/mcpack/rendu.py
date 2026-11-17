@@ -309,6 +309,9 @@ class Rendu(PassesMixin):
         with open(os.path.join(dossier, "maj.json"), encoding="utf8") as f:
             maj = json.load(f)
         gl.BindVertexArray(self.vao.value)
+        for etat in (maj.get("palette") or [])[len(self.ids_palette):]:      # blocs nouveaux de la palette (torche posee...) : leur id du pack pour mc_Entity
+            nom, props = analyser_etat(etat)
+            self.ids_palette.append(self.pack.blocs.id(nom, props))
         mortes = set(maj.get("mortes", []))
         for g in self.geo.values():
             if "sections" in g and mortes:
@@ -337,8 +340,9 @@ class Rendu(PassesMixin):
                 base = self.geo[a["couche"]] = {"vbo": 0, "ibo": 0, "n": 0, "couche": a["num"], "plages": []}
             base.setdefault("extras", []).append(e)
         self.stats["maj_ms"] = (time.perf_counter() - t0) * 1000
-        self.stats["quads"] = {k: (v["n"] + sum(e["n"] for e in v.get("extras", []))) // 6 for k, v in self.geo.items()}
-        return {"ms": round(self.stats["maj_ms"], 2)}
+        # quads vraiment dessines (sections mortes retirees, pieces rapportees comprises)
+        self.stats["quads"] = {k: ((sum(nb for _, nb in v["plages"]) if v.get("plages") is not None else v["n"]) + sum(e["n"] for e in v.get("extras", []))) // 6 for k, v in self.geo.items()}
+        return {"ms": round(self.stats["maj_ms"], 2), "quads": self.stats["quads"]}
 
     # ------------------------------------------------------------------ programmes
     def prog(self, nom):

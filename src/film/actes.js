@@ -12,31 +12,38 @@
 //   tire [x y z | "acteur"] [{charge, objet, predit}]                              arc (tension `charge` secondes : puissance du jeu) ou arbalete (25 ticks) ; la fleche part a 3 x puissance
 //   jette [n] [{objet}]                                                           laisse tomber n objets devant soi (vitesse du jeu, ramassables apres 40 ticks)
 //   prend|depose x y z ["objet"] [n] [{va, fente}]                                  transfert avec un coffre, un tonneau, un entonnoir, un four (fente : entree, combustible, sortie)
+//   plane [x y z] [{tangage, lacet}]                                              vol plane aux elytres (armure.torse "elytra") : saut puis appui en l'air ; le regard dirige le vol
 import { voulaisTu } from '../moteur/util.js';
+import { lireFusee } from '../moteur/fusees.js';   // composant d'une fusee d'artifice (option fusee de utilise et de tire)
 import { boiteDe, statsDe } from './creatures.js';
 import { MODIF_FLANERIE as FLANERIE } from '../creatures/especes.js';
 
-export const VERBES = ['va', 'regarde', 'saute', 'accroupi', 'tient', 'attends', 'utilise', 'pose', 'casse', 'lance', 'tire', 'jette', 'prend', 'depose', 'frappe'];
-const EFFETS = ['speed', 'slowness', 'jump_boost', 'invisibility', 'glowing', 'regeneration', 'poison', 'strength', 'night_vision', 'absorption', 'weakness', 'instant_damage', 'instant_health', 'fire_resistance', 'water_breathing'];
+export const VERBES = ['va', 'regarde', 'saute', 'accroupi', 'tient', 'attends', 'utilise', 'pose', 'casse', 'lance', 'tire', 'jette', 'prend', 'depose', 'frappe', 'plane', 'fabrique', 'enchante', 'forge'];
+// tous les effets du jeu (MobEffects : moteur/effets.js)
+const EFFETS = ['speed', 'slowness', 'haste', 'mining_fatigue', 'strength', 'instant_health', 'instant_damage', 'jump_boost', 'nausea', 'regeneration', 'resistance', 'fire_resistance', 'water_breathing', 'invisibility', 'blindness', 'night_vision', 'hunger', 'weakness', 'poison', 'wither', 'health_boost', 'absorption', 'saturation', 'glowing', 'levitation', 'luck', 'unluck', 'slow_falling', 'conduit_power', 'dolphins_grace', 'bad_omen', 'hero_of_the_village', 'darkness', 'trial_omen', 'raid_omen', 'wind_charged', 'weaving', 'oozing', 'infested', 'breath_of_the_nautilus'];
 export const MAX_ACTES = 200;
 const VITESSES = ['marche', 'court', 'accroupi'];
 const FACES = ['haut', 'bas', 'nord', 'sud', 'est', 'ouest', 'up', 'down', 'north', 'south', 'east', 'west'];
 const OPTIONS = {
   va: ['ouvrePortes', 'max', 'rayon'],
-  utilise: ['va', 'ouvrePortes', 'duree', 'max', 'face', 'effet', 'niveau', 'secondes', 'objet'],
+  utilise: ['va', 'ouvrePortes', 'duree', 'max', 'face', 'effet', 'niveau', 'secondes', 'objet', 'fusee', 'ferre', 'attends', 'charge'],
+  fabrique: ['table', 'recette', 'va', 'ouvrePortes', 'duree', 'max', 'poudre'],
+  enchante: ['va', 'ouvrePortes', 'max'],
+  forge: ['va', 'ouvrePortes', 'max', 'nom'],
   lance: ['objet', 'effet', 'niveau', 'secondes', 'predit', 'max'],
-  tire: ['objet', 'charge', 'predit', 'max'],
+  tire: ['objet', 'charge', 'predit', 'max', 'fusee', 'fleche'],
   jette: ['objet'],
   prend: ['va', 'ouvrePortes', 'max', 'strict'],
   depose: ['va', 'ouvrePortes', 'max', 'fente'],
   pose: ['va', 'ouvrePortes', 'face', 'max'],
   casse: ['va', 'ouvrePortes', 'max'],
   tient: ['eff'],
-  frappe: ['coups', 'critique', 'max', 'objet'],
+  frappe: ['coups', 'critique', 'max', 'objet', 'ecrase'],
+  plane: ['tangage', 'lacet'],
 };
 const estNombre = (x) => typeof x === 'number' && Number.isFinite(x);
 const estObjet = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
-const ID_OBJET = /^(minecraft:)?[a-z0-9_./-]{1,80}$/;
+const ID_OBJET = /^(minecraft:)?[a-z0-9_./-]{1,80}(\[[a-z0-9_=,]{1,200}\])?$/;   // composants : diamond_sword[sharpness=5], potion[potion=healing] (moteur/pile.js)
 
 // brut : liste [[t, "verbe", ...]] ; ch : "acteurs[0].actes" ; erreur(chemin, message) leve ; noms : noms d'acteurs ; duree : secondes de la scene
 export function lireActes(brut, ch, erreur, { noms, duree }) {
@@ -63,10 +70,18 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
       if (o === 'secondes' && !(estNombre(v) && v > 0 && v <= 3600)) erreur(`${c}.${o}`, 'duree de l effet en secondes (0 a 3600) attendue');
       if (o === 'charge' && !(estNombre(v) && v >= 0.05 && v <= 10)) erreur(`${c}.${o}`, 'duree de tension en secondes (0,05 a 10) attendue ; 1 s = puissance pleine');
       if (o === 'coups' && !(Number.isInteger(v) && v >= 1 && v <= 100)) erreur(`${c}.${o}`, 'nombre de coups entier de 1 a 100 attendu (defaut : jusqu a la mort de la cible)');
-      if (['predit', 'strict', 'critique'].includes(o) && typeof v !== 'boolean') erreur(`${c}.${o}`, 'true ou false attendu');
-      if (o === 'fente' && !['entree', 'combustible', 'sortie'].includes(v)) erreur(`${c}.${o}`, '"entree", "combustible" ou "sortie" attendu');
+      if (['predit', 'strict', 'critique', 'ecrase', 'ferre'].includes(o) && typeof v !== 'boolean') erreur(`${c}.${o}`, 'true ou false attendu');
+      if (o === 'fente' && !['entree', 'combustible', 'sortie', 'bouteille', 'ingredient', 'carburant'].includes(v)) erreur(`${c}.${o}`, '"entree", "combustible" ou "sortie" (four) ; "bouteille", "ingredient" ou "carburant" (alambic) attendu');
+      if (o === 'table' && !(Array.isArray(v) && v.length === 3 && v.every(Number.isInteger))) erreur(`${c}.${o}`, '[x, y, z] du poste (etabli, tailleur de pierre, table de forgeron) attendu');
+      if (['recette', 'nom'].includes(o) && !(typeof v === 'string' && v.length > 0 && v.length <= 60)) erreur(`${c}.${o}`, 'texte de 1 a 60 caracteres attendu');
+      if (o === 'attends' && !(estNombre(v) && v > 0 && v <= 600)) erreur(`${c}.${o}`, 'secondes (0 a 600) attendues : la canne est ramenee apres ce temps');
+      if (o === 'poudre' && ![1, 2, 3].includes(v)) erreur(`${c}.${o}`, '1, 2 ou 3 (poudres a canon de la fusee : duree de vol)');
+      if (o === 'fleche' && !(typeof v === 'string' && ID_OBJET.test(v))) erreur(`${c}.${o}`, 'fleche du jeu attendue : arrow, spectral_arrow, tipped_arrow[potion=poison]');
       if (o === 'objet' && !(typeof v === 'string' && ID_OBJET.test(v))) erreur(`${c}.${o}`, 'identifiant d objet du jeu attendu (mcanim objets --cherche mot)');
       if (o === 'eff' && !(Number.isInteger(v) && v >= 0 && v <= 10)) erreur(`${c}.${o}`, 'niveau d\'efficacite entier de 0 a 10 attendu');
+      if (o === 'fusee') { try { lireFusee(v); } catch (err) { erreur(`${c}.${o}`, err.message); } }
+      if (o === 'tangage' && !(estNombre(v) && v >= -90 && v <= 90)) erreur(`${c}.${o}`, 'tangage du regard en degres de -90 (vers le haut) a 90 (vers le bas) attendu');
+      if (o === 'lacet' && !(estNombre(v) && v >= -360 && v <= 360)) erreur(`${c}.${o}`, 'lacet du regard en degres attendu (0 = sud, 90 = ouest, -90 = est)');
     }
     const nombres = (n, noms2) => {
       if (args.length < n || !args.slice(0, n).every(estNombre)) erreur(c, `${verbe} : ${noms2} attendus (nombres), par exemple ${exemples[verbe]}`);
@@ -100,6 +115,10 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
         break;
       }
       case 'saute': a.resume = 'saute'; break;
+      case 'plane': {   // vol plane aux elytres : x y z (point regarde) ou {tangage, lacet}
+        if (args.length) { const [x, y, z] = nombres(3, 'x, y, z du point regarde'); a.cible = { x, y, z }; if (args.length > 3) erreur(c, 'plane : x, y, z puis {tangage, lacet} seulement'); }
+        a.resume = a.cible ? `plane vers ${a.cible.x},${a.cible.y},${a.cible.z}` : 'plane'; break;
+      }
       case 'accroupi': {
         if (!(args.length === 1 && (args[0] === 0 || args[0] === 1 || typeof args[0] === 'boolean'))) erreur(c, 'accroupi : 0 ou 1 attendu, par exemple [2, "accroupi", 1]');
         a.valeur = args[0] === true || args[0] === 1; a.resume = `accroupi ${a.valeur ? 1 : 0}`; break;
@@ -164,6 +183,19 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
         if (verbe === 'depose' && !a.objet && !a.opts.objet) { /* l'objet en main est utilise */ }
         a.resume = `${verbe} ${a.x},${a.y},${a.z}${a.objet ? ' ' + a.objet : ''}`; break;
       }
+      case 'fabrique': {   // recette du jeu (etabli, inventaire, tailleur, forge) : objet voulu et nombre
+        if (typeof args[0] !== 'string' || !ID_OBJET.test(args[0])) erreur(c, 'fabrique : objet du jeu attendu, par exemple [2, "fabrique", "oak_planks", 4, {"va": true}]');
+        if (args.length > 2 || (args[1] !== undefined && !(Number.isInteger(args[1]) && args[1] >= 1 && args[1] <= 640))) erreur(c, 'fabrique : "objet" puis un nombre entier (1 a 640)');
+        a.objet = args[0].replace(/^minecraft:/, ''); a.n = args[1] ?? 1; a.resume = `fabrique ${a.n} ${a.objet}`; break;
+      }
+      case 'enchante': case 'forge': {   // table d'enchantement (emplacement 1 a 3) ; enclume (objet, deuxieme objet ou materiau)
+        [a.x, a.y, a.z] = entiers(3);
+        if (typeof args[3] !== 'string' || !ID_OBJET.test(args[3])) erreur(c, `${verbe} : x, y, z puis l'objet du sac, par exemple [3, "${verbe}", 4, 64, 2, "diamond_sword"${verbe === 'enchante' ? ', 3' : ', "diamond"'}]`);
+        a.objet = args[3].replace(/^minecraft:/, '');
+        if (verbe === 'enchante') { if (args[4] !== undefined && ![1, 2, 3].includes(args[4])) erreur(c, 'enchante : emplacement 1, 2 ou 3 (3 : le plus cher)'); a.emplacement = args[4] ?? 3; if (args.length > 5) erreur(c, 'enchante : trop d\'arguments'); }
+        else { if (args[4] !== undefined) { if (typeof args[4] !== 'string' || !ID_OBJET.test(args[4])) erreur(c, 'forge : deuxieme objet du jeu attendu'); a.objet2 = args[4].replace(/^minecraft:/, ''); } if (args.length > 5) erreur(c, 'forge : trop d\'arguments'); }
+        a.resume = `${verbe} ${a.objet}`; break;
+      }
       default: break;
     }
     return a;
@@ -174,12 +206,17 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
 // types (facultatif) : statistiques des creatures ; une creature a intentions recoit son gabarit (boite, yeux, vitesse de marche du type :
 // (movement_speed x flanerie)^2 / 0,098, l'acceleration du joueur au sol etant 0,1 x 0,98)
 export function descripteursActeurs(scene, types = null) {
-  return scene.acteurs.filter((a) => a.actes || a.creature?.ia || a.creature?.type === 'end_crystal').map((a) => {   // cristal de l'End : une entite du monde (le dragon s'y soigne)
+  // vehicules (wagonnets, bateaux) d'une scene avec monde, sans trajet ecrit (une seule cle pos) : la physique du jeu les mene (moteur/vehicules.js) ;
+  // leurs cavaliers (champ `monture`) sont simules aussi, pour que le vehicule sache qu'il est occupe
+  const VEH = /^((chest_|furnace_|hopper_|tnt_|spawner_|command_block_)?minecart|boat|chest_boat)$/;
+  const vehSim = new Set(scene.monde ? scene.acteurs.filter((a) => VEH.test(a.creature?.type ?? '') && (a.actes || a.pos.cles.length <= 1)).map((a) => a.nom) : []);
+  const monteSim = (a) => (a.monture ?? []).some((k) => vehSim.has(k.v));
+  return scene.acteurs.filter((a) => a.actes || a.creature?.ia || a.creature?.type === 'end_crystal' || vehSim.has(a.nom) || monteSim(a)).map((a) => {   // cristal de l'End : une entite du monde (le dragon s'y soigne)
     const k = a.pos.cles[0];
     const premier = (a.actes ?? []).find((x) => x.verbe === 'va' || x.verbe === 'regarde' && x.cible && x.cible.x !== undefined);
     const but = premier ? (premier.verbe === 'va' ? [premier.x, premier.z] : [premier.cible.x, premier.cible.z]) : null;
     const lacet = a.lacet ? a.lacet.cles[0].v[0] : but && Math.hypot(but[0] - k.x, but[1] - k.z) > 0.5 ? Math.atan2(-(but[0] - k.x), but[1] - k.z) * 180 / Math.PI : 0;
-    return { nom: a.nom, pos: Number.isFinite(k.y) ? [k.x, k.y, k.z] : [k.x, k.z], lacet, objet: a.objetD?.cles?.[0]?.id ?? (a.creature?.ia ? ARME_IA[a.creature.type] ?? null : null), actes: a.actes ?? [], vie: a.vie, invulnerable: a.invulnerable, ramasse: a.ramasse, faim: a.faim, sac: a.sac, ...armureMoteur(a), ...(a.creature ? { gabarit: gabaritCreature(a.creature, types), typeCreature: a.creature.type, ...(a.creature.ia ? { ia: iaDe(a, types) } : {}) } : {}) };
+    return { nom: a.nom, pos: Number.isFinite(k.y) ? [k.x, k.y, k.z] : [k.x, k.z], lacet, objet: (a.objetD?.cles?.[0]?.pile ?? a.objetD?.cles?.[0]?.id) ?? (a.creature?.ia ? ARME_IA[a.creature.type] ?? null : null), actes: a.actes ?? [], vie: a.vie, invulnerable: a.invulnerable, ramasse: a.ramasse, faim: a.faim, sac: a.sac, mode: a.mode, niveaux: a.niveaux, saturation: a.saturation, ...(a.mod ? { perso: a.mod } : {}), ...armureMoteur(a), ...(a.creature ? { gabarit: gabaritCreature(a.creature, types), typeCreature: a.creature.type, ...(a.creature.ia ? { ia: iaDe(a, types) } : {}) } : {}), ...(monteSim(a) ? { monture: a.monture.map((k) => ({ t: k.t, v: k.v })) } : {}), ...(vehSim.has(a.nom) ? { wagon: { contenu: Object.entries(a.sac ?? {}) } } : {}) };
   });
 }
 
@@ -187,7 +224,7 @@ export function descripteursActeurs(scene, types = null) {
 // armure de depart (premiere cle de chaque emplacement) et Protection contre les explosions, pour les degats des explosions ; rien sans elles
 function armureMoteur(a) {
   const o = {};
-  if (a.armure) { const arm = {}; for (const [e, p] of Object.entries(a.armure)) { const id = p.cles?.find((k) => k.t <= 0)?.id; if (id) arm[e] = id; } if (Object.keys(arm).length) o.armure = arm; }
+  if (a.armure) { const arm = {}; for (const [e, p] of Object.entries(a.armure)) { const k0 = p.cles?.find((k) => k.t <= 0), id = k0?.pile ?? k0?.id; if (id) arm[e] = id; } if (Object.keys(arm).length) o.armure = arm; }
   if (a.protectionExplosion) o.protectionExplosion = a.protectionExplosion;
   return o;
 }
@@ -197,12 +234,12 @@ const ARME_IA = { skeleton: 'bow', stray: 'bow', bogged: 'bow', parched: 'bow', 
 // IA d'une creature (moteur/ia.js) : type, comportement, cible forcee, points (garde, maison, travail), creeper charge, casque, vitesse du type
 function iaDe(a, types) {
   const c = a.creature, st = statsDe(c, types);
-  return { type: c.type, comportement: c.comportement ?? null, cible: c.cible ?? null, garde: c.garde ?? null, maison: c.maison ?? null, travail: c.travail ?? null, lit: c.lit ?? null, rassemblement: c.rassemblement ?? null, epaule: c.epaule ?? null, ami: c.ami ?? null, laisse: c.laisse ?? null, variante: c.variante ?? null, bebe: !!c.bebe, charge: !!c.charge, apprivoise: !!c.apprivoise, colle: c.colle ?? null, ruche: c.ruche ?? null, nourriture: c.nourriture ?? null, age: c.age ?? null, porte: c.porte ?? null, centre: c.centre ?? null, perchoir: c.perchoir ?? null, emerge: !!c.emerge, genes: c.genes ?? null, confiance: !!c.confiance, aOeuf: !!c.aOeuf, enceinte: !!c.enceinte, gabaritAdulte: c.bebe ? gabaritCreature({ ...c, bebe: false }, types) : null, casque: !!a.armure?.tete?.cles?.some((k) => k.id), vitesseAttr: st?.v ?? 0.25, vie: st?.pv ?? 20 };
+  return { type: c.type, comportement: c.comportement ?? null, cible: c.cible ?? null, garde: c.garde ?? null, maison: c.maison ?? null, travail: c.travail ?? null, lit: c.lit ?? null, rassemblement: c.rassemblement ?? null, epaule: c.epaule ?? null, ami: c.ami ?? null, laisse: c.laisse ?? null, variante: c.variante ?? null, bebe: !!c.bebe, charge: !!c.charge, apprivoise: !!c.apprivoise, colle: c.colle ?? null, ruche: c.ruche ?? null, nourriture: c.nourriture ?? null, age: c.age ?? null, xp: c.xp ?? null, porte: c.porte ?? null, centre: c.centre ?? null, perchoir: c.perchoir ?? null, emerge: !!c.emerge, plane: !!c.plane, genes: c.genes ?? null, confiance: !!c.confiance, aOeuf: !!c.aOeuf, enceinte: !!c.enceinte, gabaritAdulte: c.bebe ? gabaritCreature({ ...c, bebe: false }, types) : null, casque: !!a.armure?.tete?.cles?.some((k) => k.id), vitesseAttr: st?.v ?? 0.25, vie: st?.pv ?? 20 };
 }
 
 // gabarit d'une creature pour le moteur : { l, h, oeil, vitesse (facteur de l'acceleration du joueur) }
 export function gabaritCreature(c, types) {
   const b = boiteDe(c, types), st = statsDe(c, types);
   const v = (st?.v ?? 0.1) * (FLANERIE[c.type] ?? 1);
-  return { l: b.l, h: b.h, oeil: b.y, vitesse: Math.round(v * v / 0.098 * 1000) / 1000 };
+  return { l: b.l, h: b.h, oeil: b.y, vitesse: Math.round(v * v / 0.098 * 1000) / 1000, mv: st?.v ?? 0.1 };   // mv : movement_speed (entites de mod : moteur/perso.js)
 }

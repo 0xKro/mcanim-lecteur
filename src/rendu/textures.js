@@ -72,7 +72,8 @@ export class BibliothequeTextures {
   }
 
   _charger(nom) {
-    const fichier = path.join(this.dir, ...nom.split('/')) + '.png';
+    // textures des blocs de mods (mc.definirBloc, textures: { cle: 'fichier.png' } de la scene) : chemin absolu enregistre par rendu/modeles.js
+    const fichier = this.fichiersPerso?.get(nom) ?? path.join(this.dir, ...nom.split('/')) + '.png';
     let img = null;
     try { img = decoderPNG(fs.readFileSync(fichier)); } catch { /* absent ou illisible */ }
     if (!img) {

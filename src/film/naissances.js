@@ -25,6 +25,9 @@ export function ajouterNaissances(scene, replay) {
       const c = { type: e.type, ia: true, ...(e.variante ? { variante: e.variante } : {}), ...(e.bebe ? { bebe: true } : {}), ...(e.colle ? { colle: e.colle } : {}), ...(m.creature?.cris === false ? { cris: false } : {}) };
       const a = nouveau(m, e.nom, e.nom, c, e.pos[0], e.pos[1], e.pos[2]);
       a._absentAvant = e.tick;
+      // armure et monture donnees a la naissance (cavaliers du piege du cheval squelette : casque, monte sur son cheval)
+      if (e.armure) a.armure = Object.fromEntries(Object.entries(e.armure).map(([k, v]) => [k, { cles: [{ t: 0, id: v }] }]));
+      if (e.monture) a.monture = [{ t: 0, v: e.monture }];
       scene.acteurs.push(a); parTrace.set(e.nom, a); n++;
     } else {
       const cur = parTrace.get(e.nom);

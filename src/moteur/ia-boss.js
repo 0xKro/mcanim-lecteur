@@ -139,7 +139,7 @@ export const METHODES_BOSS = {
     }
     if (this.type === 'ender_dragon') {
       const a = this.a, sim = this.sim;
-      this.dyaw = wrap(a.lacet + 180); this.dyawAcc = 0; this.dv = [0, 0, 0]; this.flap = 0; this.grogne = 100; this.ambiant = 0; this.hist = [];
+      this.dyaw = wrap(a.lacet + 180); this.dyawAcc = 0; this.dv = [0, 0, 0]; this.flap = 0; this.grogne = 100; this.ambiant = 0; this.hist = []; this.histL = [];
       const f = sim.config.fontaine ?? null;
       this.centre = d.centre ? [d.centre[0], d.centre[1]] : f ? [f[0], f[2]] : [a.x, a.z];
       this.perchoirFixe = d.perchoir ?? null; this.noeuds = null; this.phase = 'cercle'; this.ph = { horaire: false }; this.flammes = 0; this.mortT = -1;
@@ -498,6 +498,7 @@ export const METHODES_BOSS = {
     if (h.entierBorne(10) === 0) { const c = this.sim.acteurs.liste.filter((o) => o.typeCreature === 'end_crystal' && o.mort < 0 && Math.abs(o.x - a.x) < 32 + a.L / 2 + 1 && Math.abs(o.z - a.z) < 32 + a.L / 2 + 1 && o.y + 2 > a.y - 32 && o.y < a.y + a.H + 32).sort((p, q) => this.dist2(p) - this.dist2(q))[0] ?? null; this.cristalSoin = c; }
     if (this.cristalSoin) sim.replay.trait(sim.temps, 'cristal', [this.cristalSoin.x, this.cristalSoin.y, this.cristalSoin.z], [a.x, a.y, a.z]);   // EnderDragonRenderer.renderCrystalBeams
     this.hist.push(a.y); if (this.hist.length > 64) this.hist.shift();
+    this.histL.push(this.dyaw); if (this.histL.length > 64) this.histL.shift();   // DragonFlightHistory : (y, lacet)
     this.tickPhase();
     const t = this.ph.cible;
     if (t) {   // pilotage (EnderDragon.aiStep) : y +-vitesse de phase x 0,01, lacet (0,7 / v / v), vitesse 0,06 x (alignement x span + 1 - span)
@@ -561,10 +562,66 @@ export const METHODES_BOSS = {
     this.dansMur = mur;
     if (detruit) { const b = B[2]; sim.particule('explosion', b[0] + (this.h.flottant() - 0.5) * 5, b[1] + this.h.flottant() * 3, b[2] + (this.h.flottant() - 0.5) * 5, 0, 0, 0, 1); this.stat('blocsDragon'); }
   },
+  // la partie du dragon que le coup touche (EnderDragonPart : tete 1 x 1, seule a prendre les degats entiers) : un coup d'un joueur suit son
+  // regard (rayon de l'oeil, longueur joueur.portee : la premiere partie coupee parmi tete, cou 3 x 3, corps 5 x 3, ailes 4 x 2) ; une fleche ou un trident :
+  // le segment de son dernier tick contre les parties elargies de 0,3 (ProjectileUtil.getEntityHitResult)
+  // les 8 EnderDragonPart (Horizon game/dragon.rs place_dragon_parts, PART_SIZES) : tete 1 x 1, cou 3 x 3, corps 5 x 3, queue 3 x (2 x 2),
+  // ailes 4 x 2 ; positions depuis le lacet, l'inclinaison et l'historique de vol (y et lacet, 64 echantillons)
+  partiesDragon() {
+    const a = this.a, h = this.hist, hl = this.histL ?? [], ech = (k) => [h[Math.max(0, h.length - 1 - k)] ?? a.y, hl[Math.max(0, hl.length - 1 - k)] ?? this.dyaw];
+    const w180 = (v) => { v = ((v + 180) % 360 + 360) % 360 - 180; return v; };
+    const tl = (ech(5)[0] - ech(10)[0]) * 10 * RAD, ct = Math.cos(tl), st = Math.sin(tl), r1 = this.dyaw * RAD, s1 = Math.sin(r1), c1 = Math.cos(r1);
+    const r2 = this.dyaw * RAD - this.dyawAcc * 0.01, s2 = Math.sin(r2), c2 = Math.cos(r2), yo = ASSIS.has(this.phase) ? -1 : ech(5)[0] - ech(0)[0];
+    const B = (x, y, z, w, hh) => [a.x + x - w / 2, a.y + y, a.z + z - w / 2, a.x + x + w / 2, a.y + y + hh, a.z + z + w / 2];
+    const out = [['tete', B(s2 * 6.5 * ct, yo + st * 6.5, -c2 * 6.5 * ct, 1, 1)], ['cou', B(s2 * 5.5 * ct, yo + st * 5.5, -c2 * 5.5 * ct, 3, 3)], ['corps', B(s1 * 0.5, 0, -c1 * 0.5, 5, 3)]];
+    const p1 = ech(5);
+    for (let i = 0; i < 3; i++) {
+      const p0 = ech(12 + i * 2), rot = this.dyaw * RAD + w180(p0[1] - p1[1]) * RAD, ss = Math.sin(rot), cc = Math.cos(rot), dd = (i + 1) * 2;
+      out.push(['queue', B(-(s1 * 1.5 + ss * dd) * ct, p0[0] - p1[0] - (dd + 1.5) * st + 1.5, (c1 * 1.5 + cc * dd) * ct, 2, 2)]);
+    }
+    out.push(['aile', B(c1 * 4.5, 2, s1 * 4.5, 4, 2)], ['aile', B(-c1 * 4.5, 2, -s1 * 4.5, 4, 2)]);
+    return out;
+  },
+  partieTouchee(source) {
+    if (this.a.partieCoup && this.a.partieCoup.t === this.sim.temps) return this.a.partieCoup.nom;   // projectile : la partie qu'il a touchee (projectiles.js)
+    const a = this.a, c = a.dernierCoup, t = this.teteDragon(), r = this.dyaw * RAD, s1 = Math.sin(r), c1 = Math.cos(r);
+    if (!c || c.t !== this.sim.temps) return null;
+    const boite = (x, y, z, w, hh) => [x - w / 2, y, z - w / 2, x + w / 2, y + hh, z + w / 2];
+    const tete = boite(t[0], t[1], t[2], 1, 1);
+    const r2 = this.dyaw * RAD - this.dyawAcc * 0.01, ct = Math.cos(this.inclinaisonDragon());   // tete (6,5) et cou (5,5) sur le meme axe (EnderDragon.aiStep : tickPart)
+    const parties = this.partiesDragon();   // les 8 parties du jeu
+    void r2; void ct; void s1; void c1;
+    // rayon contre les boites (methode des tranches) : la premiere partie coupee (egalite : la premiere de la liste)
+    const premiere = (oe, d, max, marge) => {
+      let best = null, bt = Infinity;
+      for (const [nom, b0] of parties) {
+        const b = b0.map((v, i) => v + (i < 3 ? -marge : marge));
+        let t0 = 0, t1 = max, ok = true;
+        for (let k = 0; k < 3 && ok; k++) {
+          if (Math.abs(d[k]) < 1e-9) { if (oe[k] < b[k] || oe[k] > b[k + 3]) ok = false; continue; }
+          let u = (b[k] - oe[k]) / d[k], v = (b[k + 3] - oe[k]) / d[k]; if (u > v) [u, v] = [v, u];
+          t0 = Math.max(t0, u); t1 = Math.min(t1, v); if (t0 > t1) ok = false;
+        }
+        if (ok && t0 < bt - 1e-6) { bt = t0; best = nom; }
+      }
+      return best;
+    };
+    if (/^(fleche|trident)$/.test(String(source))) {
+      // la fleche qui vient de toucher (encore dans la liste, ce tick) : son segment du tick contre les parties elargies de 0,3 (ProjectileUtil)
+      const x = a.x + c.dx, z = a.z + c.dz, E = this.sim.entites;
+      const f = E.liste.filter((e) => (e.type === 'fleche' || e.type === 'trident') && !e.plantee && !E._fini?.has(e)).map((e) => { const v2 = e.vx * e.vx + e.vz * e.vz, u = v2 > 0 ? Math.max(0, Math.min(1, ((x - e.x) * e.vx + (z - e.z) * e.vz) / v2)) : 0; return { e, d: Math.hypot(e.x + e.vx * u - x, e.z + e.vz * u - z) }; }).sort((p, q) => p.d - q.d)[0];
+      if (f && f.d < 0.05) return premiere([f.e.x, f.e.y, f.e.z], [f.e.vx, f.e.vy, f.e.vz], 1, 0.3) ?? 'corps';
+      return x >= tete[0] - 0.3 && x <= tete[3] + 0.3 && z >= tete[2] - 0.3 && z <= tete[5] + 0.3 ? 'tete' : 'corps';
+    }
+    const j = /^joueur:(.+)$/.exec(String(source))?.[1], o = j ? this.sim.acteurs.parNom.get(j) : null;
+    if (!o) return null;
+    const oe = o.oeil(), lt = (o.lacetTete ?? o.lacet ?? 0) * RAD, tg = (o.tangage ?? 0) * RAD, d = [-Math.sin(lt) * Math.cos(tg), -Math.sin(tg), Math.cos(lt) * Math.cos(tg)];
+    return premiere(oe, d, this.sim.regles.valeur('joueur.portee', 4.5), 0) ?? 'corps';   // portee : regle joueur.portee
+  },
   // EnderDragon.hurt : a 0 de vie en vol, la vie reste a 1 et la phase de mort commence (vers le perchoir) ; les coups sur le corps : d / 4 + 1
   ajusterDegats(q, source) {
     if (this.type !== 'ender_dragon') return q;
-    if (/^(joueur|fleche|trident|explosion$)/.test(String(source)) || /^mob:/.test(String(source))) q = q / 4 + Math.min(q, 1);   // EnderDragon.hurt(part) : hors de la tete, d / 4 + min(d, 1)
+    if ((/^(joueur|fleche|trident|explosion$)/.test(String(source)) || /^mob:/.test(String(source))) && this.partieTouchee(source) !== 'tete') q = q / 4 + Math.min(q, 1);   // EnderDragon.hurt(part) : hors de la tete, d / 4 + min(d, 1)
     if (this.a.vie - q <= 0 && this.phase !== 'mourant' && this.mortT < 0) { this.a.vie = 1 + q; this.dv = [0, 0, 0]; this.phaseDragon('mourant', {}); }
     return q;
   },

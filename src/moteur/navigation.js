@@ -1,7 +1,9 @@
-// Navigation simple des acteurs : A* sur la grille des blocs du monde VIVANT (blocs poses et portes comprises), avec les regles de marche
-// du jeu : une marche de 1 bloc se monte en sautant (0,6 sans sauter), on ne descend pas de plus de 3 blocs, on evite l'eau, la lave, le feu,
-// les cactus ; une porte fermee passe seulement avec `ouvrePortes`. La navigation du jeu (port de path.rs) viendra en P3 avec la meme interface.
+// Navigation des acteurs et des creatures sur le monde VIVANT (blocs poses et portes comprises) : la recherche de chemin du jeu
+// (chemins.js : PathFinder, WalkNodeEvaluator, SwimNodeEvaluator, FlyNodeEvaluator, AmphibiousNodeEvaluator, types de chemin et malus du jeu,
+// portes, sauts, chutes, clotures) ; GroundPathNavigation.findSurfacePosition pour la cible. Le joueur des scenes (pas un mob) grimpe en plus aux
+// echelles et lianes, ouvre portes et portillons a la main et lisse son trajet ; une creature suit les noeuds du jeu.
 import { boitesLocales, coupe, solSous, deplacerBoite } from './collision.js';
+import { Chercheur, positionSurface, pointDeNoeud, TYPES } from './chemins.js';
 
 const LARGEUR = 0.6, HAUTEUR = 1.8;
 const DIRS8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
@@ -28,22 +30,56 @@ export function blocsOuvrables(d, { fer = false } = {}) {
   return s;
 }
 
-const estDanger = (lec, x, y, z) => { const e = lec.etatEn(x, y, z); return e >= 0 && (DANGER.test(lec.d.nomBloc(e)) || lec.d.fluide(e) !== 0); };
+// danger : lave, feu, cactus... et les fluides ; avec `eauOk` (creatures a IA : PathType.WATER malus 8 du jeu), l'eau n'est plus un danger
+const estDanger = (lec, x, y, z, eauOk = false) => { const e = lec.etatEn(x, y, z); if (e < 0) return false; const f = lec.d.fluide(e); return DANGER.test(lec.d.nomBloc(e)) || (f !== 0 && !(eauOk && (f === 1 || f === 2))); };
+const estEau = (lec, x, y, z) => { const e = lec.etatEn(x, y, z); if (e < 0) return false; const f = lec.d.fluide(e); return f === 1 || f === 2; };
+// WalkNodeEvaluator : la case est de l'eau (WATER) ou touche de l'eau (checkNeighbourBlocks : x +-1, y +-1, z +-1 hors de la colonne : WATER_BORDER)
+function typeEau(lec, x, y, z) {
+  if (estEau(lec, x, y, z)) return 'eau';
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) if ((dx || dz) && estEau(lec, x + dx, y + dy, z + dz)) return 'bord';
+  return null;
+}
+
+// Case #minecraft:climbable (echelle, lianes, echafaudage...) ; une trappe ouverte au-dessus d'une echelle de meme direction compte aussi
+export function grimpable(lec, x, y, z) {
+  const e = lec.etatEn(x, y, z);
+  if (e < 0) return false;
+  const d = lec.d, t = (d._grimpables ??= d.etiquette('#minecraft:climbable'));
+  if (t.has(d.blocDe(e))) return true;
+  if (!/_trapdoor$/.test(d.nomBloc(e)) || d.prop(e, 'open') !== 'true') return false;
+  const s = lec.etatEn(x, y - 1, z);
+  return s >= 0 && d.nomBloc(s) === 'ladder' && d.prop(s, 'facing') === d.prop(e, 'facing');
+}
 
 // Un point de station valide (pieds en (x, y, z) reels) : la boite de l'acteur est libre, du sol dessous, rien de dangereux
 // g : gabarit { L, H, chute } (creatures : leur boite et leur chute permise ; defaut : le joueur)
-const GJ = { L: LARGEUR, H: HAUTEUR, chute: CHUTE_MAX };
+const GJ = { L: LARGEUR, H: HAUTEUR, chute: CHUTE_MAX, eau: 0, flotte: false, surClotures: true };
+// PathType.FENCE (malus -1) : une creature ne marche pas sur une cloture, un muret ou un portillon (WalkNodeEvaluator : #fences, #walls,
+// FenceGateBlock) ; le joueur, si (il saute dessus)
+const CLOTURE = /(_fence|_wall|_fence_gate)$/;
 function stationValide(lec, x, y, z, g = GJ) {
   const b = [x - g.L / 2 + 1e-3, y + 1e-3, z - g.L / 2 + 1e-3, x + g.L / 2 - 1e-3, y + g.H - 1e-3, z + g.L / 2 - 1e-3];
   if (coupe(lec, b)) return false;
   const bx = Math.floor(x), bz = Math.floor(z), by = Math.floor(y + 1e-6);
-  if (estDanger(lec, bx, by, bz) || estDanger(lec, bx, by + 1, bz) || estDanger(lec, bx, by - 1, bz)) return false;
+  const ok = g.eau > 0;
+  if (!g.surClotures) { const e = lec.etatEn(bx, Math.floor(y - 0.6), bz); if (e >= 0 && CLOTURE.test(lec.d.nomBloc(e))) return false; }
+  if (estDanger(lec, bx, by, bz, ok) || estDanger(lec, bx, by + 1, bz, ok) || estDanger(lec, bx, by - 1, bz, ok)) return false;
   return true;
 }
 
 // Hauteur de sol de la colonne (cx, cz) pour un acteur dont les pieds sont a fy : montee d'une marche de 1 bloc ou descente de 3 blocs au plus.
+// Une creature qui flotte (FloatGoal : can_float) se tient a la surface de l'eau : WalkNodeEvaluator.getFloorLevel = y du bloc d'eau + 0,5.
 function solColonne(lec, cx, cz, fy, g = GJ) {
   const s = solSous(lec, cx + 0.5, cz + 0.5, fy, SAUT_PAS + 1e-6, g.chute + 1e-6);
+  if (g.eau > 0 && g.flotte) {
+    for (let y = Math.floor(fy + SAUT_PAS - 0.5); y >= Math.floor(fy - g.chute); y--) {
+      if (!estEau(lec, cx, y, cz)) continue;
+      if (estEau(lec, cx, y + 1, cz)) break;   // pas la surface : la surface est plus haut que la marche permise
+      const f = y + 0.5;
+      if (s === null || f > s) return f;
+      break;
+    }
+  }
   return s;
 }
 
@@ -54,6 +90,7 @@ export function segmentLibre(lec, a, b, g = GJ) {
   const n = Math.max(1, Math.ceil(L / 0.25));
   for (let i = 1; i <= n; i++) {
     const x = a[0] + (b[0] - a[0]) * i / n, z = a[2] + (b[2] - a[2]) * i / n;
+    if (g.eau > 0 && typeEau(lec, Math.floor(x), Math.floor(a[1] + 1e-6), Math.floor(z))) return false;   // eau ou bord : le malus compte (A*)
     if (!stationValide(lec, x, a[1], z, g)) return false;
     const s = solSous(lec, x, z, a[1], 0.05, 0.2);
     if (s === null || Math.abs(s - a[1]) > 0.03) return false;
@@ -66,101 +103,60 @@ export function segmentLibre(lec, a, b, g = GJ) {
   return true;
 }
 
-// Chemin de `de` = [x, y, z] (pieds) vers le point (bx, bz) [, by]. Rend { chemin: [[x,y,z]...], portes: [[x,y,z]...], complet, raison }.
-// Si le but n'est pas atteignable, `complet` est faux et le chemin mene au point le plus proche (ou est vide).
-export function chercherChemin(lec, de, but, { ouvrePortes = false, ferOuvrable = false, rayon = 0.5, maxNoeuds = 12000, gabarit = null } = {}) {
-  const d = lec.d, gb = gabarit ? { L: gabarit.L ?? LARGEUR, H: gabarit.H ?? HAUTEUR, chute: gabarit.chute ?? CHUTE_MAX } : GJ;
-  const ouvrables = ouvrePortes ? blocsOuvrables(d, { fer: ferOuvrable }) : new Set();
-  const L = ouvrePortes ? lecteurOuvert(lec, ouvrables) : lec;
+// Chemin de `de` = [x, y, z] (pieds) vers le point (bx, bz) [, by] avec la recherche de chemin du jeu (chemins.js : PathFinder et
+// WalkNodeEvaluator portes de Horizon). Rend { chemin: [[x,y,z(,grimpe)]...], portes: [[x,y,z]...], complet, noeuds, raison, types }.
+// Si le but n'est pas atteignable, `complet` est faux et le chemin mene au noeud le plus proche (Path du jeu : le meilleur noeud).
+//   gabarit : { L, H, chute, eau, flotte, surClotures, pas, malus } d'une creature (null : le joueur, 0,6 x 1,8, qui grimpe aux echelles et
+//   evite l'eau) ; suivi : follow_range (longueur maximale du chemin ; noeuds visites au plus : suivi x 16, PathNavigation) ;
+//   rayon : distance d'arrivee (le jeu : `accuracy` entiere, 1 pour moveTo d'une creature) ; evaluateur : marche, nage, vol, amphibie.
+export function chercherChemin(lec, de, but, { ouvrePortes = false, ferOuvrable = false, rayon = 0.5, maxNoeuds = null, gabarit = null, suivi = null, auSol = true, dansEau = false, evaluateur = 'marche', exact = null, precision = null } = {}) {
+  const d = lec.d, joueur = !gabarit;
+  const L = gabarit?.L ?? LARGEUR, H = gabarit?.H ?? HAUTEUR;
+  const malus = { ...(gabarit?.malus ?? {}) };
+  if (joueur) malus.WATER ??= -1;                                     // le joueur des scenes contourne l'eau (comme avant)
+  else if (gabarit.eau === 0) malus.WATER ??= -1;                    // renifleur, arpenteur : setPathfindingMalus(WATER, -1)
+  else if (gabarit.eau > 0 && gabarit.eau !== 8) malus.WATER ??= gabarit.eau;
+  const mob = {
+    x: de[0], y: de[1], z: de[2], largeur: L, hauteur: H, auSol, dansEau, pas: gabarit?.pas ?? 0.6, chute: gabarit?.chute ?? CHUTE_MAX,
+    malus, flotte: !!gabarit?.flotte, ouvrePortes, ouvrePortesFer: ouvrePortes && ferOuvrable, passePortes: true, surClotures: !!gabarit?.surClotures && !joueur ? true : false,
+    lave: !!gabarit?.lave, grimpe: joueur ? (x, y, z) => grimpable(lec, x, y, z) : null,
+  };
   const bx = but.x, bz = but.z;
-  const cle = (cx, cz, fy) => `${cx},${cz},${Math.round(fy * 32)}`;
-  const heur = (x, z) => Math.hypot(x - bx, z - bz);
-  const cx0 = Math.floor(de[0]), cz0 = Math.floor(de[2]);
-  const ouvert = new Map(), fermes = new Set();
-  const tas = [];
-  const pousser = (n) => { tas.push(n); let i = tas.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (tas[p].f <= tas[i].f) break; [tas[p], tas[i]] = [tas[i], tas[p]]; i = p; } };
-  const tirer = () => { const t = tas[0], q = tas.pop(); if (tas.length) { tas[0] = q; let i = 0; for (;;) { let m = i; const l = 2 * i + 1, r = l + 1; if (l < tas.length && tas[l].f < tas[m].f) m = l; if (r < tas.length && tas[r].f < tas[m].f) m = r; if (m === i) break; [tas[m], tas[i]] = [tas[i], tas[m]]; i = m; } } return t; };
-  const dep = { cx: cx0, cz: cz0, x: de[0], z: de[2], y: de[1], g: 0, f: heur(de[0], de[2]), parent: null };
-  pousser(dep); ouvert.set(cle(cx0, cz0, de[1]), dep);
-  let meilleur = dep, nb = 0, trouve = null;
-  while (tas.length && nb < maxNoeuds) {
-    const n = tirer(); const k = cle(n.cx, n.cz, n.y);
-    if (fermes.has(k)) continue;
-    fermes.add(k); nb++;
-    // but atteint : la case contient le point, ou son centre est a `rayon` du point (les noeuds sont des centres de cases)
-    if ((Math.hypot(n.x - bx, n.z - bz) <= rayon || (n.cx === Math.floor(bx) && n.cz === Math.floor(bz))) && (but.y === undefined || Math.abs(n.y - but.y) < 2)) { trouve = n; break; }
-    if (heur(n.x, n.z) < heur(meilleur.x, meilleur.z)) meilleur = n;
-    for (const [dx, dz] of DIRS8) {
-      const cx = n.cx + dx, cz = n.cz + dz;
-      const lim = lec.limites;
-      if (lim && (cx < lim.x0 || cx >= lim.x1 || cz < lim.z0 || cz >= lim.z1)) continue;   // on reste dans la boite du monde
-      const diag = dx !== 0 && dz !== 0;
-      const s = solColonne(L, cx, cz, n.y, gb);
-      if (s === null) continue;
-      // un point de la colonne : le centre de la cellule ; pour le but, on s'arrete sur le point exact
-      const x = cx + 0.5, z = cz + 0.5;
-      if (!stationValide(L, x, s, z, gb)) continue;
-      if (diag) {   // pas de coin coupe : les deux colonnes voisines doivent etre praticables a la meme hauteur
-        const s1 = solColonne(L, n.cx + dx, n.cz, n.y, gb), s2 = solColonne(L, n.cx, n.cz + dz, n.y, gb);
-        if (s1 === null || s2 === null || Math.abs(s1 - n.y) > 0.02 || Math.abs(s2 - n.y) > 0.02 || Math.abs(s - n.y) > 0.02) continue;
-        if (!stationValide(L, n.cx + dx + 0.5, s1, n.cz + 0.5, gb) || !stationValide(L, n.cx + 0.5, s2, n.cz + dz + 0.5, gb)) continue;
-      }
-      // une marche de plus de 0,6 demande un saut : le plafond au-dessus de la case de depart doit etre libre sur 1,25 de plus
-      if (s - n.y > 0.6 + 1e-6) {
-        const hb = [n.x - Math.min(0.29, gb.L / 2), n.y + 1e-3, n.z - Math.min(0.29, gb.L / 2), n.x + Math.min(0.29, gb.L / 2), n.y + gb.H + (s - n.y) - 1e-3, n.z + Math.min(0.29, gb.L / 2)];
-        if (coupe(L, hb)) continue;
-      }
-      // la boite qui glisse d'une case a l'autre ne doit rien toucher en chemin (panneau d'une porte fermee a l'arete d'une case, cloture...)
-      let libre = true;
-      for (const t of [0.25, 0.5, 0.75]) { if (!stationValide(L, n.x + (x - n.x) * t, t < 0.5 ? n.y : Math.max(n.y, s), n.z + (z - n.z) * t, gb)) { libre = false; break; } }
-      if (!libre) continue;
-      const chute = n.y - s;
-      let cout = diag ? 1.4142 : 1;
-      if (s - n.y > 0.6) cout += 0.6; else if (chute > 0.6) cout += 0.3 * chute;
-      // porte a traverser
-      const eReel = lec.etatEn(cx, Math.floor(s + 1e-6), cz);
-      if (ouvrePortes && eReel >= 0 && ouvrables.has(d.blocDe(eReel))) cout += 2;
-      const g = n.g + cout, kk = cle(cx, cz, s);
-      if (fermes.has(kk)) continue;
-      const ex = ouvert.get(kk);
-      if (ex && ex.g <= g) continue;
-      const nn = { cx, cz, x, z, y: s, g, f: g + heur(x, z), parent: n };
-      ouvert.set(kk, nn); pousser(nn);
-    }
+  const yRef = but.y !== undefined ? but.y : de[1];
+  const cible = evaluateur === 'marche' ? positionSurface(lec, [Math.floor(bx), Math.floor(yRef + 1e-6), Math.floor(bz)]) : [Math.floor(bx), Math.floor(yRef), Math.floor(bz)];
+  const dist = Math.hypot(bx - de[0], bz - de[2]);
+  const longueur = suivi ?? (joueur ? Math.min(256, Math.max(96, dist * 3 + 32)) : 16);   // le joueur n'est pas un mob : pas de follow_range, une longueur large
+  const visites = maxNoeuds ?? Math.floor(longueur * 16);
+  const ex = exact ?? joueur;                                        // acteur a intentions : il va au point exact demande (accuracy 0)
+  const portee = precision ?? (ex ? 0 : rayon >= 1 ? Math.floor(rayon) : 1);   // precision : ccuracy du jeu (MeleeAttackGoal : 0, moveTo : 1)
+  // le joueur ouvre a la main portes et portillons (il n'est pas un mob) : il les voit ouverts ; une creature suit les regles du jeu
+  // (porte en bois fermee : WALKABLE_DOOR si elle sait ouvrir, portillon ferme : FENCE)
+  const LV = joueur && ouvrePortes ? lecteurOuvert(lec, blocsOuvrables(d, { fer: ferOuvrable })) : lec;
+  const ch = new Chercheur(LV, mob, evaluateur);
+  const p = ch.trouver([cible], longueur, portee, visites);
+  if (!p) return { chemin: [[de[0], de[1], de[2]]], portes: [], complet: false, noeuds: 0, raison: 'aucun chemin', types: [] };
+  const sol = evaluateur === 'marche' || evaluateur.startsWith('amphibie');
+  const pts = [[de[0], de[1], de[2]]];
+  for (const n of p.noeuds.slice(1)) { const q = pointDeNoeud(LV, n, L, sol && !n.echelle); if (n.echelle) { q[1] = n.y; q.push(n.echelle); } pts.push(q); }
+  // joueur : il s'arrete sur le point exact demande (sa case est le dernier noeud)
+  if (ex && p.atteint) { const dernier = pts[pts.length - 1]; if (Math.hypot(dernier[0] - bx, dernier[2] - bz) > 0.2) pts.push([bx, dernier[1], bz]); }
+  // joueur : lissage (on saute les points qu'un segment droit libre relie : un joueur ne suit pas les noeuds d'une creature)
+  let chemin = pts;
+  if (joueur) {
+    const GL = { L, H, chute: mob.chute, eau: 0, flotte: false, surClotures: true };
+    chemin = [pts[0]];
+    let i = 0;
+    while (i < pts.length - 1) { let j = pts.length - 1; while (j > i + 1 && (pts[j][3] || pts[j - 1][3] || !segmentLibre(LV, pts[i], pts[j], GL))) j--; chemin.push(pts[j]); i = j; }
   }
-  const fin = trouve || meilleur;
-  const pts = [];
-  for (let n = fin; n; n = n.parent) pts.push([n.x, n.y, n.z]);
-  pts.reverse();
-  if (trouve) { const dernier = pts[pts.length - 1]; if (rayon < 0.5 || Math.hypot(dernier[0] - bx, dernier[2] - bz) > 0.2) pts.push([bx, dernier[1], bz]); }
-  // lissage : on saute les points intermediaires qu'un segment droit libre relie
-  const lisse = [pts[0]];
-  let i = 0;
-  while (i < pts.length - 1) {
-    let j = pts.length - 1;
-    while (j > i + 1 && !segmentLibre(L, pts[i], pts[j], gb)) j--;
-    lisse.push(pts[j]); i = j;
+  // portes du chemin : les portes fermees que le chemin traverse (noeuds WALKABLE_DOOR, et la cellule des noeuds), case basse
+  const portes = [], vus = new Set();
+  if (ouvrePortes) for (const n of p.noeuds) for (const yy of [n.y, n.y + 1]) {
+    const e = lec.etatEn(n.x, yy, n.z);
+    if (e < 0 || d.prop(e, 'open') !== 'false' || !/^(DoorBlock|FenceGateBlock|WeatheringCopperDoorBlock)$/.test(d.classes(d.blocDe(e))[0])) continue;
+    const bas = d.prop(e, 'half') === 'upper' ? yy - 1 : yy, id = `${n.x},${bas},${n.z}`;
+    if (!vus.has(id)) { vus.add(id); portes.push([n.x, bas, n.z]); }
   }
-  // portes sur le chemin : cellules d'une porte fermee que le chemin traverse
-  const portes = [];
-  if (ouvrePortes) {
-    const vus = new Set();
-    for (let k = 0; k + 1 < lisse.length; k++) {
-      const a = lisse[k], b = lisse[k + 1], n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[2] - a[2]) / 0.25));
-      for (let q = 0; q <= n; q++) {
-        const x = Math.floor(a[0] + (b[0] - a[0]) * q / n), z = Math.floor(a[2] + (b[2] - a[2]) * q / n);
-        for (const yy of [Math.floor(a[1] + 1e-6), Math.floor(a[1] + 1e-6) + 1]) {
-          const e = lec.etatEn(x, yy, z);
-          if (e >= 0 && ouvrables.has(d.blocDe(e)) && d.prop(e, 'open') === 'false') {
-            // pour une porte a deux cases on garde la case basse
-            const bas = d.prop(e, 'half') === 'upper' ? yy - 1 : yy, id = `${x},${bas},${z}`;
-            if (!vus.has(id)) { vus.add(id); portes.push([x, bas, z]); }
-          }
-        }
-      }
-    }
-  }
-  return { chemin: lisse, portes, complet: !!trouve, noeuds: nb, raison: trouve ? null : (nb >= maxNoeuds ? 'limite de recherche atteinte' : 'aucun chemin') };
+  return { chemin, portes, complet: p.atteint, noeuds: p.visites, raison: p.atteint ? null : (p.visites >= visites ? 'limite de recherche atteinte' : 'aucun chemin'), types: p.noeuds.map((n) => TYPES[n.type]) };
 }
 
 // Position debout (pieds) la plus proche de `cible` (x, y, z) d'ou l'on atteint la cellule : sert aux verbes `utilise`/`pose`/`casse` avec `va`.

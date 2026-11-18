@@ -50,7 +50,7 @@ export class Registre {
       return new Map([...s].map((b) => [b, 1]));
     }
     const b = d.idBloc(sel);
-    if (b >= 0) return new Map([[b, 0]]);
+    if (b >= 0) return new Map([[b, 0], ...(d.copies?.get(b) ?? []).map((c) => [c, 0])]);   // un bloc de mod (mc.definirBloc, copieDe) se comporte comme sa copie
     const c = this._classes().get(sel);
     if (c) return new Map([...c].map(([bl, i]) => [bl, 2 + i]));
     throw new ErreurMonde(`mc.bloc('${sel}') : bloc ou classe inconnu${voulaisTu(sel, [...d.noms, ...this._classes().keys()])}`);
@@ -75,8 +75,9 @@ export class Registre {
     let g = this.cache.get(cle);
     if (g !== undefined) return g;
     const valeur = EVENEMENTS_VALEUR.has(evt);
-    const e = this.entrees.filter((x) => x.genre === genre && x.evt === evt && (genre !== 'bloc' || x.blocs.has(bloc)));
-    const cle2 = (x) => [x.source === 'moteur' ? 0 : 1, genre === 'bloc' ? x.blocs.get(bloc) : 0, x.seq];
+    const cles = genre === 'entite' ? String(bloc).split('|') : null;   // entite : ses selecteurs, du plus specifique au plus general ('ville:zombie_geant|zombie')
+    const e = this.entrees.filter((x) => x.genre === genre && x.evt === evt && (genre !== 'bloc' || x.blocs.has(bloc)) && (!cles || cles.includes(x.sel)));
+    const cle2 = (x) => [x.source === 'moteur' ? 0 : 1, genre === 'bloc' ? x.blocs.get(bloc) : cles ? cles.indexOf(x.sel) : 0, x.seq];
     e.sort((a, b) => { const p = cle2(a), q = cle2(b); return p[0] - q[0] || p[1] - q[1] || p[2] - q[2]; });
     g = null;
     for (const x of e) {
@@ -111,6 +112,9 @@ export class Registre {
     return g ? g(ev, monde) : undefined;
   }
   aMonde(evt) { return !!this._chaine('monde', evt, 0); }
+  // evenements d'entite (mc.entite(sel).sur) : cles = selecteurs de l'entite du plus specifique au plus general, ex. 'ville:zombie_geant|zombie'
+  aEntite(evt, cles) { return !!this._chaine('entite', evt, cles); }
+  lancerEntite(evt, cles, ev, monde) { const g = this._chaine('entite', evt, cles); return g ? g(ev, monde) : undefined; }
 }
 
 // Objet evenement : donnees + annuler()

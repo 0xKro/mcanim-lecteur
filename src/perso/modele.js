@@ -40,7 +40,8 @@ export function facesBoite([u, v], [w, h, d], min, max) {
     { nom: 'gauche', O: [x1, y0, z0], U: [0, 0, 1], V: [0, 1, 0], N: [1, 0, 0], rect: [u2, v1, u3, v2] },   // cote +X = gauche du joueur
     { nom: 'droite', O: [x0, y0, z1], U: [0, 0, -1], V: [0, 1, 0], N: [-1, 0, 0], rect: [u, v1, u1, v2] }, // cote -X = droite du joueur
     { nom: 'dessus', O: [x0, y0, z1], U: [1, 0, 0], V: [0, 0, -1], N: [0, -1, 0], rect: [u1, v, u2, v1] },
-    { nom: 'dessous', O: [x0, y1, z0], U: [1, 0, 0], V: [0, 0, 1], N: [0, 1, 0], rect: [u2, v, u2 + w, v1] },
+    // dessous : v croit vers l'avant (-Z) comme le dessus (ModelPart.Cube du jeu, verifie sur entity-models.json : test/elytres.test.js)
+    { nom: 'dessous', O: [x0, y1, z1], U: [1, 0, 0], V: [0, 0, -1], N: [0, 1, 0], rect: [u2, v, u2 + w, v1] },
   ];
 }
 
@@ -91,10 +92,10 @@ const flexion = (pose, L) => clamp(Number(pose[L.flex]) || 0, 0, FLEXION_MAX) * 
 
 // Accumulateur de sommets / triangles. kk = pas d'arc du sommet (sert a verifier le sens des triangles).
 class Reservoir {
-  constructor() { this.local = []; this.norm = []; this.part = []; this.uv = []; this.kk = []; this.idx = []; }
+  constructor() { this.local = []; this.norm = []; this.part = []; this.uv = []; this.kk = []; this.idx = []; this.couche = []; this.cc = 0; }   // cc : couche en cours (0 corps, 1 externe)
   sommet(part, l, n, uv, k = 0) {
     const i = this.part.length;
-    this.local.push(l[0], l[1], l[2]); this.norm.push(n[0], n[1], n[2]); this.part.push(part); this.uv.push(uv[0], uv[1]); this.kk.push(k);
+    this.local.push(l[0], l[1], l[2]); this.norm.push(n[0], n[1], n[2]); this.part.push(part); this.uv.push(uv[0], uv[1]); this.kk.push(k); this.couche.push(this.cc);
     return i;
   }
   // Triangle (a, b, c) dont la normale doit regarder dans le sens `voulue` (essai avec 69 degres de flexion, pas kn de l'arc).
@@ -209,6 +210,7 @@ export class Personnage {
     this.groupes = this.parties.map((p, ip) => {
       const m = R.marque();
       for (const couche of [0, 1]) {
+        R.cc = couche;
         const g = couche ? p.ext.g : 0;
         const uvOrig = couche ? p.ext.uv : p.uv;
         const min = p.orig.map((c) => c - g), max = p.orig.map((c, i) => c + p.taille[i] + g);
@@ -218,14 +220,14 @@ export class Personnage {
       let scinde = null;
       if (ip >= 2) {
         const m2 = R.marque();
-        for (const couche of [0, 1]) ajouterMembreScinde(R, ip - 2, p, couche);
+        for (const couche of [0, 1]) { R.cc = couche; ajouterMembreScinde(R, ip - 2, p, couche); }
         scinde = R.fin(m2);
       }
       return { rigide, scinde };
     });
     this.maitre = {
       local: new Float32Array(R.local), normales: new Float32Array(R.norm), partie: new Uint8Array(R.part),
-      uvs: new Float32Array(R.uv), indices: new Uint32Array(R.idx),
+      uvs: new Float32Array(R.uv), indices: new Uint32Array(R.idx), couche: new Uint8Array(R.couche),
     };
     this._configs = new Map();
     const c0 = this._config(0);   // tous les membres rigides : l'ancien maillage, 12 boites
@@ -242,12 +244,13 @@ export class Personnage {
     const M = this.maitre;
     const sel = this.groupes.map((g, ip) => (ip >= 2 && ((masque >> (ip - 2)) & 1) ? g.scinde : g.rigide));
     const nV = sel.reduce((s, g) => s + g.v1 - g.v0, 0), nI = sel.reduce((s, g) => s + g.i1 - g.i0, 0);
-    c = { local: new Float32Array(nV * 3), normales: new Float32Array(nV * 3), partie: new Uint8Array(nV), uvs: new Float32Array(nV * 2), indices: new Uint32Array(nI) };
+    c = { local: new Float32Array(nV * 3), normales: new Float32Array(nV * 3), partie: new Uint8Array(nV), uvs: new Float32Array(nV * 2), indices: new Uint32Array(nI), couche: new Uint8Array(nV) };
     let v = 0, i = 0;
     for (const g of sel) {
       c.local.set(M.local.subarray(g.v0 * 3, g.v1 * 3), v * 3);
       c.normales.set(M.normales.subarray(g.v0 * 3, g.v1 * 3), v * 3);
       c.partie.set(M.partie.subarray(g.v0, g.v1), v);
+      c.couche.set(M.couche.subarray(g.v0, g.v1), v);
       c.uvs.set(M.uvs.subarray(g.v0 * 2, g.v1 * 2), v * 2);
       for (let q = g.i0; q < g.i1; q++) c.indices[i++] = M.indices[q] - g.v0 + v;
       v += g.v1 - g.v0;
@@ -294,6 +297,7 @@ export class Personnage {
       couleurs[s * 3] = o * tn[0]; couleurs[s * 3 + 1] = o * tn[1]; couleurs[s * 3 + 2] = o * tn[2];
     }
     const m = { positions, uvs: cfg.uvs, couleurs, indices: cfg.indices, texture: this.texture, mode: 'decoupe' };
+    if (pose.rouge && !brut) surcoucheRouge(m, lumiere);   // degats et mort : OverlayTexture du jeu (le corps seulement ; l'armure et les objets n'en ont pas)
     if (brut) m.normales = normales;   // vrai pack de shaders : couleurs a 1 (c'est le pack qui eclaire) et normales en repere monde
     // couleur selective : `lueur` (0..1) absent = le masque protege (force 1) mais n'eclaire pas ; present = il multiplie la force
     // ET rend les pixels du masque lumineux (non assombris par la lumiere ni l'ombrage). `horsImage` = tout le corps est exempte.
@@ -301,6 +305,26 @@ export class Personnage {
     if (pose.horsImage) m.exempt = true;
     if ((pose.armure || pose.objetD || pose.objetG) && this.kitDir) return habiller(this, m, pose, mats, masque, lumiere, brut);
     return m;
+  }
+
+  // Hauteur (monde) du sommet le plus bas de la couche du corps (sans la couche externe, l'armure ni les objets : la pose debout pose
+  // cette couche sur le sol, voir coinsPieds). Memes calculs que `maillage` : sert au pantin des explosions (film/ragdoll.js).
+  basMaillage(pose) {
+    const mats = this.matricesParties(pose);
+    let masque = 0;
+    LIMBES.forEach((L, j) => { if (flexion(pose, L) > 1e-4) masque |= 1 << j; });
+    const cfg = this._config(masque);
+    const th = (180 - (pose.lacet ?? 0)) * RAD, ct = Math.cos(th), st = Math.sin(th);
+    const inc = inclinaison(pose.bascule, pose.roulis);
+    let bas = Infinity;
+    for (let s = 0; s < cfg.partie.length; s++) {
+      if (cfg.couche[s]) continue;
+      const m = mats[cfg.partie[s]], lx = cfg.local[s * 3], ly = cfg.local[s * 3 + 1], lz = cfg.local[s * 3 + 2];
+      const px = (m.R[0] * lx + m.R[1] * ly + m.R[2] * lz) / 16 + m.t[0], py = (m.R[3] * lx + m.R[4] * ly + m.R[5] * lz) / 16 + m.t[1], pz = (m.R[6] * lx + m.R[7] * ly + m.R[8] * lz) / 16 + m.t[2];
+      const y = pantin(pose, versMonde(px, py, pz, ct, st, inc))[1];
+      if (y < bas) bas = y;
+    }
+    return pose.y + bas - BAISSE_ACCROUPI * (pose.accroupi ?? 0) + (pose.dy ?? 0) + (pose.hauteur ?? 0);
   }
 
   // Projette des sommets ajoutes (armure, objets tenus : src/objets/habillage.js) avec EXACTEMENT la chaine de `maillage` (pose, lacet,
@@ -468,6 +492,25 @@ function versMondeDir(px, py, pz, ct, st, inc = null) {
 // roulis > 0 : le haut part vers la droite du joueur. Le roulis tourne autour de l'axe avant du monde APRES la bascule : couche sur
 // le ventre (bascule 90), roulis 90 = couche sur le cote droit.
 const TEINTE_NEUTRE = [1, 1, 1];
+// Surcouche rouge du jeu (OverlayTexture : texel 0xB2FF0000) : entity.fsh fait couleur = mix(rouge, texture x couleur, 0xB2 / 255) puis x la
+// lumiere ; le rouge n'est pas ombre par la direction des faces. Ici : couleurs x 178/255 et un rouge constant (77/255 x lumiere) ajoute par le
+// raster apres la texture (rendu/raster.js, champ `ajout` des maillages dynamiques).
+export const SURCOUCHE_ROUGE_A = 0xB2 / 255;
+export function surcoucheRouge(m, lumiere = 1) {
+  const k = SURCOUCHE_ROUGE_A, c = m.couleurs;
+  for (let i = 0; i < c.length; i++) c[i] *= k;
+  m.ajout = [(1 - k) * lumiere, 0, 0];
+  return m;
+}
+// Eclair blanc (rangee blanche de OverlayTexture) : colonne u = floor(progres x 15), alpha (int)((1 - u / 15 x 0,75) x 255)
+export function surcoucheBlanche(m, progres, lumiere = 1) {
+  const u = Math.min(15, Math.floor(Math.fround(progres) * 15));
+  if (u <= 0) return m;
+  const a = Math.trunc(Math.fround(1 - Math.fround(u / 15) * 0.75) * 255) / 255, c = m.couleurs;
+  for (let i = 0; i < c.length; i++) c[i] *= a;
+  m.ajout = [(1 - a) * lumiere, (1 - a) * lumiere, (1 - a) * lumiere];
+  return m;
+}
 export const PIVOT_HANCHE = -(12 / 16 + DECALAGE_Y) * ECHELLE;
 export function inclinaison(bascule = 0, roulis = 0) {
   if (!bascule && !roulis) return null;
@@ -609,4 +652,4 @@ export const matricesPose = (pose, slim = false) => calculerMatrices(partiesDe(s
 export const matriceMembre = (nom, v) => rotationMembre(nom, v);   // rotation de l'epaule ou de la hanche pour [avant, cote, torsion], sans balancement
 
 // ---------------------------------------------------------------- pour src/objets/ (armure, objets tenus) : memes briques que le corps
-export { Reservoir, ajouterFace, ajouterMembreScinde, calculerMatrices, partieArt, LIMBES, N_ARC, flexion, mult3, rotX, rotY, appliquer3 };
+export { Reservoir, ajouterFace, ajouterMembreScinde, calculerMatrices, partieArt, LIMBES, N_ARC, flexion, mult3, rotX, rotY, appliquer3, rotZYX };

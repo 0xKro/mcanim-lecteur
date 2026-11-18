@@ -6,7 +6,7 @@
 //   pousse : lumiere >= 9 au-dessus, 1 chance sur 7 ; stade 0 -> 1, puis l'arbre ; feuilles : distance au bois (1 au contact, 7 : meurt au tick aleatoire sauf `persistent`)
 //   herbe : meurt sous un bloc opaque, se propage 4 essais par tick aleatoire sur la terre voisine ; canne : age 15 -> un cran au-dessus (3 au plus) ; cactus idem ; bambou : 1 chance sur 3
 //   `croissance.vitesse` : multiplie le nombre de ticks aleatoires par section et par tick (monde.ticksAleatoires x vitesse) ; les nombres du jeu ne changent pas (lapse de temps)
-import { avec, court, etatTexte } from './_aide.js';
+import { avec, court, etatTexte, estAir, JEU as JEU_DIR } from './_aide.js';
 
 const CULTURES = { wheat: 7, carrots: 7, potatoes: 7, beetroots: 3 };
 const GRAINES = { wheat_seeds: 'wheat', carrot: 'carrots', potato: 'potatoes', beetroot_seeds: 'beetroots' };
@@ -83,20 +83,19 @@ export function installer(mc, regles) {
     } else if (m < 7) monde.poser(x, y, z, avec(b, { moisture: 7 }), 2);
   });
 
-  // ---------------------------------------------------------------- pousses -> arbres (SaplingBlock.randomTick / advanceTree)
-  const avancerArbre = (monde, x, y, z) => {
-    const b = monde.bloc(x, y, z), espece = SAPLINGS[court(b.nom)];
-    if (!espece) return;
-    if (Number(b.etat.stage) === 0) { monde.poser(x, y, z, avec(b, { stage: 1 }), 4); return; }
-    monde.arbre(x, y, z, espece);
-  };
+  // ---------------------------------------------------------------- pousses -> arbres (SaplingBlock.randomTick / advanceTree ; TreeGrower : arbres.js)
+  // Level.getMaxLocalRawBrightness : la lumiere du ciel moins l'assombrissement du moment (la nuit : -11 ; pluie, orage), ou celle des blocs
+  const lumiereLocale = (monde, x, y, z) => { const l = monde.lumiere(x, y, z); return Math.max(l.bloc, l.ciel - monde.assombrissement()); };
+  const avancerArbre = (monde, x, y, z) => monde.arbreAvancer(x, y, z);
   mc.bloc('SaplingBlock').sur('tickAleatoire', (ev, monde) => {
     if (!actif(monde) || !monde.regle('croissance.arbres', true)) return;
-    const [x, y, z] = ev.pos;
-    for (let i = fois(monde); i > 0; i--) {
-      if (!SAPLINGS[court(monde.bloc(x, y, z).nom)]) return;
-      if (lumiereMax(monde, x, y + 1, z) >= 9 && monde.hasard.entier(7) === 0) avancerArbre(monde, x, y, z);
+    const [x, y, z] = ev.pos, b = monde.bloc(x, y, z);
+    if (b.nom === 'minecraft:mangrove_propagule') {                     // MangrovePropaguleBlock.randomTick
+      if (b.etat.hanging !== 'true') { if (monde.hasard.entier(7) === 0) avancerArbre(monde, x, y, z); }
+      else if (b.etat.age !== '4') monde.poser(x, y, z, avec(b, { age: Number(b.etat.age) + 1 }), 2);
+      return;
     }
+    if (lumiereLocale(monde, x, y + 1, z) >= 9 && monde.hasard.entier(7) === 0) avancerArbre(monde, x, y, z);
   });
 
   // ---------------------------------------------------------------- herbe (SpreadingSnowyBlock.randomTick)
@@ -193,27 +192,264 @@ export function installer(mc, regles) {
     }
   });
 
-  // ---------------------------------------------------------------- lierre : s'etend vers le bas (VineBlock.randomTick, cote bas seulement)
+  // ---------------------------------------------------------------- lianes (VineBlock.randomTick complet : cotes, haut, bas ; Horizon level/tick.rs vine_random_tick)
+  // MultifaceBlock.canAttachTo : la face du voisin tournee vers la liane est pleine (forme d'appui ou de collision)
+  const DIRS6 = ['down', 'up', 'north', 'south', 'west', 'east'];                       // Direction.values()
+  const H4 = ['north', 'east', 'south', 'west'];                                         // Direction.Plane.HORIZONTAL
+  const V = { north: [0, 0, -1], south: [0, 0, 1], west: [-1, 0, 0], east: [1, 0, 0], up: [0, 1, 0], down: [0, -1, 0] };
+  const OPP = { north: 'south', south: 'north', west: 'east', east: 'west', up: 'down', down: 'up' };
+  const FR6 = { north: 'nord', south: 'sud', west: 'ouest', east: 'est', up: 'haut', down: 'bas' };
+  const HOR = { north: 'east', east: 'south', south: 'west', west: 'north' };
+  const AHOR = { north: 'west', west: 'south', south: 'east', east: 'north' };
+  const plus = (p, dir) => [p[0] + V[dir][0], p[1] + V[dir][1], p[2] + V[dir][2]];
+  const faceFull = (boites, face) => {   // Block.isFaceFull sur une liste de boites (projection de la face sur le carre 1 x 1)
+    const ax = face === 'up' || face === 'down' ? 1 : face === 'north' || face === 'south' ? 2 : 0, cote = face === 'up' || face === 'south' || face === 'east' ? 1 : 0;
+    const [u, v] = [0, 1, 2].filter((k) => k !== ax), cell = new Uint8Array(256);
+    for (const b of boites) if ((cote ? b[ax + 3] : b[ax]) === cote) for (let i = Math.round(b[u] * 16); i < Math.round(b[u + 3] * 16); i++) for (let j = Math.round(b[v] * 16); j < Math.round(b[v + 3] * 16); j++) cell[i * 16 + j] = 1;
+    return cell.every((c) => c === 1);
+  };
+  const peutAccrocher = (monde, p, dir) => monde.appui(p[0], p[1], p[2], FR6[OPP[dir]], 'plein') || faceFull(monde.boites(p[0], p[1], p[2]), OPP[dir]);
+  const vide = (monde, p) => estAir(monde.bloc(...p));
+  const lianesAutour = (monde, x, y, z, nom) => {   // VineBlock.canSpread : au plus 4 du meme bloc dans la boite 9 x 3 x 9
+    let max = 5;
+    for (let dx = -4; dx <= 4; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -4; dz <= 4; dz++) if (monde.bloc(x + dx, y + dy, z + dz).nom === nom && --max <= 0) return false;
+    return true;
+  };
+  const ETAT_LIANE = { east: 'false', north: 'false', south: 'false', up: 'false', west: 'false' };
   mc.bloc('VineBlock').sur('tickAleatoire', (ev, monde) => {
-    if (!actif(monde)) return;
-    const [x, y, z] = ev.pos;
-    for (let i = fois(monde); i > 0; i--) {
-      const b = monde.bloc(x, y, z);
-      if (b.nom !== 'minecraft:vine') return;
-      if (monde.hasard.entier(4) !== 0 || monde.hasard.entier(6) !== 1) continue;      // 1 chance sur 4, puis la direction tiree est le bas
-      const dessous = monde.bloc(x, y - 1, z);
-      if (dessous.nom !== 'minecraft:air' && dessous.nom !== 'minecraft:vine') continue;
-      const e = dessous.nom === 'minecraft:vine' ? { ...dessous.etat } : { east: 'false', north: 'false', south: 'false', up: 'false', west: 'false' };
-      let change = false;
-      for (const f of ['east', 'north', 'south', 'west']) if (b.etat[f] === 'true' && monde.hasard.booleen() && e[f] !== 'true') { e[f] = 'true'; change = true; }
-      if (change && ['east', 'north', 'south', 'west'].some((f) => e[f] === 'true')) monde.poser(x, y - 1, z, etatTexte('minecraft:vine', e), 2);
+    if (!actif(monde) || !monde.regle('croissance.lianes', true)) return;
+    const p = ev.pos, [x, y, z] = p, b = monde.bloc(x, y, z), nom = b.nom, h = monde.hasard;
+    if (h.entier(4) !== 0) return;
+    const dir = DIRS6[h.entier(6)], dessus = plus(p, 'up');
+    const liane = (e) => etatTexte(nom, { ...ETAT_LIANE, ...e });
+    if (H4.includes(dir) && b.etat[dir] !== 'true') {
+      if (!lianesAutour(monde, x, y, z, nom)) return;
+      const t = plus(p, dir), bord = monde.bloc(...t);
+      if (estAir(bord)) {
+        const cw = HOR[dir], ccw = AHOR[dir], fcw = b.etat[cw] === 'true', fccw = b.etat[ccw] === 'true', tcw = plus(t, cw), tccw = plus(t, ccw);
+        if (fcw && peutAccrocher(monde, tcw, cw)) monde.poser(...t, liane({ [cw]: 'true' }), 2);
+        else if (fccw && peutAccrocher(monde, tccw, ccw)) monde.poser(...t, liane({ [ccw]: 'true' }), 2);
+        else {
+          const op = OPP[dir];
+          if (fcw && vide(monde, tcw) && peutAccrocher(monde, plus(p, cw), op)) monde.poser(...tcw, liane({ [op]: 'true' }), 2);
+          else if (fccw && vide(monde, tccw) && peutAccrocher(monde, plus(p, ccw), op)) monde.poser(...tccw, liane({ [op]: 'true' }), 2);
+          else if (h.flottant() < 0.05 && peutAccrocher(monde, plus(t, 'up'), 'up')) monde.poser(...t, liane({ up: 'true' }), 2);
+        }
+      } else if (peutAccrocher(monde, t, dir)) monde.poser(x, y, z, avec(b, { [dir]: 'true' }), 2);
+      return;
     }
+    if (dir === 'up' && y < 319 - 1) {
+      if (peutAccrocher(monde, dessus, 'up')) { monde.poser(x, y, z, avec(b, { up: 'true' }), 2); return; }
+      if (vide(monde, dessus)) {
+        if (!lianesAutour(monde, x, y, z, nom)) return;
+        const e = { ...b.etat };
+        for (const d of H4) if (h.booleen() || !peutAccrocher(monde, plus(dessus, d), d)) e[d] = 'false';
+        if (H4.some((d) => e[d] === 'true')) monde.poser(...dessus, etatTexte(nom, e), 2);
+        return;
+      }
+    }
+    if (y > -64) {
+      const dessous = monde.bloc(x, y - 1, z);
+      if (estAir(dessous) || dessous.nom === nom) {
+        const avant = estAir(dessous) ? { ...ETAT_LIANE } : { ...dessous.etat }, apres = { ...avant };
+        for (const d of H4) if (h.booleen() && b.etat[d] === 'true') apres[d] = 'true';
+        if (H4.some((d) => apres[d] !== avant[d]) && H4.some((d) => apres[d] === 'true')) monde.poser(x, y - 1, z, etatTexte(nom, apres), 2);
+      }
+    }
+  });
+
+  // ---------------------------------------------------------------- tiges de citrouille et de pasteque (StemBlock, AttachedStemBlock)
+  regles.declarer('croissance.lianes', { def: true, doc: 'regle de jeu spread_vines : les lianes s etendent (jeu : oui)' });
+  const lumBrute = (monde, x, y, z) => { const l = monde.lumiere(x, y, z); return Math.max(l.bloc, l.ciel); };   // getRawBrightness(pos, 0)
+  const tagHas = (monde, x, y, z, tag) => monde.estDans(x, y, z, String(tag).replace(/^#/, ''));
+  // StemBlock.randomTick : lumiere >= 9, 1 chance sur floor(25 / vitesse) + 1 ; age 7 : un fruit sur une case libre tiree au hasard (sol #supports_..._fruit)
+  const pousseTige = (monde, x, y, z) => {
+    const b = monde.bloc(x, y, z), ch = monde.champs(court(b.nom)), age = Number(b.etat.age);
+    if (age < 7) { monde.poser(x, y, z, avec(b, { age: age + 1 }), 2); return; }
+    const dir = H4[monde.hasard.entier(4)], t = plus([x, y, z], dir);
+    if (estAir(monde.bloc(...t)) && tagHas(monde, t[0], t[1] - 1, t[2], ch.fruitSupportBlocks)) {
+      monde.poser(...t, 'minecraft:' + ch.fruit, 3);
+      monde.poser(x, y, z, `minecraft:${ch.attachedStem}[facing=${dir}]`, 3);
+    }
+  };
+  mc.bloc('StemBlock').sur('tickAleatoire', (ev, monde) => {
+    if (!actif(monde) || !monde.regle('croissance.cultures', true)) return;
+    const [x, y, z] = ev.pos, b = monde.bloc(x, y, z);
+    if (lumBrute(monde, x, y, z) < 9) return;
+    const v = vitesseCulture(monde, x, y, z, court(b.nom));
+    if (monde.hasard.entier(Math.floor(Math.fround(25 / v)) + 1) !== 0) return;
+    pousseTige(monde, x, y, z);
+  });
+  // AttachedStemBlock.updateShape : le fruit retire -> la tige redevient une tige d'age 7
+  mc.bloc('AttachedStemBlock').sur('forme', (ev, monde) => {
+    const b = monde.bloc(...ev.pos), ch = monde.champs(court(b.nom));
+    if (JEU_DIR[ev.direction] === b.etat.facing && !String(ev.voisin).startsWith('minecraft:' + ch.fruit + '[') && ev.voisin !== 'minecraft:' + ch.fruit) return `minecraft:${ch.stem}[age=7]`;
+    return undefined;
+  });
+  for (const cl of ['StemBlock', 'AttachedStemBlock']) mc.bloc(cl).sur('survit', (ev, monde) => { const ch = monde.champs(ev.bloc); return tagHas(monde, ev.pos[0], ev.pos[1] - 1, ev.pos[2], ch.stemSupportBlocks ?? ch.supportBlocks); });
+
+  // ---------------------------------------------------------------- champignons (MushroomBlock : propagation, survie ; geants : farine d'os)
+  regles.declarer('croissance.champignons', { def: true, doc: 'les champignons se propagent dans le noir (1 chance sur 25, au plus 4 dans 9 x 3 x 9) (jeu : oui)' });
+  mc.bloc('MushroomBlock').sur('survit', (ev, monde) => {   // MushroomBlock.canSurvive
+    const [x, y, z] = ev.pos;
+    if (monde.estDans(x, y - 1, z, 'overrides_mushroom_light_requirement')) return true;
+    const e = monde.bloc(x, y - 1, z);
+    return lumBrute(monde, x, y, z) < 13 && e.id >= 0 && monde.renduPlein(x, y - 1, z);
+  });
+  mc.bloc('MushroomBlock').sur('tickAleatoire', (ev, monde) => {
+    if (!actif(monde) || !monde.regle('croissance.champignons', true)) return;
+    const h = monde.hasard, b = monde.bloc(...ev.pos);
+    if (h.entier(25) !== 0) return;
+    let [x, y, z] = ev.pos, max = 5;
+    for (let dx = -4; dx <= 4; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -4; dz <= 4; dz++) if (monde.bloc(x + dx, y + dy, z + dz).nom === b.nom && --max <= 0) return;
+    const decal = (p) => { const a = h.entier(3) - 1, c = h.entier(2) - h.entier(2), e = h.entier(3) - 1; return [p[0] + a, p[1] + c, p[2] + e]; };
+    let p = [x, y, z], o = decal(p);
+    for (let i = 0; i < 4; i++) { if (vide(monde, o) && monde.survitEtat(...o, b.chaine)) p = o; o = decal(p); }
+    if (vide(monde, o) && monde.survitEtat(...o, b.chaine)) monde.poser(...o, b.chaine, 2);
+  });
+  // HugeMushroomBlock.updateShape : une face contre un bloc de champignon du meme genre n'a plus sa peau
+  mc.bloc('HugeMushroomBlock').sur('forme', (ev, monde) => {
+    const b = monde.bloc(...ev.pos), d = JEU_DIR[ev.direction];
+    if (String(ev.voisin).replace(/\[.*$/, '') === b.nom && b.etat[d] !== 'false') return avec(b, { [d]: 'false' });
+    return undefined;
+  });
+
+  // ---------------------------------------------------------------- plantes qui poussent par la tete (GrowingPlantHeadBlock : lianes pleureuses et
+  // tordues, lianes des cavernes, varech) : age < 25, chance growPerTickProbability (jeu : 0,1 ; varech 0,14), une case dans la direction de pousse
+  const DIR_POUSSE = { DOWN: 'down', UP: 'up' };
+  const peutPousserDans = (monde, tete, p) => { const n = monde.bloc(...p); return tete.nom === 'minecraft:kelp' ? n.nom === 'minecraft:water' : estAir(n); };
+  const etatPousse = (monde, b) => {           // GrowingPlantHeadBlock.getGrowIntoState (lianes des cavernes : baies 1 fois sur 0,11)
+    const age = Math.min(25, Number(b.etat.age) + 1);
+    if (b.nom === 'minecraft:cave_vines') return avec(b, { age, berries: monde.hasard.flottant() < 0.11 ? 'true' : 'false' });
+    return avec(b, { age });
+  };
+  mc.bloc('GrowingPlantHeadBlock').sur('tickAleatoire', (ev, monde) => {
+    if (!actif(monde)) return;
+    const b = monde.bloc(...ev.pos), ch = monde.champs(court(b.nom));
+    if (Number(b.etat.age) >= 25 || !(monde.hasard.reel() < ch.growPerTickProbability)) return;
+    const q = plus(ev.pos, DIR_POUSSE[ch.growthDirection]);
+    if (peutPousserDans(monde, b, q)) monde.poser(...q, etatPousse(monde, b), 3);
+  });
+
+  // ---------------------------------------------------------------- lichen lumineux (MultifaceSpreader : seulement par la farine d'os)
+  const aFace = (b, d) => b.etat[d] === 'true';
+  const peutEtendreDans = (monde, nom, at, face) => {       // DefaultSpreaderConfig.canSpreadInto
+    const n = monde.bloc(...at), f = monde.fluide(...at);
+    const ok = estAir(n) || n.nom === nom || (n.nom === 'minecraft:water' && f.source);
+    return ok && !(n.nom === nom && aFace(n, face)) && peutAccrocher(monde, plus(at, face), face);
+  };
+  const axeDe = (d) => (d === 'up' || d === 'down' ? 'y' : d === 'north' || d === 'south' ? 'z' : 'x');
+  const cibleLichen = (monde, b, p, de, vers) => {          // MultifaceSpreader.getSpreadFromFaceTowardDirection
+    if (axeDe(vers) === axeDe(de) || !aFace(b, de) || aFace(b, vers)) return null;
+    for (const [at, face] of [[p, vers], [plus(p, vers), de], [plus(plus(p, vers), de), OPP[vers]]]) if (peutEtendreDans(monde, b.nom, at, face)) return [at, face];
+    return null;
+  };
+  const melange6 = (h) => { const l = DIRS6.slice(); for (let i = l.length; i > 1; i--) { const j = h.entier(i); [l[i - 1], l[j]] = [l[j], l[i - 1]]; } return l; };
+  const lichenPossible = (monde, b, p) => DIRS6.some((f) => DIRS6.some((s) => cibleLichen(monde, b, p, OPP[f], s)));
+  const etendreLichen = (monde, b, p) => {
+    for (const de of melange6(monde.hasard)) {
+      if (!aFace(b, de)) continue;
+      for (const vers of melange6(monde.hasard)) {
+        const c = cibleLichen(monde, b, p, de, vers);
+        if (!c) continue;
+        const [at, face] = c, ancien = monde.bloc(...at);
+        const base = ancien.nom === b.nom ? ancien.etat : { down: 'false', east: 'false', north: 'false', south: 'false', up: 'false', west: 'false', waterlogged: ancien.nom === 'minecraft:water' && monde.fluide(...at).source ? 'true' : 'false' };
+        if (monde.poser(...at, etatTexte(b.nom, { ...base, [face]: 'true' }), 2)) return true;
+      }
+    }
+    return false;
+  };
+  mc.bloc('MultifaceBlock').sur('survit', (ev, monde) => {  // MultifaceBlock.canSurvive : chaque face posee tient a son voisin
+    const b = monde.bloc(...ev.pos);
+    let une = false;
+    for (const d of DIRS6) if (aFace(b, d)) { if (!peutAccrocher(monde, plus(ev.pos, d), d)) return false; une = true; }
+    return une;
   });
 
   // ---------------------------------------------------------------- objets sur un bloc : farine d'os, houe, graines (evenement du monde `objet.utilise`)
   const particulesCroissance = (monde, x, y, z, n = 15) => {
     for (let i = 0; i < n; i++) monde.particule('happy_villager', x + 0.1 + monde.hasard.reel() * 0.8, y + 0.2 + monde.hasard.reel() * 0.8, z + 0.1 + monde.hasard.reel() * 0.8, 0, 0, 0, 1);
   };
+  // farine d'os sur les autres plantes (BonemealableBlock : isValidBonemealTarget, isBonemealSuccess, performBonemeal ; Horizon level/bonemeal.rs).
+  // Rend vrai si le bloc est une cible valide (la farine est utilisee, meme si l'essai rate).
+  const tetePlante = (monde, p, nom, dir) => {               // BlockUtil.getTopConnectedBlock
+    let q = p;
+    for (let i = 0; i < 400; i++) { q = plus(q, dir); const n = monde.bloc(...q).nom; if (n !== nom) return n === nom.replace(/_plant$/, '') ? q : null; }
+    return null;
+  };
+  const farineTete = (monde, p, b) => {                       // GrowingPlantHeadBlock.performBonemeal
+    const dir = DIR_POUSSE[monde.champs(court(b.nom)).growthDirection];
+    let q = plus(p, dir), age = Math.min(25, Number(b.etat.age) + 1), n = 1;
+    if (b.nom === 'minecraft:weeping_vines' || b.nom === 'minecraft:twisting_vines') { let pr = 1; n = 0; while (monde.hasard.reel() < pr) { pr *= 0.826; n++; } }   // NetherVines.getBlocksToGrowWhenBonemealed
+    for (let i = 0; i < n; i++) {
+      if (!peutPousserDans(monde, b, q) || q[1] < -64 || q[1] >= 320) break;
+      monde.poser(...q, avec(b, { age }), 3);
+      q = plus(q, dir); age = Math.min(25, age + 1);
+    }
+  };
+  function farineAutres(monde, b, x, y, z) {
+    const nom = court(b.nom), h = monde.hasard, p = [x, y, z], ch = monde.champs(nom);
+    if (ch?.treeGrower || nom === 'azalea' || nom === 'flowering_azalea') {
+      if (nom === 'mangrove_propagule') {
+        const pend = b.etat.hanging === 'true';
+        if (pend && b.etat.age === '4') return false;
+        if (pend) monde.poser(x, y, z, avec(b, { age: Number(b.etat.age) + 1 }), 2);
+        else if (h.flottant() < 0.45) avancerArbre(monde, x, y, z);
+        return true;
+      }
+      if (!monde.arbrePossible(x, y, z)) return false;
+      if (h.flottant() < 0.45) avancerArbre(monde, x, y, z);
+      return true;
+    }
+    if (nom === 'red_mushroom' || nom === 'brown_mushroom') {
+      if (!monde.champignonPossible(x, y, z)) return false;
+      if (h.flottant() < 0.4) monde.champignonGeant(x, y, z);
+      return true;
+    }
+    if (ch?.attachedStem) {                                   // StemBlock : 2 a 5 crans, puis un tick aleatoire complet a l'age 7
+      if (b.etat.age === '7') return false;
+      const age = Math.min(7, Number(b.etat.age) + 2 + h.entier(4));
+      monde.poser(x, y, z, avec(b, { age }), 2);
+      if (age === 7 && lumBrute(monde, x, y, z) >= 9 && h.entier(Math.floor(Math.fround(25 / vitesseCulture(monde, x, y, z, nom))) + 1) === 0) pousseTige(monde, x, y, z);
+      return true;
+    }
+    if (nom === 'cave_vines' || nom === 'cave_vines_plant') {
+      if (b.etat.berries === 'true') return false;
+      monde.poser(x, y, z, avec(b, { berries: 'true' }), 2);
+      return true;
+    }
+    if (ch?.growthDirection && !/_plant$/.test(nom)) {        // tete : lianes pleureuses, tordues, varech
+      const q = plus(p, DIR_POUSSE[ch.growthDirection]);
+      if (!peutPousserDans(monde, b, q) || q[1] < -64 || q[1] >= 320) return false;
+      farineTete(monde, p, b);
+      return true;
+    }
+    if (/_plant$/.test(nom) && monde.champs(nom.replace(/_plant$/, ''))?.growthDirection) {   // corps : la tete pousse
+      const dir = DIR_POUSSE[monde.champs(nom.replace(/_plant$/, '')).growthDirection], t = tetePlante(monde, p, b.nom, dir);
+      if (!t) return false;
+      const tb = monde.bloc(...t), q = plus(t, dir);
+      if (!peutPousserDans(monde, tb, q) || q[1] < -64 || q[1] >= 320) return false;
+      farineTete(monde, t, tb);
+      return true;
+    }
+    if (nom === 'glow_lichen') {
+      if (!lichenPossible(monde, b, p)) return false;
+      etendreLichen(monde, b, p);
+      return true;
+    }
+    if (nom === 'rooted_dirt') {                              // RootedDirtBlock : des racines pendantes dessous
+      if (!estAir(monde.bloc(x, y - 1, z)) || y - 1 < -64) return false;
+      monde.poser(x, y - 1, z, 'minecraft:hanging_roots', 3);
+      return true;
+    }
+    if (nom === 'mangrove_leaves') {                          // MangroveLeavesBlock : une propagule pendante dessous
+      if (!estAir(monde.bloc(x, y - 1, z))) return false;
+      monde.poser(x, y - 1, z, 'minecraft:mangrove_propagule[age=0,hanging=true,stage=0,waterlogged=false]', 2);
+      return true;
+    }
+    return false;
+  }
+
   mc.monde.sur('objet.utilise', (ev, monde) => {
     const [x, y, z] = ev.pos, o = ev.objet;
     if (o === 'bone_meal') {
@@ -228,8 +464,7 @@ export function installer(mc, regles) {
         monde.son('item.bone_meal.use', x + 0.5, y + 0.5, z + 0.5, 1, 1);
         particulesCroissance(monde, x, y, z);
         ev.fait = true;
-      } else if (SAPLINGS[nom]) {
-        if (monde.hasard.flottant() < 0.45) avancerArbre(monde, x, y, z);
+      } else if (farineAutres(monde, b, x, y, z)) {
         monde.son('item.bone_meal.use', x + 0.5, y + 0.5, z + 0.5, 1, 1);
         particulesCroissance(monde, x, y, z);
         ev.fait = true;

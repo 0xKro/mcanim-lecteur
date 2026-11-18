@@ -8,6 +8,10 @@ import { sprite, textureGui, decouper, poserSprite } from './sprites.js';
 import { iconeObjet } from './icone.js';
 import { texture } from '../objets/fichiers.js';
 import { decoderPNG } from '../rendu/png.js';
+import { refletIcone, aReflet, idRendu } from '../objets/reflet.js';
+import { etatLivre, dessinerLivre } from './livre-enchant.js';
+import { dessinerApercu } from './apercu-joueur.js';   // livre de la table d'enchantement (partie 26)
+import { Aleatoire } from '../moteur/aleatoire.js';   // mots galactiques de la table d'enchantement (EnchantmentNames : java.util.Random)
 import { visibleParProfondeur, visibleParTerrain } from './ancrage.js';
 import { contenir, couperSegment } from '../montage/zones.js';
 import { choisirHauteur } from '../montage/evitement.js';
@@ -54,7 +58,7 @@ const echellePolice = (ctx, taille, lisse = false) => { const s = (taille * ctx.
 
 // Tailles MINIMALES lisibles sur un telephone (part du petit cote de l'image : 0,05 = 54 px de haut de ligne sur 1080). Une taille plus petite est relevee
 // et une note le dit : le texte d'un film vertical se lit a bout de bras, sur un ecran de 6 pouces.
-export const TAILLE_MINI = { texte: 0.05, legende: 0.05, compteur: 0.05, nom: 0.034, bulle: 0.065, chat: 0.036, fleche: 0.045, horloge: 0.04, succes: 0.8, coffre: 0.6, marchand: 0.6, inventaire: 0.5, hud: 0.6 };
+export const TAILLE_MINI = { poste: 0.6, texte: 0.05, legende: 0.05, compteur: 0.05, nom: 0.034, bulle: 0.065, chat: 0.036, fleche: 0.045, horloge: 0.04, succes: 0.8, coffre: 0.6, marchand: 0.6, inventaire: 0.5, hud: 0.6 };
 function tailleLisible(ctx, el, type, def, mini = TAILLE_MINI[type] ?? 0) {
   const t = el.taille ?? def;
   if (t >= mini) return t;
@@ -106,11 +110,11 @@ function imageObjet(ctx, id, px) {
 }
 
 // Icone (+ nombre + barre de durabilite) en une image carree de `px` pixels.
-function imageIcone(ctx, { objet, fichier, nombre, barre }, px, S = null) {
+function imageIcone(ctx, { objet, fichier, nombre, barre, reflet }, px, S = null) {
   const base = fichier ? pngLocal(ctx, fichier) : null;
   let im = base ? redimensionner(base, px, px, 'proche') : imageObjet(ctx, objet, px);
   const o = creerImage(px, px);
-  if (im) composer(o, im, 0, 0);
+  if (im) { composer(o, im, 0, 0); if (reflet) refletIcone(ctx.kit, o, (ctx.t ?? 0) * 1000); }   // objet enchante : le reflet du jeu sur l'icone (objets/reflet.js)
   else { const m = creerImage(px, px); for (let i = 0; i < m.px.length; i += 4) { const x = (i / 4) % px, y = Math.floor(i / 4 / px), v = ((x * 2 / px | 0) + (y * 2 / px | 0)) & 1; m.px[i] = v ? 248 : 0; m.px[i + 1] = 0; m.px[i + 2] = v ? 248 : 0; m.px[i + 3] = 255; } composer(o, m, 0, 0); ctx.manquants?.add(objet); }
   const g = px / 16;   // pixels d'image par pixel de GUI
   if (barre !== undefined && barre !== null && barre < 1) {
@@ -237,6 +241,7 @@ function construire(el, ctx) {
     case 'coffre': return imageCoffre(ctx, el);
     case 'marchand': return imageMarchand(ctx, el);
     case 'hud': return imageHud(ctx, el);
+    case 'poste': return imagePoste(ctx, el);
     default: return null;
   }
 }
@@ -414,24 +419,141 @@ function imageMarchand(ctx, el) {
   return { img: o, boite: { x: 0, y: 0, w: o.w, h: o.h } };
 }
 
+// Ecran du poste ouvert par un acteur simule (replay.ecrans, moteur/objets-actes.js) : le fond du jeu (gui/container/<poste>.png, 176 x 166),
+// les cases aux places des menus du jeu (relues dans Horizon game/inventory_slots.rs et stations.rs : etabli 3 x 3 a (30 + 18 c, 17 + 18 r),
+// resultat (124, 35) ; inventaire 2 x 2 a (98 + 18 c, 18 + 18 r), resultat (154, 28) ; alambic : fioles (56, 51) (79, 58) (102, 51),
+// ingredient (79, 17), poudre (17, 17) ; table d'enchantement : objet (15, 47), lapis (35, 47), boutons (60, 14 + 19 k) ; enclume (27, 47)
+// (76, 47) -> (134, 47) ; tailleur (20, 33) -> (143, 33) ; forge (8, 48) (26, 48) (44, 48) -> (98, 48)), l'inventaire du joueur en bas
+// (8 + 18 c, 84 + 18 r ; barre 142), le titre en gris sombre.
+const FONDS_POSTE = { etabli: 'crafting_table', inventaire: 'inventory', alambic: 'brewing_stand', enchantement: 'enchanting_table', enclume: 'anvil', tailleur: 'stonecutter', forge: 'smithing' };
+const TITRES_POSTE = { etabli: 'Crafting', inventaire: 'Crafting', alambic: 'Brewing Stand', enchantement: 'Enchant', enclume: 'Repair & Name', tailleur: 'Stonecutter', forge: 'Upgrade Gear' };
+const MOTS_GALACTIQUES = 'the elder scrolls klaatu berata niktu xyzzy bless curse light darkness fire air earth water hot dry cold wet ignite snuff embiggen twist shorten stretch fiddle destroy imbue galvanize enchant free limited range of towards inside sphere cube self other ball mental physical grow shrink demon elemental spirit animal creature beast humanoid undead fresh stale phnglui mglwnafh cthulhu rlyeh wgahnagl fhtagn baguette'.split(' ');   // EnchantmentNames du jeu 26.3 (liste relue dans la classe du JAR du client, ordre du tableau)
+function imagePoste(ctx, el) {
+  const v = el.poste;
+  const zw = ctx.zone?.actif ? ctx.zone.w : ctx.W * 0.92;
+  const E = el.taille !== undefined ? echelleGui(ctx, el, 176, 'poste', 0.6) : Math.max(2, Math.min(zw, 0.9 * ctx.U) / 176), Sg = Math.max(1, Math.round(E));
+  const w = Math.round(176 * E), h = Math.round(166 * E), o = creerImage(w, h);
+  const tex = textureGui(ctx.kit, 'container/' + (FONDS_POSTE[v.type] ?? 'crafting_table'));
+  if (tex) composer(o, redimensionner(decouper(tex, 0, 0, 176, 166), w, h, 'proche'), 0, 0);
+  const px = Math.round(16 * E);
+  let genGalactique = null;
+  const icone = (t, x, y, n) => { if (!t) return; const id = idRendu(t); composer(o, imageIcone(ctx, { objet: id, reflet: aReflet(t, ctx.scene?._refletsForces), ...(n > 1 ? { nombre: n } : {}) }, px, Sg), Math.round(x * E), Math.round(y * E)); };
+  const g = v.grille ?? [];
+  if (v.type === 'etabli') { g.forEach((c, k) => icone(c, 30 + (k % 3) * 18, 17 + Math.floor(k / 3) * 18)); icone(v.resultat, 124, 35, v.n); }
+  else if (v.type === 'inventaire') {
+    const ap = ctx.scene?._apercus?.get(v.acteur)?.();   // le joueur dans sa boite (incrust/apercu-joueur.js)
+    if (ap) dessinerApercu(o, E, ap.m, ap.accroupi);
+    // armure (8, 8 + 18 k) et main gauche (77, 62) ; case vide : icone fantome (InventoryMenu : container/slot/helmet... shield)
+    const fant = (nom, x, y) => { const s = sprite(ctx.kit, 'container/slot/' + nom); if (s) composer(o, redimensionner(s, px, px, 'proche'), Math.round(x * E), Math.round(y * E)); };
+    ['helmet', 'chestplate', 'leggings', 'boots'].forEach((nom, k) => { const a = (v.armures ?? [])[k]; if (a) icone(a, 8, 8 + 18 * k); else fant(nom, 8, 8 + 18 * k); });
+    if (v.gauche) icone(v.gauche, 77, 62); else fant('shield', 77, 62);
+    g.forEach((c, k) => icone(c, 98 + (k % 2) * 18, 18 + Math.floor(k / 2) * 18)); icone(v.resultat, 154, 28, v.n); }
+  else if (v.type === 'tailleur') { icone(g[0], 20, 33); icone(v.resultat, 143, 33, v.n); }
+  else if (v.type === 'forge') { icone(g[0], 8, 48); icone(g[1], 26, 48); icone(g[2], 44, 48); icone(v.resultat, 98, 48, v.n); }
+  else if (v.type === 'enclume') {
+    icone(v.gauche, 27, 47); icone(v.droite, 76, 47); icone(v.resultat, 134, 47);
+    const c = rendreTexte(ctx.police, segmentsDeTexte(`Enchantment Cost: ${v.cout}`, { couleur: v.cout >= 40 ? [255, 96, 96] : [128, 255, 32] }), { S: Sg, alignement: 'gauche' });   // AnvilScreen : 0x80FF20 (vert), rouge si trop cher
+    composer(o, c.img, Math.round((176 - 8) * E) - c.img.w, Math.round(69 * E) - c.origine.y);
+    if (v.nom) { const nm = rendreTexte(ctx.police, segmentsDeTexte(v.nom, { couleur: [255, 255, 255] }), { S: Sg, alignement: 'gauche' }); composer(o, nm.img, Math.round(62 * E) - nm.origine.x, Math.round(24 * E) - nm.origine.y); }
+  } else if (v.type === 'alambic') {
+    const c = v.contenu ?? {};
+    (c.fioles ?? []).forEach((f, k) => icone(f, [56, 79, 102][k], [51, 58, 51][k]));
+    icone(c.ingredient, 79, 17, c.nIngredient); icone(c.carburant, 17, 17, c.nCarburant);
+    // BrewingStandScreen : jauge de poudre clamp((18 x reste + 19) / 20, 0, 18) a (60, 44) ; fleche 28 x (1 - t / 400) a (97, 16) ; bulles
+    // BUBBLELENGTHS[t / 2 % 7] (29, 24, 20, 16, 11, 6, 0) a (63, 14)
+    const jauge = Math.max(0, Math.min(18, Math.floor((18 * (c.reserve ?? 0) + 19) / 20))), sj = sprite(ctx.kit, 'container/brewing_stand/fuel_length');
+    if (sj && jauge > 0) composer(o, redimensionner(decouper(sj, 0, 0, jauge, 4), Math.round(jauge * E), Math.round(4 * E), 'proche'), Math.round(60 * E), Math.round(44 * E));
+    if ((c.infusion ?? 0) > 0) {
+      const hf = Math.round(28 * (1 - c.infusion / (c.duree || 400))), sp = sprite(ctx.kit, 'container/brewing_stand/brew_progress'), sb = sprite(ctx.kit, 'container/brewing_stand/bubbles');
+      if (sp && hf > 0) composer(o, redimensionner(decouper(sp, 0, 0, 9, hf), Math.round(9 * E), Math.round(hf * E), 'proche'), Math.round(97 * E), Math.round(16 * E));
+      const hb = [29, 24, 20, 16, 11, 6, 0][Math.floor(c.infusion / 2) % 7];
+      if (sb && hb > 0) composer(o, redimensionner(decouper(sb, 0, 29 - hb, 12, hb), Math.round(12 * E), Math.round(hb * E), 'proche'), Math.round(63 * E), Math.round((14 + 29 - hb) * E));
+    }
+  } else if (v.type === 'enchantement') {
+    // le livre ouvert au-dessus des offres (EnchantmentScreen.extractBook, incrust/livre-enchant.js) : pose, s'ouvre de 0,2 par tick
+    const lv = etatLivre(Math.max(0, v.age ?? 0), v.graine ?? 0, (v.couts ?? []).some((c) => c > 0));
+    dessinerLivre(ctx.kit, o, E, 14, 14, lv.open, lv.flip);
+    icone(v.objet, 15, 47); icone('lapis_lazuli', 35, 47, 3);
+    for (let k = 0; k < 3; k++) {
+      const cout = v.couts?.[k] ?? 0, actif = cout > 0 && (v.niveaux ?? 0) >= cout;
+      const sp = sprite(ctx.kit, cout <= 0 ? 'container/enchanting_table/enchantment_slot_disabled' : k === v.choisi ? 'container/enchanting_table/enchantment_slot_highlighted' : actif ? 'container/enchanting_table/enchantment_slot' : 'container/enchanting_table/enchantment_slot_disabled');
+      if (sp) composer(o, redimensionner(sp, Math.round(108 * E), Math.round(19 * E), 'proche'), Math.round(60 * E), Math.round((14 + 19 * k) * E));
+      if (cout > 0) {
+        const lv = sprite(ctx.kit, `container/enchanting_table/level_${k + 1}${actif ? '' : '_disabled'}`);
+        if (lv) composer(o, redimensionner(lv, Math.round(16 * E), Math.round(16 * E), 'proche'), Math.round(61 * E), Math.round((15 + 19 * k) * E));
+        const ct = rendreTexte(ctx.police, segmentsDeTexte(String(cout), { couleur: actif ? [128, 255, 32] : [64, 127, 16] }), { S: Sg, alignement: 'gauche' });
+        composer(o, ct.img, Math.round((60 + 104) * E) - ct.img.w, Math.round((14 + 19 * k + 8) * E) - ct.origine.y);
+        if (ctx.policeAlt) {   // EnchantmentNames.getRandomName (graine de l'acteur, java.util.Random) : nextInt(2) + 3 mots, alphabet galactique, couleur 0x685E4A
+          const R = (genGalactique ??= new Aleatoire(v.graine ?? 0));
+          let mots = Array.from({ length: R.entierBorne(2) + 3 }, () => MOTS_GALACTIQUES[R.entierBorne(MOTS_GALACTIQUES.length)]).join(' ');
+          // EnchantmentScreen : largeur 86 - largeur du cout (6 par chiffre) ; getRandomName garde le debut qui tient (headByWidth, lettre par lettre)
+          const larg = 86 - 6 * String(cout).length, coul = { couleur: actif ? [104, 94, 74] : [52, 47, 37] };
+          let gl = rendreTexte(ctx.policeAlt, segmentsDeTexte(mots, coul), { S: Sg, ombre: false, alignement: 'gauche' });
+          while (mots.length > 1 && gl.larg > larg * E) { mots = mots.slice(0, -1); gl = rendreTexte(ctx.policeAlt, segmentsDeTexte(mots, coul), { S: Sg, ombre: false, alignement: 'gauche' }); }
+          composer(o, gl.img, Math.round((60 + 20) * E) - gl.origine.x, Math.round((14 + 19 * k + 2) * E) - gl.origine.y);   // a (x + 20, y + 2)
+        }
+      }
+    }
+  }
+  // inventaire du joueur (le sac) : les cases 0 a 8 sont la barre (y 142), les 27 suivantes les trois rangees (84 + 18 r) (Inventory du jeu)
+  (v.sac ?? []).forEach((c, k) => { if (!c) return; const [t, n] = c, x = 8 + (k % 9) * 18, y = k < 9 ? 142 : 84 + Math.floor((k - 9) / 9) * 18; if (k < 36) icone(t, x, y, n); });
+  // cases vides de l'alambic : icones fantomes (BrewingStandScreen : container/slot/potion, container/slot/brewing_fuel)
+  if (v.type === 'alambic') {
+    const c = v.contenu ?? {}, fant = (nom, x, y) => { const s = sprite(ctx.kit, 'container/slot/' + nom); if (s) composer(o, redimensionner(s, px, px, 'proche'), Math.round(x * E), Math.round(y * E)); };
+    [0, 1, 2].forEach((k) => { if (!(c.fioles ?? [])[k]) fant('potion', [56, 79, 102][k], [51, 58, 51][k]); });
+    if (!c.carburant) fant('brewing_fuel', 17, 17);
+  }
+  // bouton du livre de recettes (AbstractRecipeBookScreen : etabli (5, 34), inventaire (104, 61) ; Horizon game/recipe_book.rs book_button_pos)
+  if (v.type === 'etabli' || v.type === 'inventaire') {
+    const s = sprite(ctx.kit, 'recipe_book/button');
+    if (s) composer(o, redimensionner(s, Math.round(20 * E), Math.round(18 * E), 'proche'), Math.round((v.type === 'etabli' ? 5 : 104) * E), Math.round((v.type === 'etabli' ? 34 : 61) * E));
+  }
+  // titre (titleLabelX, titleLabelY : Horizon game/stations.rs title_pos ; alambic centre) et "Inventory" a (8, 72) (sauf l'inventaire seul)
+  const titre = rendreTexte(ctx.police, segmentsDeTexte(TITRES_POSTE[v.type] ?? '', { couleur: [64, 64, 64] }), { S: Sg, alignement: 'gauche' });
+  const TX = { etabli: 29, inventaire: 97, enclume: 60, forge: 44 }, TY = { forge: 15, tailleur: 5 };
+  const tx = v.type === 'alambic' ? Math.round((176 * E - titre.larg) / 2) : Math.round((TX[v.type] ?? 8) * E);
+  composer(o, titre.img, tx - titre.origine.x, Math.round((TY[v.type] ?? 6) * E) - titre.origine.y);
+  if (v.type !== 'inventaire') {
+    const inv = rendreTexte(ctx.police, segmentsDeTexte('Inventory', { couleur: [64, 64, 64] }), { S: Sg, alignement: 'gauche' });
+    composer(o, inv.img, Math.round(8 * E) - inv.origine.x, Math.round(72 * E) - inv.origine.y);
+  }
+  return { img: o, boite: { x: 0, y: 0, w: o.w, h: o.h } };
+}
+
 // HUD de jeu : barre d'objets, coeurs, faim, barre d'experience (+ niveau). Le viseur est dessine a part, au centre de l'image.
 function imageHud(ctx, el) {
   const E = eHud(ctx, el);
-  const w = Math.round(182 * E), h = Math.round(49 * E);
+  // relie a la simulation (champ joueur) : rangee de plus pour l'armure (au-dessus des coeurs), l'air (au-dessus de la faim) et l'absorption (Gui.renderPlayerHealth)
+  const plus = (el.armurePts > 0 || (el.air ?? 300) < 300 || el.absorption > 0 || (el.vieMax ?? 20) > 20) ? 10 : 0;
+  const w = Math.round(182 * E), h = Math.round((49 + plus) * E);
   const o = creerImage(w, h);
+  if (plus) {
+    const yp = 0, s9 = Math.max(1, Math.round(9 * E)), pas = Math.round(8 * E);
+    if (el.absorption > 0 || (el.vieMax ?? 20) > 20) {   // coeurs au-dela de 20 (Bonus de vie) puis coeurs d'or (absorption), rangee du dessus
+      const ab = imageCoeurs(ctx, { valeur: Math.max(0, el.coeurs - 20) + 0, max: Math.max(2, (el.vieMax ?? 20) - 20), taille: 9 * E / ctx.U, variante: el.variante }, false);
+      if ((el.vieMax ?? 20) > 20) composer(o, ab, 0, yp);
+      if (el.absorption > 0) composer(o, imageCoeurs(ctx, { valeur: el.absorption, max: Math.ceil(el.absorption / 2) * 2, taille: 9 * E / ctx.U, variante: 'absorption' }, false), (el.vieMax ?? 20) > 20 ? ab.w + pas : 0, yp);
+    } else if (el.armurePts > 0) {   // armure : 10 icones, pleine, moitie, vide
+      for (let i = 0; i < 10; i++) { const k = el.armurePts - i * 2, sp = sprite(ctx.kit, k >= 2 ? 'hud/armor_full' : k === 1 ? 'hud/armor_half' : 'hud/armor_empty'); if (sp) composer(o, redimensionner(sp, s9, s9, 'proche'), i * pas, yp); }
+    }
+    if ((el.air ?? 300) < 300) {   // air : ceil((air - 2) x 10 / 300) bulles pleines, la suivante qui eclate (Gui.renderAirBubbles), a droite
+      const plein = Math.ceil((Math.max(0, el.air) - 2) * 10 / 300), eclate = Math.ceil(Math.max(0, el.air) * 10 / 300) - plein;
+      for (let i = 0; i < plein + eclate && i < 10; i++) { const sp = sprite(ctx.kit, i < plein ? 'hud/air' : 'hud/air_bursting'); if (sp) composer(o, redimensionner(sp, s9, s9, 'proche'), w - s9 - i * pas, yp); }
+    }
+  }
   const hotbar = imageInventaire(ctx, { cases: Array.from({ length: 9 }, (_, k) => el.cases?.[k] ?? null), colonnes: 9, selection: el.selection }, E).img;
   composer(o, hotbar, 0, h - hotbar.h);
   const fond = sprite(ctx.kit, 'hud/experience_bar_background'), prog = sprite(ctx.kit, 'hud/experience_bar_progress');
-  const yx = Math.round((49 - 22 - 7) * E);
+  const yx = Math.round((49 + plus - 22 - 7) * E);
   if (fond) composer(o, redimensionner(fond, w, Math.round(5 * E), 'proche'), 0, yx);
   if (prog && el.xp > 0) { const pw = Math.max(1, Math.round(182 * el.xp)); composer(o, redimensionner(decouper(prog, 0, 0, pw, 5), Math.round(pw * E), Math.round(5 * E), 'proche'), 0, yx); }
-  const yc = Math.round((49 - 22 - 7 - 10) * E);
-  composer(o, imageCoeurs(ctx, { valeur: el.coeurs, max: 20, taille: 9 * E / ctx.U }, false), 0, yc);
-  const f = imageCoeurs(ctx, { valeur: el.faim, max: 20, taille: 9 * E / ctx.U }, true);
+  const yc = Math.round((49 + plus - 22 - 7 - 10) * E);
+  composer(o, imageCoeurs(ctx, { valeur: Math.min(20, el.coeurs), max: 20, taille: 9 * E / ctx.U, variante: el.variante }, false), 0, yc);
+  const f = imageCoeurs(ctx, { valeur: el.faim, max: 20, taille: 9 * E / ctx.U, variante: el.varianteFaim }, true);
   composer(o, f, w - f.w, yc);
   if (el.niveau !== null && el.niveau > 0) {
     const t = rendreTexte(ctx.police, segmentsDeTexte(String(el.niveau), { couleur: [128, 255, 32] }), { S: E, ombre: false, contour: { couleur: [0, 0, 0, 255], ep: E }, alignement: 'centre' });
-    composer(o, t.img, Math.round((w - t.larg) / 2) - t.origine.x, Math.round((49 - 22 - 7 - 7) * E) - t.origine.y - 0);
+    composer(o, t.img, Math.round((w - t.larg) / 2) - t.origine.x, Math.round((49 + plus - 22 - 7 - 7) * E) - t.origine.y - 0);
   }
   return { img: o, boite: { x: 0, y: 0, w, h } };
 }
@@ -875,7 +997,24 @@ function classer(el, anc) {
 
 // Prepare un element a l'instant ctx.t : retourne null (rien a dessiner) ou { el, prio, fixe, box, force, maxDep, peindre(dx, dy) }.
 // Les fleches et les lignes n'ont pas de boite : elles se dessinent par-dessus sans gener la disposition.
-export function preparerElement(film, ctx, el) {
+export function preparerElement(film, ctx, el0) {
+  let el = el0;
+  // HUD relie a un joueur simule (champ joueur) : vie, faim, experience, armure, air, objet tenu lus dans le replay a l'instant du monde (moteur/inventaire.js)
+  if (el0.type === 'hud' && el0.joueur && ctx.scene?._etatJoueur) {
+    const v = ctx.scene._etatJoueur(el0.joueur, ctx.im?.tm ?? ctx.t);
+    if (v) {
+      el = Object.assign(Object.create(Object.getPrototypeOf(el0)), el0, { coeurs: Math.ceil(v.vie - 1e-9), vieMax: v.vieMax, faim: v.faim, xp: v.progres, niveau: v.niveau, armurePts: v.armure, air: v.air, absorption: Math.ceil(v.absorption - 1e-9), variante: v.poison === 2 ? 'wither' : v.poison === 1 ? 'poison' : undefined, varianteFaim: v.faimEffet ? 'faim' : undefined, cases: [v.objet ? { objet: idRendu(v.objet), reflet: aReflet(v.objet, ctx.scene?._refletsForces), ...(v.nombre > 1 ? { nombre: v.nombre } : {}), ...(v.barre >= 0 && v.barre < 1 ? { barre: v.barre } : {}) } : null, ...(v.cases ? Array.from({ length: 8 }, (_, i) => (v.cases[i] ? { objet: idRendu(v.cases[i][0]), reflet: aReflet(v.cases[i][0], ctx.scene?._refletsForces), ...(v.cases[i][1] > 1 ? { nombre: v.cases[i][1] } : {}) } : null)) : (el0.cases ?? []).slice(1))] });
+      el._cle = JSON.stringify([el.coeurs, el.vieMax, el.faim, el.xp, el.niveau, el.armurePts, el.air, el.absorption, el.variante, el.varianteFaim, v.objet, v.cases, (aReflet(v.objet, ctx.scene?._refletsForces) || (v.cases ?? []).some((q) => aReflet(q[0], ctx.scene?._refletsForces))) ? Math.round(ctx.t * 30) : 0]);   // un objet enchante : le reflet bouge a chaque image
+      el._cache = el0._cacheJ; el.t = el0.t;
+    }
+  }
+  // ecran du poste ouvert par un acteur simule : rien tant qu'il n'en a pas d'ouvert
+  if (el0.type === 'poste') {
+    const v = ctx.scene?._ecranJoueur?.(el0.joueur, ctx.im?.tm ?? ctx.t);
+    if (!v) return null;
+    el = Object.assign(Object.create(Object.getPrototypeOf(el0)), el0, { poste: v });
+    el._cle = `${v.type}|${v.debut}|${Math.round(ctx.t * 30)}`; el._cache = el0._cacheJ;   // refait a chaque image (reflet des objets enchantes, alambic)
+  }
   if (el._cache && ctx.t >= el.t[1]) el._cache = undefined;   // fini : on libere l'image (180 s de legendes ne doivent pas rester en memoire)
   const anim = etatAnimation(el, ctx.t, ctx);
   if (!anim || anim.a <= 0.002) return null;
@@ -887,9 +1026,9 @@ export function preparerElement(film, ctx, el) {
   // machine et vague refont l'image a chaque pas de l'entree seulement
   const dyn = el.type === 'compteur' || el.type === 'horloge' || el.type === 'minuteur' || el.type === 'chat';
   const lettres = anim.n !== null || anim.vague !== null;
-  const cle = `${ctx.W}x${ctx.H}|${ctx.zone.w}` + (dyn ? `|${Math.round(ctx.t * 30)}` : '') + (lettres ? `|m${Math.round((anim.n ?? anim.vague) * 60)}` : '');
+  const cle = `${ctx.W}x${ctx.H}|${ctx.zone.w}` + (dyn ? `|${Math.round(ctx.t * 30)}` : '') + (lettres ? `|m${Math.round((anim.n ?? anim.vague) * 60)}` : '') + (el._cle ? '|' + el._cle : '');
   let spr = el._cache && el._cache.cle === cle ? el._cache.spr : undefined;
-  if (spr === undefined) { ctx.anim = anim; spr = construire(el, ctx); ctx.anim = null; el._cache = { cle, spr }; }
+  if (spr === undefined) { ctx.anim = anim; spr = construire(el, ctx); ctx.anim = null; el._cache = { cle, spr }; if (el !== el0) el0._cacheJ = el._cache; }
   if (!spr) return null;
   const pose = preparerPose(film, ctx, el, spr, anc, anim);
   if (!pose) return null;

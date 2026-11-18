@@ -88,20 +88,20 @@ export function estCoupure(a, b) {
 export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {}, baseDir = process.cwd(), env = process.env, packShader, echelle = 1, options = {}, travailleurs = 0, log = () => {}, chauffe }) {
   const kit = Object.keys(scene.textures ?? {}).length ? appliquerTextures(kitDir, scene.textures, baseDir, { env }) : kitDir;
   // scene avec un champ `monde` : simulation avant le premier rendu ; les sections de terrain refaites sont envoyees a l'hote entre les images
-  const sim = scene.monde ? await simulerScene({ scene, zonePath, baseDir, env }) : null;
+  const sim = scene.monde ? await simulerScene({ scene, zonePath, baseDir, env, kitDir }) : null;
   const rs = await chargerScene({ zonePath, zone: sim?.zone, kitDir: kit, travailleurs, options: { exportGPU: true, ...(sim ? { monde: { donnees: sim.donnees, replay: sim.replay, lumiere: scene.monde.lumiere } } : {}) } });
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mcanim-pack-'));
   let hote = null;
   try {
     const rapport = exporterZone(rs, path.join(tmp, 'maillage'));
-    const creatures = scene.acteurs.some((a) => a.creature) ? await (await import('../creatures/donnees.js')).donneesCreatures({ env }) : null;
+    const creatures = scene.acteurs.some((a) => a.creature) || scene.monde ? await (await import('../creatures/donnees.js')).donneesCreatures({ env }) : null;   // monde : aussi le modele de la charge de vent
     const { personnages, parRef, infos } = await preparerPersonnages(scene, { kitDir: kit, surcharges, baseDir, creatures });
     // scene avec monde : terrain vivant (portes, murs poses...) et acteurs a `actes` lus dans le replay, comme dans le rendu de base ; les effets visibles
     // (couvercles de coffre, cloche, fissures, particules, objets au sol, blocs qui tombent, TNT : film/effets-monde.js) sont envoyes a l'hote comme des
     // geometries dynamiques (programme choisi selon leur genre, voir GENRES)
     const terrain = sim ? (await import('../film/terrain-vivant.js')).creerTerrainVivant({ rs, replay: sim.replay, donnees: sim.donnees }) : terrainDepuis(rs);
-    const anim = animer(scene, terrain, sim ? { replay: sim.replay } : null, creatures ? { creatures } : {});
-    const effets = sim ? (await import('../film/effets-monde.js')).creerEffetsMonde({ rs, scene, sim, kit, donnees: sim.donnees, terrain }) : null;
+    const anim = animer(scene, terrain, sim ? { replay: sim.replay } : null, { ...(creatures ? { creatures } : {}), personnages });   // personnages : le pantin pose le vrai maillage sur le sol
+    const effets = sim ? (await import('../film/effets-monde.js')).creerEffetsMonde({ rs, scene, sim, kit, donnees: sim.donnees, terrain, creatures }) : null;
     const W = scene.largeur, H = scene.hauteur;
     const rw = Math.max(16, Math.round(W * echelle)), rh = Math.max(16, Math.round(H * echelle));
     hote = await Hote.demarrer();
@@ -219,12 +219,12 @@ export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {
             if (m.masque) { spec.masque = await idMasque(m.masque); spec.kM = Math.max(0, Math.min(1, m.forceMasque ?? 1)); }
             if (m.exempt) spec.exempt = true;
             if (p.absent) continue;                                    // mort depuis plus d'une seconde : plus dessine
-            if (p.teinte) spec.couleurEntite = [1, 0, 0, 0.3];         // rougeur des degats : l'entityColor du jeu (hurt)
+            if (p.rouge) spec.couleurEntite = [1, 0, 0, 0.3];         // rougeur des degats : l'entityColor du jeu (hurt)
             if (m.genre === 'creature') {                              // creature : entityId du pack (entity.properties), teinte de la couche (laine, collier), yeux emissifs
               spec.entiteNom = m.entite; spec.col = b64(m.couleurs);
               if (m.emissif) { spec.additif = !m.lueur; spec.bloc = 15; }   // yeux et auras : ajoutes ; lueur translucide (entityTranslucentEmissive) : melange du pack, pleine lumiere
               if (m.yeux) spec.programme = 'yeux';                     // RenderType.eyes : gbuffers_spidereyes (repli textured, basic), melange du pack
-              if (m.blanc > 0 && !p.teinte) spec.couleurEntite = [1, 1, 1, Math.min(1, m.blanc)];   // eclair blanc du creeper qui gonfle (overlay blanc)
+              if (m.blanc > 0 && !p.rouge) spec.couleurEntite = [1, 1, 1, Math.min(1, m.blanc)];   // eclair blanc du creeper qui gonfle (overlay blanc)
             }
             e.acteurs.push(spec);
           }

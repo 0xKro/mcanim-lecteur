@@ -39,7 +39,7 @@ function dansChamp(cam, aspect, p) {
 //   pos[i] : position de la camera ; yeux(i, nom) : point des yeux de l'acteur ; solide(x,y,z) ; bloc(x,y,z) : etat du bloc (pour le nom, facultatif).
 //   noms : acteurs a controler. Sans nom (`ecran` : { cam(i), aspect, tous }) : les acteurs qui sont dans le champ ; cache = tous ceux du champ le sont.
 // Retourne [{ nom, part (0..1 des images du plan), bloc (nom du bloc qui cache le plus souvent) }], le plus cache d'abord.
-export function masquageSujets({ pos, yeux, i0, i1, noms, solide, bloc = null, ecran = null }) {
+export function masquageSujets({ pos, yeux, i0, i1, noms, solide, bloc = null, ecran = null, instant = null }) {   // instant(i) : le monde de l'image i
   const n = i1 - i0;
   if (n <= 0 || !solide) return [];
   const test = (i, nom) => {
@@ -54,6 +54,7 @@ export function masquageSujets({ pos, yeux, i0, i1, noms, solide, bloc = null, e
   for (const { nom, tous } of listes) {
     let caches = 0, vus = 0; const blocs = new Map();
     for (let i = i0; i < i1; i++) {
+      if (instant) instant(i);
       let controles = tous;
       if (ecran) controles = tous.filter((x) => dansChamp(ecran.cam(i), ecran.aspect, yeux(i, x)));
       if (!controles.length) continue;

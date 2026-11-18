@@ -281,7 +281,10 @@ function nager(P, pos, h) { // HumanoidModel.setupSwimAnimation
 }
 function humanoide(P, s, h) { // HumanoidModel.setupAnim (+ ZombieModel)
   tete(P, s);
-  const { pos, speed: sp } = s;
+  // vol plane aux elytres (s.vol : creature qui plane, film/anim.js) : tete a -pi/4, balancement divise par max(1, (|v|^2 / 0,2)^3)
+  let k = 1;
+  if (s.vol) { P.xrot('head', -PI / 4); const v = s.vol.vitesse; k = Math.max(1, Math.pow(Math.fround((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) / 0.2), 3)); }
+  const { pos } = s, sp = s.speed / k;
   P.xrot('right_arm', cos(pos * 0.6662 + PI) * 2 * sp * 0.5);
   P.xrot('left_arm', cos(pos * 0.6662) * 2 * sp * 0.5);
   P.xrot('right_leg', cos(pos * 0.6662) * 1.4 * sp);

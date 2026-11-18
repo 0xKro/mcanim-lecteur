@@ -248,7 +248,7 @@ export function appliquerCreatures(scene, parImage, { DT = 1 / 30, terrain = {},
       for (const e of evts) if (e.j <= tt && !['attaque', 'non', 'blesse', 'broute'].includes(e.nom)) der = e;
       if (der && der.nom && der.nom !== 'stop') etat.nommees = [{ nom: der.nom, ms: (tt - der.j) * 50 }];
       // degats : rougeur 10 ticks
-      if (tt - blesse >= 0 && tt - blesse < 10) p.teinte = [1, 0.6, 0.6];
+      if (tt - blesse >= 0 && tt - blesse < 10) p.rouge = true;   // surcouche rouge du jeu (OverlayTexture, hasRedOverlay) : voir creatures/rendu.js
       // creeper qui gonfle (CreeperRenderer.scale, getWhiteOverlayProgress) ; slime, magma : taille et ecrasement (anim.js echelleRendu)
       const g = c.gonfle ? evaluer({ arite: 1, cles: c.gonfle.map((x) => ({ t: x.t, v: [x.v] })) }, i * DT)[0] : (sn.m?.gonfle ?? 0);
       if (g > 0 || type === 'slime' || type === 'magma_cube') etat.echelleType = echelleRendu(type, { ...sn.m, gonfle: g }, al);
@@ -353,6 +353,7 @@ function etatEspece(type, m, e) {
   if (d & 32) m.mainD = 'potion';                        // sorciere qui boit (WitchModel : le nez s'ecarte, la potion en main)
   if (type === 'enderman') m.cri = !!(d & 64);            // DATA_CREEPY : bouche ouverte
   if (type === 'vex') m.charge = !!(d & 128);
+  if (type === 'pillager') { m.charge = !!(d & 4); m.dureeCharge = 25; }   // arbalete qui se charge (Pillager.getArmPose : CROSSBOW_CHARGE ; 25 ticks)
   if (type === 'bee') m.dard = !(d & 256);
   if (d & 1024) m.mecontent = 40;                         // villageois qui secoue la tete (setUnhappy)
   if (type === 'parrot') m.assis = !!(d & 4096);          // sur l'epaule : pose assise du perroquet
@@ -387,6 +388,7 @@ function etatPlus(type, m, e, j, lacetCorps, apres) {
     if (x[4] === j) demarrer('warden', m, 'attack');
     if (x[5] === j) demarrer('warden', m, 'sonic_boom');
   }
+  if (type === 'breeze' && x) m.posture = ['idle', 'shooting', 'inhaling', 'long_jumping', 'sliding'][x[0]] ?? 'idle';   // pose du cerveau (moteur/ia-breeze.js)
   if ((type === 'squid' || type === 'glow_squid') && x) { const v = m.anim.v; v[0] = x[0]; v[1] = x[1]; v[2] = x[2]; v[3] = x[3]; }
   if (type === 'guardian' || type === 'elder_guardian') m.bouge = !!(d & (1 << 21));
   if (type === 'axolotl') { m.mortFeinte = !!(d & (1 << 22)); m.bouge = !!(d & (1 << 21)); }

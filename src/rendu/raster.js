@@ -62,6 +62,13 @@ export class Rasteriseur {
     const f = (H / 2) / Math.tan((cam.fov * Math.PI) / 360);
     const pitch = (cam.tangage * Math.PI) / 180;
     const B = this.base(cam);
+    if (v.boiteEnd) {   // ciel de l'End (ciel-vanille.js cielEnd) : cube texture, puis l'eclair (astre additif) ; la brume prend la couleur de l'End
+      if (this.skyH !== H) { this.skyR = new Float32Array(H); this.skyG = new Float32Array(H); this.skyB = new Float32Array(H); this.skyH = H; }
+      for (let y = 0; y < H; y++) { this.skyR[y] = v.fog[0]; this.skyG[y] = v.fog[1]; this.skyB[y] = v.fog[2]; }
+      this._cielEnd(pixels, W, H, f, B, rangeeDe, nW, v.boiteEnd);
+      for (const a of v.astres) this._corps(pixels, W, H, f, B, rangeeDe, nW, a);
+      return;
+    }
     if (this.skyH !== H) { this.skyR = new Float32Array(H); this.skyG = new Float32Array(H); this.skyB = new Float32Array(H); this.skyH = H; }
     const sky = v.sky, fog = v.fog, bas = v.bas || fog, fin = v.fin;
     const fan = v.sunrise && v.sunrise.a > 0.001 ? v.sunrise : null;
@@ -89,6 +96,35 @@ export class Rasteriseur {
     }
     if (v.etoiles) this._etoiles(pixels, W, H, f, B, rangeeDe, nW, v.etoiles);
     for (const a of v.astres) this._corps(pixels, W, H, f, B, rangeeDe, nW, a);
+  }
+
+  // SkyRenderer.buildEndSky : 6 faces a 100 blocs (bas, puis tournees de +-90 degres autour de X, 180, +-90 autour de Z), texture repetee 16 fois
+  // par face (carreaux de 12,5 blocs), teinte 0x282828. Chaque pixel : la face que le rayon touche, ramenee sur la face du bas (transposee).
+  _cielEnd(pixels, W, H, f, B, rangeeDe, nW, be) {
+    if (!this._facesEnd) {
+      const rx = (t) => { const c = Math.round(Math.cos(t)), s = Math.round(Math.sin(t)); return [[1, 0, 0], [0, c, -s], [0, s, c]]; };
+      const rz = (t) => { const c = Math.round(Math.cos(t)), s = Math.round(Math.sin(t)); return [[c, -s, 0], [s, c, 0], [0, 0, 1]]; };
+      this._facesEnd = [[[1, 0, 0], [0, 1, 0], [0, 0, 1]], rx(Math.PI / 2), rx(-Math.PI / 2), rx(Math.PI), rz(Math.PI / 2), rz(-Math.PI / 2)];
+    }
+    const tex = be.tex, k = be.teinte, F = this._facesEnd;
+    for (let y = 0; y < H; y++) {
+      if (((y >> 4) % nW) !== rangeeDe) continue;
+      const b = (H / 2 - (y + 0.5)) / f;
+      for (let x = 0; x < W; x++) {
+        const a = (x + 0.5 - W / 2) / f;
+        let dx = B.fx + a * B.rx + b * B.ux, dy = B.fy + b * B.uy, dz = B.fz + a * B.rz + b * B.uz;
+        const m = 100 / Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz));
+        dx *= m; dy *= m; dz *= m;
+        let lx = 0, lz = 0;
+        for (const M of F) {   // p0 = M^T p : sur la face du bas, y0 = -100
+          const y0 = M[0][1] * dx + M[1][1] * dy + M[2][1] * dz;
+          if (Math.abs(y0 + 100) < 1e-6 * 100 + 1e-6) { lx = M[0][0] * dx + M[1][0] * dy + M[2][0] * dz; lz = M[0][2] * dx + M[1][2] * dy + M[2][2] * dz; break; }
+        }
+        const u = (((lx + 100) / 12.5) % 1 + 1) % 1, w = (((lz + 100) / 12.5) % 1 + 1) % 1;
+        const o = (Math.min(tex.h - 1, Math.floor(w * tex.h)) * tex.w + Math.min(tex.w - 1, Math.floor(u * tex.w))) * 4;
+        pixels[y * W + x] = (0xff000000 | ((tex.rgba[o + 2] * k) << 16) | ((tex.rgba[o + 1] * k) << 8) | (tex.rgba[o] * k)) >>> 0;
+      }
+    }
   }
 
   // Poids (0..1) de l'eventail de lueur (SkyRenderer.renderSunriseAndSunset) sur le rayon (dx, dy, dz), dy > 0 : une rangee de 16 triangles
@@ -167,7 +203,7 @@ export class Rasteriseur {
     let cxs = 0, cys = 0;
     if (halo && zc > 0.02) { cxs = W / 2 + (dxh * f) / zc; cys = H / 2 - (dyh * f) / zc; const R = Rh; x0 = Math.min(x0, Math.max(0, Math.floor(cxs - R))); x1 = Math.max(x1, Math.min(W - 1, Math.ceil(cxs + R))); y0 = Math.min(y0, Math.max(0, Math.floor(cys - R))); y1 = Math.max(y1, Math.min(H - 1, Math.ceil(cys + R))); }
     const [mr, mg, mb] = a.mult, tex = a.tex, lune = a.lune, iR2 = halo ? 1 / (Rh * Rh) : 0;
-    const Rr = a.rayonRond, hOn = halo && zc > 0.02;
+    const Rr = a.rayonRond, hOn = halo && zc > 0.02, alphaA = a.alpha ?? 1;
     for (let y = y0; y <= y1; y++) {
       if (((y >> 4) % nW) !== rangeeDe) continue;
       const b = (H / 2 - (y + 0.5)) / f;
@@ -194,6 +230,7 @@ export class Rasteriseur {
           const ddx = x + 0.5 - cxs, ddy = y + 0.5 - cys, u2 = (ddx * ddx + ddy * ddy) * iR2;
           if (u2 < 1) { const w = 1 - u2, k = a.halo * w * w * w * 0.7; ar += a.couleur[0] * k; ag += a.couleur[1] * k; ab += a.couleur[2] * k; }
         }
+        if (alphaA !== 1) { ar *= alphaA; ag *= alphaA; ab *= alphaA; }   // SkyRenderer : astres dessines avec l'alpha 1 - pluie (melange additif SRC_ALPHA, ONE)
         if (ar <= 0 && ag <= 0 && ab <= 0) continue;
         const o = y * W + x, q = pixels[o];
         const r = Math.min(255, (q & 255) + ar), g = Math.min(255, ((q >> 8) & 255) + ag), bl = Math.min(255, ((q >> 16) & 255) + ab);
@@ -335,6 +372,9 @@ export class Rasteriseur {
     this.mode = mode; this.c = c; this.tex = tex; this.nuageTri = d.nuage === true; this.addF = d.additif === true;
     // masque de couleur selective (maillages dynamiques seulement) : voir rendu/LISEZMOI.md
     this.msk = d.masque ?? null; this.kM = d.kM ?? 256; this.kE = d.kE ?? 0; this.exFlag = d.exempt ? 255 : 0;
+    // surcouche du jeu (OverlayTexture : rouge des degats, eclair blanc du creeper) : couleur constante AJOUTEE apres texture x couleur de sommet
+    // (entity.fsh : mix(overlay.rgb, couleur, overlay.a) x lumiere ; le maillage a deja multiplie ses couleurs par overlay.a)
+    this.ajR = d.ajout ? d.ajout[0] * 255 : 0; this.ajG = d.ajout ? d.ajout[1] * 255 : 0; this.ajB = d.ajout ? d.ajout[2] * 255 : 0; this.aj = !!d.ajout;
     // options du shader (voir src/shader) : ombres cuites, AO reglable, balancement, surface d'eau. Toutes nulles sans shader.
     const P = c.params, sv = d.partage ? null : P.sv || null, ven = P.ven || null;
     // lumiere du jeu par sommet (scenes avec monde) : niveaux (ciel, bloc) 0..255 -> couleur de la table de lumiere, interpolee entre les cases
@@ -545,6 +585,7 @@ export class Rasteriseur {
     const mode = this.mode;
     const params = cx.params;
     const fb = cx.fb ?? null, msk = this.msk, kM = this.kM, kE = this.kE, exFlag = this.exFlag;
+    const AJ = this.aj, ajR = this.ajR * LR, ajG = this.ajG * LG, ajB = this.ajB * LB;   // la surcouche est eclairee comme le reste (entity.fsh : x lumiere)
     const nuT = this.nuageTri === true && params.nuageFin !== undefined;   // maillage des nuages : sa propre brume
     const fogDeb = nuT ? params.nuageDebut : params.brumeDebut, ifog = 1 / Math.max(1e-6, (nuT ? params.nuageFin : params.brumeFin) - fogDeb);
     let fogR = params.brume[0], fogG = params.brume[1], fogB = params.brume[2];
@@ -661,6 +702,7 @@ export class Rasteriseur {
             const al = t >>> 24;
             if (al < 4) continue;
             let sr = ((t & 255) * r) >> 8, sg = (((t >> 8) & 255) * g) >> 8, sb = (((t >> 16) & 255) * bl) >> 8;
+            if (AJ) { sr += ajR; sg += ajG; sb += ajB; if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255; }
             if (sat) { if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255; }
             if (w > fogMin) {
               let ff = 0;
@@ -697,6 +739,7 @@ export class Rasteriseur {
               }
             }
             let sr = ((t & 255) * rr) >> 8, sg = (((t >> 8) & 255) * gg) >> 8, sb = (((t >> 16) & 255) * bb) >> 8;
+            if (AJ) { sr += ajR; sg += ajG; sb += ajB; if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255; }
             if (sat) { if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255; }
             if (w > fogMin) {
               let ff = 0;
@@ -731,6 +774,7 @@ export class Rasteriseur {
               }
             }
             let sr = ((t & 255) * rr) >> 8, sg = (((t >> 8) & 255) * gg) >> 8, sb = (((t >> 16) & 255) * bb) >> 8;
+            if (AJ) { sr += ajR; sg += ajG; sb += ajB; if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255; }
             if (sat) { if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255; }
             if (w > fogMin) {
               let ff = 0;

@@ -44,10 +44,12 @@ export function lireCreature(a, o, ch, err, { duree, noms, typesActeurs }) {
   }
   if (a.etiquette !== undefined) { if (typeof a.etiquette !== 'string' || a.etiquette.length > 40) err(`${ch}.etiquette`, 'texte de 40 caracteres au plus attendu (nom affiche au-dessus de la tete)'); o.etiquette = a.etiquette; }
   if (type === null) {
-    for (const k of ['variante', 'bebe', 'taille', 'charge', 'selle', 'armureCheval', 'colle', 'coffre', 'tondu', 'gonfle', 'anim', 'parties', 'agressif', 'porte', 'contenu', 'echange', 'sautille', 'ia', 'comportement', 'garde', 'maison', 'travail', 'lit', 'rassemblement', 'epaule', 'ami', 'laisse', 'apprivoise', 'ruche', 'nourriture', 'age', 'centre', 'perchoir', 'emerge', 'genes', 'confiance', 'aOeuf', 'enceinte']) if (a[k] !== undefined) err(`${ch}.${k}`, 'champ des creatures : il faut aussi "type" (par exemple "type": "zombie")');
+    for (const k of ['mod', 'variante', 'bebe', 'taille', 'charge', 'selle', 'armureCheval', 'colle', 'coffre', 'tondu', 'gonfle', 'anim', 'parties', 'agressif', 'porte', 'contenu', 'echange', 'sautille', 'ia', 'comportement', 'garde', 'maison', 'travail', 'lit', 'rassemblement', 'epaule', 'ami', 'laisse', 'apprivoise', 'ruche', 'nourriture', 'age', 'centre', 'perchoir', 'emerge', 'genes', 'confiance', 'aOeuf', 'enceinte', 'xp']) if (a[k] !== undefined) err(`${ch}.${k}`, 'champ des creatures : il faut aussi "type" (par exemple "type": "zombie")');
     return;
   }
   const c = { type };
+  // entite definie par un mod de la scene (mc.definirEntite('ville:zombie_geant', { copieDe: '<type>', ... }), moteur/perso.js) : controlee a la simulation
+  if (a.mod !== undefined) { if (typeof a.mod !== 'string' || !/^[a-z0-9_.-]+:[a-z0-9_./-]+$/.test(a.mod) || a.mod.startsWith('minecraft:')) err(`${ch}.mod`, 'identifiant d\'une entite definie par un mod de la scene attendu (mc.definirEntite, ex. \"ville:zombie_geant\")'); o.mod = a.mod; }
   if (a.variante !== undefined) {
     if (typeof a.variante !== 'string') err(`${ch}.variante`, 'texte attendu, par exemple "farmer desert 3"');
     const v = lireVariante(type, a.variante);
@@ -59,7 +61,7 @@ export function lireCreature(a, o, ch, err, { duree, noms, typesActeurs }) {
   if (a.taille !== undefined) { if (!['slime', 'magma_cube'].includes(type) || !Number.isInteger(a.taille) || a.taille < 1 || a.taille > 8) err(`${ch}.taille`, 'entier de 1 a 8 (slime et magma_cube seulement ; le jeu : 1, 2, 4)'); c.taille = a.taille; }
   if (a.charge && !['creeper', 'wither'].includes(type)) err(`${ch}.charge`, 'creeper (ou wither) seulement');
   if (a.selle && !['horse', 'donkey', 'mule', 'skeleton_horse', 'zombie_horse', 'camel', 'pig', 'strider'].includes(type)) err(`${ch}.selle`, 'cheval, ane, mule, chameau, cochon ou arpenteur seulement');
-  if (a.armureCheval !== undefined && a.armureCheval !== null) { if (!['horse', 'zombie_horse', 'skeleton_horse'].includes(type) || !ARMURES_CHEVAL.includes(a.armureCheval)) err(`${ch}.armureCheval`, `cheval seulement, materiau parmi ${ARMURES_CHEVAL.join(', ')}`); c.armureCheval = a.armureCheval; }
+  if (a.armureCheval !== undefined && a.armureCheval !== null) { if (!['horse', 'zombie_horse', 'skeleton_horse'].includes(type) || !ARMURES_CHEVAL.includes(String(a.armureCheval).replace(/#.*$/, '')) || (/#/.test(a.armureCheval) && !/^leather#([0-9a-fA-F]{6}|white|orange|magenta|light_blue|yellow|lime|pink|gray|light_gray|cyan|purple|blue|brown|green|red|black)$/.test(a.armureCheval))) err(`${ch}.armureCheval`, `cheval seulement, materiau parmi ${ARMURES_CHEVAL.join(', ')} ; cuir teint : leather#RRGGBB ou leather#teinture`); c.armureCheval = a.armureCheval; }
   if (a.colle !== undefined && a.colle !== null) { if (!['wolf', 'cat'].includes(type) || !TEINTURES.includes(a.colle)) err(`${ch}.colle`, `loup ou chat seulement, couleur parmi ${TEINTURES.join(', ')} (le collier rend l'animal apprivoise)`); c.colle = a.colle; }
   if (a.coffre && !['donkey', 'mule', 'llama', 'trader_llama'].includes(type)) err(`${ch}.coffre`, 'ane, mule ou lama seulement');
   if (a.tondu && !['sheep', 'bogged', 'snow_golem'].includes(type)) err(`${ch}.tondu`, 'mouton (ou bogged, golem de neige) seulement');
@@ -107,12 +109,15 @@ export function lireCreature(a, o, ch, err, { duree, noms, typesActeurs }) {
     if (type !== 'villager' || !estObjet(a.nourriture) || Object.entries(a.nourriture).some(([k, v]) => !['bread', 'potato', 'carrot', 'beetroot', 'wheat', 'wheat_seeds', 'beetroot_seeds'].includes(k) || !Number.isInteger(v) || v < 1 || v > 64)) err(`${ch}.nourriture`, 'villageois seulement : { "bread": 3 } (bread 4 points, potato, carrot, beetroot 1 ; 12 points pour un bebe)');
     c.nourriture = a.nourriture;
   }
+  // experience de metier d'un villageois (Villager.xp ; chaque echange en donne) : un novice a 0 qui perd son poste perd son metier (ResetProfession)
+  if (a.xp !== undefined && a.xp !== null) { avecIa('xp'); if (type !== 'villager' || !Number.isInteger(a.xp) || a.xp < 0) err(`${ch}.xp`, 'villageois seulement : experience de metier (entier, 0 ou plus ; le jeu : 0 pour un novice qui n a jamais echange)'); c.xp = a.xp; }
   // age d'un bebe en ticks (AgeableMob : -24000 a la naissance, adulte a 0 ; x croissance.vitesse)
   if (a.age !== undefined && a.age !== null) { avecIa('age'); if (!a.bebe || !Number.isInteger(a.age) || a.age < -48000 || a.age > -1) err(`${ch}.age`, 'bebe seulement : ticks avant l age adulte, entier negatif (le jeu : -24000 a la naissance)'); c.age = a.age; }
   // dernieres creatures (moteur/ia-boss.js, ia-warden.js, ia-oeufs.js) : centre et perchoir du dragon, warden qui sort de terre, genes du panda,
   // ocelot confiant, tortue qui porte un oeuf, grenouille enceinte
   if (a.centre !== undefined && a.centre !== null) { avecIa('centre'); if (type !== 'ender_dragon' || !Array.isArray(a.centre) || a.centre.length !== 2 || !a.centre.every(estNombre)) err(`${ch}.centre`, 'dragon seulement : [x, z] du centre de ses cercles (defaut : monde.fontaine, sinon son depart)'); c.centre = a.centre; }
   if (a.perchoir !== undefined && a.perchoir !== null) { avecIa('perchoir'); if (type !== 'ender_dragon' || !Array.isArray(a.perchoir) || a.perchoir.length !== 3 || !a.perchoir.every(Number.isInteger)) err(`${ch}.perchoir`, 'dragon seulement : cellule [x, y, z] ou il se pose (defaut : le sol sous le centre)'); c.perchoir = a.perchoir; }
+  if (a.plane !== undefined) { avecIa('plane'); if (typeof a.plane !== 'boolean') err(`${ch}.plane`, 'true = la creature apparait en vol plane (drapeau FallFlying du jeu) : il lui faut des elytres ("armure": {"torse": "elytra"}) et d etre en l air'); c.plane = a.plane; }
   if (a.emerge !== undefined) { avecIa('emerge'); if (type !== 'warden' || typeof a.emerge !== 'boolean') err(`${ch}.emerge`, 'warden seulement : true = il sort de terre (134 ticks)'); c.emerge = a.emerge; }
   const GENES = ['normal', 'lazy', 'worried', 'playful', 'brown', 'weak', 'aggressive'];
   if (a.genes !== undefined && a.genes !== null) { avecIa('genes'); if (type !== 'panda' || !Array.isArray(a.genes) || a.genes.length !== 2 || !a.genes.every((g) => GENES.includes(g))) err(`${ch}.genes`, `panda seulement : [gene principal, gene cache] parmi ${GENES.join(', ')} (brown et weak : recessifs)`); c.genes = a.genes; }
@@ -139,6 +144,8 @@ export function evenementsDeScene(scene) {
   // sons du monde a la demande (meme mecanisme : evenements de sounds.json, .ogg par l index des fichiers du jeu ou le miroir) :
   // ambiance (sons.ambiance) et sons nommes dans sons.liste qui ne sont pas dans le kit de base
   if (scene.sons?.ambiance) for (const e of AMBIANCE) ev.add(e);
+  if (scene.monde?.dimension === 'end') ev.add('weather.end_flash');   // eclairs du ciel de l'End (film/sons-monde.js)
+  if (scene.ciel?.meteo) for (const e of ['entity.skeleton_horse.ambient', 'entity.skeleton_horse.hurt', 'entity.skeleton_horse.death', 'entity.skeleton.ambient', 'entity.skeleton.shoot', 'entity.skeleton.hurt', 'entity.skeleton.death']) ev.add(e);   // piege du cheval squelette (orage)
   for (const s of scene.sons?.liste ?? []) if (typeof s.nom === 'string' && !SOUND_EVENTS.includes(s.nom)) ev.add(s.nom);
   // juke-box : la musique des disques utilises par les acteurs (music_disc.<nom>, a la demande)
   for (const a of scene.acteurs) for (const x of a.actes ?? []) { const o = String(x.objet ?? x.opts?.objet ?? ''); const m = /^music_disc_(.+)$/.exec(o); if (m) ev.add('music_disc.' + m[1]); }

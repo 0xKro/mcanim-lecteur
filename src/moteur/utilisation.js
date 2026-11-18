@@ -1,4 +1,4 @@
-// Objets en main, utilises par les acteurs simules (phase 7) : manger, boire, lancer, tirer (arc, arbalete), jeter, prendre et deposer dans un conteneur.
+﻿// Objets en main, utilises par les acteurs simules (phase 7) : manger, boire, lancer, tirer (arc, arbalete), jeter, prendre et deposer dans un conteneur.
 // Ce sont des METHODES de `Acteur` (moteur/acteurs.js) ajoutees ici pour garder le fichier des acteurs lisible ; chaque verbe de film/actes.js a son couple
 // `debut_<verbe>` / `tick_<verbe>` comme les verbes d'avant. Port de LivingEntity.startUsingItem / updateUsingItem / completeUsingItem, Consumable, FoodData,
 // BowItem, CrossbowItem, Player.drop (Horizon client/game/{hand,potions,crossbow}.rs, world/food.rs : MIT, voir ATTRIBUTIONS.md).
@@ -7,6 +7,9 @@
 //   arc    : puissance (f x f + 2 f) / 3 avec f = ticks / 20, au plus 1 ; fleche a 3 x puissance ; sous 0,1 rien ne part
 //   arbalete : 25 ticks de chargement, fleche critique a 3,15 ; lancer : boule de neige, oeuf, perle d'ender, potion jetee, trident
 import { LANCABLES, VITESSE_LANCE, TANGAGE_LANCE, TYPES, puissanceArc, tangageBalistique, direction } from './projectiles.js';
+import { lireFusee, nouvelleFusee } from './fusees.js';
+import { lirePile, idDe, textePile } from './pile.js';
+import { effetsPotion } from './potions.js';
 
 const RAD = Math.PI / 180;
 
@@ -41,6 +44,7 @@ export function installerUtilisation(Acteur, EchecActe) {
     const fin = sim.temps + ticks;
     if (!actuel || actuel.niveau < niveau || (actuel.niveau === niveau && actuel.fin < fin)) this.effets.set(id, { fin, niveau });
     if (id === 'darkness' && !this.typeCreature) sim.replay.obscurite.push({ debut: sim.temps, fin, acteur: this.nom });   // le film assombrit la vue (film/look.js)
+    if (id === 'night_vision' && !this.typeCreature) (sim.replay.visionNuit ??= []).push({ debut: sim.temps, fin, acteur: this.nom });   // table de lumiere du film (film/lumiere-vue.js)
     if (actuel && actuel.fin > sim.temps && id === 'dolphins_grace') return;   // la grace rendue 1 fois sur 6 par tick : une seule ligne
     sim.dire(`${this.nom} : effet ${id} ${niveau + 1} pendant ${(ticks / 20).toFixed(0)} s`);
     sim.stats.effets = (sim.stats.effets || 0) + 1;
@@ -82,6 +86,7 @@ export function installerUtilisation(Acteur, EchecActe) {
   P.frappe = function (q, source, dx, dz, force = 0.4) {
     const sim = this.sim;
     if (this.mort >= 0 || this.invulnerable || !sim.regles.valeur('vie.actif', true)) return false;
+    this.dernierCoup = { source, dx, dz, t: sim.temps };   // d'ou vient le coup (dragon : la partie touchee, ia-boss.js partieTouchee)
     if (q > 0) { if (!this.degats(q, source)) return false; } else {
       if (this.invulTemps > 10) return false;
       this.invulTemps = 20; this.hurtTime = 10; this.derniereBlessure = 0;
@@ -129,6 +134,8 @@ export function installerUtilisation(Acteur, EchecActe) {
     const o = this.main.objet;
     if (!o) throw new EchecActe('rien en main : ajoute [t, "tient", "bread"] avant');
     T.objet = o;
+    if (idDe(o) === 'fishing_rod') return this.debutPeche(T, a);   // canne a peche : lancer ou ramener (objets-actes.js)
+    if (idDe(o) === 'trident' && lirePile(o).ench.riptide) { T.mode = 'trident'; T.k = 0; T.charge = Math.max(10, Math.round((a.opts.charge ?? 0.5) * 20)); this.usage = { type: 6, ticks: 0 }; return; }   // Impulsion : tendre 10 ticks au moins
     const al = sim.d.aliment(o);
     if (al) {
       if (al[0] > 0 && !al[2] && this.faim >= 20 && !R.valeur('faim.mangerPlein', true)) throw new EchecActe(`${o} : la faim est pleine (regle faim.mangerPlein)`);
@@ -139,13 +146,32 @@ export function installerUtilisation(Acteur, EchecActe) {
       this.usage = { type: al[4] === 'drink' ? 2 : 1, ticks: 0 };
       return;
     }
-    if (LANCABLES[o]) { T.mode = 'jet'; T.k = 0; return; }
-    if (o === 'bow' || o === 'crossbow') { debutTir.call(this, T, { ...a, cible: null, opts: a.opts }); T.mode = 'tir'; return; }
+    if (LANCABLES[idDe(o)]) { T.mode = 'jet'; T.k = 0; return; }
+    if (o === 'firework_rocket') {
+      // FireworkRocketItem.use en vol plane : une fusee accrochee au joueur (propulsion), le bras balance ; sinon rien (le jeu ne fait rien)
+      if (!this.planeur) throw new EchecActe('une fusee se lance sur un bloc (utilise x y z {"fusee": ...}), a l arbalete (tire {"objet": "crossbow", "fusee": ...}) ou en vol plane (elytres : propulsion) ; au sol, en l air sans planer : rien');
+      let fusee; try { fusee = lireFusee(a.opts?.fusee); } catch (err) { throw new EchecActe(err.message); }
+      nouvelleFusee(sim, this, [this.x, this.y, this.z], fusee, { attache: true });
+      this.balancer();
+      sim.stats.propulsions = (sim.stats.propulsions || 0) + 1;
+      T.mode = 'fini'; return;
+    }
+    if (idDe(o) === 'bow' || idDe(o) === 'crossbow') { debutTir.call(this, T, { ...a, cible: null, opts: a.opts }); T.mode = 'tir'; return; }
     throw new EchecActe(`${o} : rien ne se passe en l'utilisant dans l'air (a manger, a boire ou a lancer, essaie utilise x y z sur un bloc)`);
   };
   P.tickObjet = function (T) {
     const sim = this.sim;
+    if (T.mode === 'fini') { this.finirTache('ok', 'propulsion'); return; }
     if (T.mode === 'tir') return tickTir.call(this, T);
+    if (T.mode === 'peche') return this.tickPeche(T);
+    if (T.mode === 'trident') {   // TridentItem.releaseUsing apres `charge` ticks (10 au moins) : Impulsion (objets-actes.js)
+      this.usage = { type: 6, ticks: ++T.k };
+      if (T.k < T.charge) return;
+      const r = this.impulsionTrident();
+      this.usage = null;
+      this.finirTache(r === true ? 'ok' : 'echec', r === true ? 'impulsion' : 'Impulsion : ni eau ni pluie');
+      return;
+    }
     if (T.mode === 'jet') {
       this.balancer();
       lancerObjet.call(this, T.objet, this.lacetTete, this.tangage, T.acte.opts);
@@ -186,10 +212,13 @@ export function installerUtilisation(Acteur, EchecActe) {
     // effets de l'objet (pomme en or...) ; potion : l'effet demande par la scene
     for (const [id, ticks, niveau] of al[6]) this.appliquerEffet(id, ticks, niveau);
     const o = T.acte.opts;
-    if (T.objet === 'potion') {
-      const id = o.effet ?? 'speed';
-      this.appliquerEffet(id, Math.round((o.secondes ?? (EFFETS[id]?.ticks ?? 3600) / 20) * 20), (o.niveau ?? 1) - 1);
+    if (idDe(T.objet) === 'potion') {
+      const pot = lirePile(T.objet).potion;
+      if (pot) for (const [id, t, n] of effetsPotion(pot)) this.appliquerEffet(id, t, n);   // contenu de la potion (Potions du jeu : potions.js)
+      else if (o.effet || !pot) { const id = o.effet ?? 'speed'; this.appliquerEffet(id, Math.round((o.secondes ?? (EFFETS[id]?.ticks ?? 3600) / 20) * 20), (o.niveau ?? 1) - 1); }
     }
+    // la piece mangee ou bue part du sac (survie) ; le reste (bol, fiole) y entre (Consumable.onConsume, use_remainder)
+    if (!this.infini) { this.consommer(T.objet, 1); if (al[5]) { this.ajouter(al[5], 1); if (!this.main.objet) this.main = { objet: al[5], efficacite: 0 }; } }
     sim.stats.repas = (sim.stats.repas || 0) + 1;
     sim.dire(`${this.nom} a fini ${T.anim === 'drink' ? 'de boire' : 'de manger'} ${T.objet} apres ${T.k} ticks (faim ${this.faim}, saturation ${this.satur.toFixed(1)})`);
     sim.api.evenement('acteur.mange', { acteur: this.nom, objet: T.objet, nutrition: al[0], faim: this.faim });
@@ -202,8 +231,8 @@ export function installerUtilisation(Acteur, EchecActe) {
     const sim = this.sim;
     if (a.opts.objet) this.main = { objet: a.opts.objet, efficacite: 0 };
     const o = this.main.objet;
-    if (!o || !LANCABLES[o]) throw new EchecActe(`${o ?? 'main vide'} ne se lance pas (lancables : ${Object.keys(LANCABLES).join(', ')}) ; [t, "tient", "snowball"] ou {"objet": "snowball"}`);
-    T.objet = o; T.type = LANCABLES[o]; T.max = a.opts.max ? Math.floor(a.opts.max * 20 * sim.replay.ralenti) : 0;
+    if (!o || !LANCABLES[idDe(o)]) throw new EchecActe(`${o ?? 'main vide'} ne se lance pas (lancables : ${Object.keys(LANCABLES).join(', ')}) ; [t, "tient", "snowball"] ou {"objet": "snowball"}`);
+    T.objet = o; T.type = LANCABLES[idDe(o)]; T.max = a.opts.max ? Math.floor(a.opts.max * 20 * sim.replay.ralenti) : 0;
     T.vise = 0; T.etat = 'vise';
     void a;
   };
@@ -267,12 +296,18 @@ export function installerUtilisation(Acteur, EchecActe) {
   // ================================================================ details
   // Lance l'objet (boule, oeuf, perle, potion, trident) dans la direction (lacet, tangage)
   function lancerObjet(objet, lacet, tangage, opts = {}) {
-    const sim = this.sim, type = LANCABLES[objet];
-    let effet = null;
-    if (type === 'potion') { const id = opts.effet ?? 'speed'; effet = { id, ticks: Math.round((opts.secondes ?? (EFFETS[id]?.ticks ?? 1800) / 20 / 2) * 20), niveau: (opts.niveau ?? 1) - 1 }; }
-    sim.entites.proj.lancer(this, type, lacet, tangage, { objet, effet });
+    const sim = this.sim, type = LANCABLES[idDe(objet)];
+    // WindChargeItem.use : 10 ticks de recharge (ItemCooldowns) ; pendant la recharge, rien ne part
+    if (type === 'vent') { if (sim.temps < (this.rechargeVent ?? -1)) { sim.dire(`${this.nom} : charge de vent en recharge`); return; } this.rechargeVent = sim.temps + 10; }
+    let effet = null, effets = null;
+    const pot = type === 'potion' ? lirePile(objet).potion : null;
+    if (pot) effets = effetsPotion(pot);   // potion du jeu (splash_potion[potion=strong_harming]) : ses effets ; persistante : nuage (projectiles.js)
+    else if (type === 'potion') { const id = opts.effet ?? 'speed'; effet = { id, ticks: Math.round((opts.secondes ?? (EFFETS[id]?.ticks ?? 1800) / 20 / 2) * 20), niveau: (opts.niveau ?? 1) - 1 }; }
+    sim.entites.proj.lancer(this, type, lacet, tangage, { objet: idDe(objet), pile: objet, effet, effets, persistante: idDe(objet) === 'lingering_potion' });
+    this.consommer(objet, 1);   // survie : la piece lancee quitte le sac (le trident y revient quand on le ramasse)
+    if (type === 'trident') { const e = sim.entites.liste[sim.entites.liste.length - 1]; if (e?.type === 'trident') e.pile = this.useSansCasser(objet, 1); }   // TridentItem.releaseUsing : hurtWithoutBreaking(1), la copie lancee garde enchantements et usure
     const h = sim.hasard;
-    const sons = { boule: 'entity.snowball.throw', oeuf: 'entity.egg.throw', perle: 'entity.ender_pearl.throw', potion: 'entity.splash_potion.throw', trident: 'item.trident.throw' };
+    const sons = { boule: 'entity.snowball.throw', oeuf: 'entity.egg.throw', perle: 'entity.ender_pearl.throw', potion: 'entity.splash_potion.throw', trident: 'item.trident.throw', vent: 'entity.wind_charge.throw', fiole: 'entity.experience_bottle.throw' };
     sim.son(sons[type], this.x, this.oeil()[1], this.z, type === 'trident' ? 1 : 0.5, 0.4 / (h.flottant() * 0.4 + 0.8));
     sim.stats.lances = (sim.stats.lances || 0) + 1;
   }
@@ -281,14 +316,22 @@ export function installerUtilisation(Acteur, EchecActe) {
     const sim = this.sim, R = sim.regles;
     if (a.opts.objet) this.main = { objet: a.opts.objet, efficacite: 0 };
     const o = this.main.objet;
-    if (o !== 'bow' && o !== 'crossbow') throw new EchecActe(`${o ?? 'main vide'} ne tire pas : [t, "tient", "bow"] ou {"objet": "bow"} (arc ou arbalete)`);
-    T.objet = o; T.arbalete = o === 'crossbow'; T.k = 0; T.etat = 'tend';
+    if (idDe(o) !== 'bow' && idDe(o) !== 'crossbow') throw new EchecActe(`${o ?? 'main vide'} ne tire pas : [t, "tient", "bow"] ou {"objet": "bow"} (arc ou arbalete)`);
+    T.objet = o; T.arbalete = idDe(o) === 'crossbow'; T.k = 0; T.etat = 'tend';
+    // munition (Player.getProjectile : la premiere fleche du sac, ou {fleche}) ; survie sans fleche : rien (creatif, main infinie : une fleche)
+    T.munition = T.acte.opts.fusee !== undefined ? null : this.munition(a.opts.fleche);
+    if (T.acte.opts.fusee === undefined && !T.munition) throw new EchecActe(`${this.nom} n'a pas de fleches (sac) : arrow, tipped_arrow[potion=...], spectral_arrow`);
     const charge = a.opts.charge ?? 1.0;
-    T.ticksCharge = T.arbalete ? R.valeur('arcs.arbaleteCharge', 25) : Math.max(1, Math.floor(charge * 20 + 1e-9));
+    // CrossbowItem.getChargeDuration : crossbow_charge_time (1,25 s ; Charge rapide : -0,25 s par niveau)
+    const tempsArbalete = sim.objetsJeu && lirePile(o).ench.quick_charge ? Math.floor(sim.enchant.valeurPile(o, 'crossbow_charge_time', { outil: 'crossbow' }, 1.25) * 20) : R.valeur('arcs.arbaleteCharge', 25);
+    T.ticksCharge = T.arbalete ? Math.max(0, tempsArbalete) : Math.max(1, Math.floor(charge * 20 + 1e-9));
     T.puissance = T.arbalete ? 1 : puissanceArc(T.ticksCharge);
     T.vitesse = T.arbalete ? R.valeur('arcs.arbaleteVitesse', 3.15) : 3.0 * T.puissance * R.valeur('projectiles.vitesse', 1);
     T.vitesse0 = T.arbalete ? R.valeur('arcs.arbaleteVitesse', 3.15) : 3.0 * T.puissance;
     T.cible = a.cible ?? null;
+    // arbalete chargee d'une fusee d'artifice (CrossbowItem : fusee de biais a 1,6, 0,15 sous les yeux)
+    T.fusee = T.arbalete && a.opts.fusee !== undefined ? (() => { try { return lireFusee(a.opts.fusee); } catch (err) { throw new EchecActe(err.message); } })() : null;
+    if (T.fusee) { T.vitesse = 1.6; T.vitesse0 = 1.6; }
     T.max = a.opts.max ? Math.floor(a.opts.max * 20 * sim.replay.ralenti) : 0;
     this.usage = { type: T.arbalete ? 4 : 3, ticks: 0 };
     if (T.arbalete) sim.son('item.crossbow.loading_start', this.x, this.oeil()[1], this.z, 1, 1);
@@ -323,7 +366,27 @@ export function installerUtilisation(Acteur, EchecActe) {
     T.etat = 'apres'; T.attente = 4;
     if (T.puissance < min) { sim.dire(`${this.nom} : arc trop peu tendu (${T.puissance.toFixed(2)} < ${min}), aucune fleche`); return; }
     if (T.horsPortee) sim.dire(`${this.nom} : cible hors de portee du tir`);
-    sim.entites.proj.fleche(this, this.lacetTete, this.tangage, T.puissance, T.arbalete ? { vitesse: T.vitesse0 * R.valeur('projectiles.vitesse', 1), crit: true, arbalete: true } : { vitesse: T.vitesse0 * R.valeur('projectiles.vitesse', 1) });
+    if (T.fusee) {
+      const e = nouvelleFusee(sim, this, [this.x, this.oeil()[1] - Math.fround(0.15), this.z], T.fusee, { oblique: true });
+      if (e) { const v = sim.entites.proj.tirer(this.lacetTete, this.tangage, 1.6, 1.0); e.vx = v[0]; e.vy = v[1]; e.vz = v[2]; }
+      sim.son('item.crossbow.shoot', this.x, this.oeil()[1], this.z, 1, 1 / (h.flottant() * 0.5 + 1.8) + 0.53);
+      sim.stats.tirs = (sim.stats.tirs || 0) + 1;
+      return;
+    }
+    // ProjectileWeaponItem.shoot : Tir multiple (projectile_count, projectile_spread : 0, +10, -10 degres), une usure par fleche ; Infinite
+    // (ammo_use 0 sur une fleche simple) ; les fleches en plus du Tir multiple ne se ramassent pas
+    const arme = this.main.objet, ench = sim.objetsJeu && Object.keys(lirePile(arme).ench).length > 0;
+    const nb = ench ? Math.max(1, Math.trunc(sim.enchant.valeurPile(arme, 'projectile_count', { outil: idDe(arme) }, 1))) : 1;
+    const ecart = ench ? sim.enchant.valeurPile(arme, 'projectile_spread', { outil: idDe(arme) }, 0) : 0;
+    const pas = nb === 1 ? 0 : 2 * ecart / (nb - 1), d0 = ((nb - 1) % 2) * pas / 2;
+    const munition = T.munition, conso = ench ? Math.trunc(sim.enchant.valeurPile(arme, 'ammo_use', { outil: idDe(munition) }, 1)) : 1;
+    let signe = 1;
+    for (let i = 0; i < nb; i++) {
+      const angle = d0 + signe * Math.floor((i + 1) / 2) * pas; signe = -signe;
+      sim.entites.proj.fleche(this, this.lacetTete + angle, this.tangage, T.puissance, { ...(T.arbalete ? { vitesse: T.vitesse0 * R.valeur('projectiles.vitesse', 1), crit: true, arbalete: true } : { vitesse: T.vitesse0 * R.valeur('projectiles.vitesse', 1) }), extra: this.flecheEnchantee(arme, munition, { ramassable: !this.creatif && !this.infini && conso > 0 && i === 0 }) });
+      this.userPile('main', 1);
+    }
+    if (conso > 0) this.consommer(munition, 1);
     if (T.arbalete) sim.son('item.crossbow.shoot', this.x, this.oeil()[1], this.z, 1, 1 / (h.flottant() * 0.5 + 1.8) + 0.53);
     else sim.son('entity.arrow.shoot', this.x, this.oeil()[1], this.z, 1, 1 / (h.flottant() * 0.4 + 1.2) + T.puissance * 0.5);
     sim.stats.tirs = (sim.stats.tirs || 0) + 1;
@@ -372,15 +435,16 @@ export function installerUtilisation(Acteur, EchecActe) {
   }
   P.transferer = function (T) {
     const sim = this.sim, c = T.cible, a = T.acte, objet = String(T.objet ?? '').replace(/^minecraft:/, '');
-    const four = /furnace/.test(sim.d.nomBloc(sim.monde.etatEn(...c)));
+    const four = sim.fours.estFour(...c);   // four, haut fourneau, fumoir
     if (T.sens === 'prend') {
-      const liste = sim.contenus.lire(...c) || [];
+      const liste = sim.api.contenuListe(c[0], c[1], c[2]);   // coffre double : les 54 cases
       let reste = T.n ?? Infinity, pris = 0;
       for (let i = 0; i < liste.length && reste > 0; i++) {
         const e = liste[i];
         if (!e || (objet && e.item !== objet)) continue;
         const k = sim.contenus.retirer(c[0], c[1], c[2], i, reste);
         this.sac.set(e.item, (this.sac.get(e.item) || 0) + k); pris += k; reste -= k;
+        if (four && i === 2 && k > 0) sim.fours.payerExperience(c, this.x, this.y + 0.5, this.z);   // FurnaceResultSlot : l'experience des recettes faites
       }
       if (T.n !== undefined && pris < T.n) { sim.dire(`${this.nom} : ${pris} sur ${T.n} ${objet || 'objets'} trouves en ${c.join(',')}`); }
       sim.api.contenuNotifie(c[0], c[1], c[2]);

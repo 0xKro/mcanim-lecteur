@@ -115,8 +115,9 @@ function transitions() {
 }
 
 // cibles[i] : point regarde (yeux de l'acteur). voulues[i] : camera demandee. Retourne { pos, params, stat, ... }.
-export function planifierCameraSuivi({ cibles, voulues, solide, dt = 1 / 30, tau = 0.4, buste = 0.9 }) {
+export function planifierCameraSuivi({ cibles, voulues, solide, dt = 1 / 30, tau = 0.4, buste = 0.9, instant = null }) {
   const n = cibles.length;
+  const ici = instant ?? (() => {});   // instant(i) : le monde de l'image i (scene avec simulation : blocs poses ou casses en route)
   const dem = voulues.map((p, i) => [p[0] - cibles[i][0], p[1] - cibles[i][1], p[2] - cibles[i][2]]);
   const Dreq = dem.map((o) => Math.hypot(...o));
   const Dmin = Dreq.map((d) => Math.min(d, Math.max(DISTANCE_MINI, 0.6 * d)));
@@ -132,13 +133,14 @@ export function planifierCameraSuivi({ cibles, voulues, solide, dt = 1 / 30, tau
     return sortie;
   };
   const distanceOk = (i, p) => Math.hypot(p[0] - cibles[i][0], p[1] - cibles[i][1], p[2] - cibles[i][2]) >= Dmin[i] - 1e-6;
-  const valable = (i, p) => pointDegage(solide, p[0], p[1], p[2]) && distanceOk(i, p);
+  const valable = (i, p) => { ici(i); return pointDegage(solide, p[0], p[1], p[2]) && distanceOk(i, p); };
   const poitrine = (i) => [cibles[i][0], cibles[i][1] - buste, cibles[i][2]];
 
   // ---- couts par image et par etat ; `ok` memorise les etats sans bloc autour de la camera
   const unaire = new Array(n), ok = new Array(n);
   const tmp = [0, 0, 0];
   for (let i = 0; i < n; i++) {
+    ici(i);
     const u = new Float32Array(NS), o = new Uint8Array(NS);
     const po = poitrine(i);
     for (let h = 0; h < NH; h++) for (let c = 0; c < NC; c++) for (let r = 0; r < NR; r++) {
@@ -197,6 +199,7 @@ export function planifierCameraSuivi({ cibles, voulues, solide, dt = 1 / 30, tau
   // dernier recours : aucune combinaison libre (cavite fermee) -> on monte, sans jamais rester dans un bloc plein
   let poussees = 0;
   for (let i = 0; i < n; i++) {
+    ici(i);
     if (pointDegage(solide, pos[i][0], pos[i][1], pos[i][2], 0.05)) continue;
     poussees++;
     for (let h = 0.25; h <= 24; h += 0.25) if (pointDegage(solide, pos[i][0], pos[i][1] + h, pos[i][2], 0.05)) { pos[i][1] += h; break; }
@@ -214,14 +217,15 @@ export function planifierCameraSuivi({ cibles, voulues, solide, dt = 1 / 30, tau
   });
   // gene residuelle : images dont la ligne de vue vers la tete est coupee par un bloc plein
   let vueCoupee = 0;
-  for (let i = 0; i < n; i++) if (segmentBloque(solide, pos[i], cibles[i])) vueCoupee++;
+  for (let i = 0; i < n; i++) { ici(i); if (segmentBloque(solide, pos[i], cibles[i])) vueCoupee++; }
   return { pos, params, corrigee, stat, vueCoupee, poussees, ancrees: lisse.ancrees };
 }
 
 // ---------------------------------------------------------------- camera libre
 // Pousse la camera hors des blocs pleins (marge de 0,3). Pas de distance minimale. Le deplacement est lisse dans le temps.
-export function planifierCameraLibre({ positions, cibles, solide, dt = 1 / 30, tau = 0.25 }) {
+export function planifierCameraLibre({ positions, cibles, solide, dt = 1 / 30, tau = 0.25, instant = null }) {
   const n = positions.length;
+  const ici = instant ?? (() => {});
   const DIRS = [[0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0],
     [1, 1, 0], [-1, 1, 0], [0, 1, 1], [0, 1, -1], [1, 0, 1], [1, 0, -1], [-1, 0, 1], [-1, 0, -1], [1, -1, 0], [-1, -1, 0], [0, -1, 1], [0, -1, -1],
     [1, 1, 1], [1, 1, -1], [-1, 1, 1], [-1, 1, -1], [1, -1, 1], [1, -1, -1], [-1, -1, 1], [-1, -1, -1]].map((d) => { const l = Math.hypot(...d); return d.map((x) => x / l); });
@@ -232,6 +236,7 @@ export function planifierCameraLibre({ positions, cibles, solide, dt = 1 / 30, t
   let precedente = null;
   const brut = (i) => {
     const p = positions[i];
+    ici(i);
     if (degage(p)) { precedente = null; return [0, 0, 0]; }
     const dirs = DIRS.map((d, k) => ({ d, k, w: (k === 0 ? 1.3 : 1.6) * (precedente === k ? 0.5 : 1) }));
     if (cibles[i]) {
@@ -252,7 +257,7 @@ export function planifierCameraLibre({ positions, cibles, solide, dt = 1 / 30, t
   const dep = positions.map((_, i) => brut(i));
   if (!dep.some((d) => Math.hypot(...d) > 1e-9)) return { pos: positions.map((p) => p.slice()), corrigee: dep.map(() => false), stat: { poussee: 0, total: 0 } };
   const apres = (i, v) => [positions[i][0] + v[0], positions[i][1] + v[1], positions[i][2] + v[2]];
-  const lisse = lisserSousContrainte(dep, { tau, dt, valide: (i, v) => degage(apres(i, v)), repli: (i) => dep[i], parComposante: false, fenetre: 0.4 });
+  const lisse = lisserSousContrainte(dep, { tau, dt, valide: (i, v) => { ici(i); return degage(apres(i, v)); }, repli: (i) => dep[i], parComposante: false, fenetre: 0.4 });
   const pos = lisse.suite.map((v, i) => apres(i, v));
   const corrigee = lisse.suite.map((v) => Math.hypot(...v) > 0.02);
   const k = corrigee.filter(Boolean).length;

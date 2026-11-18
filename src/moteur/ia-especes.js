@@ -8,6 +8,7 @@
 // allay.rs (suit le joueur aime), villager.rs (emploi du temps du jeu : activity_at).
 // Rien n'est dessine ici : l'etat d'animation part dans replay.ia (drapeaux D.*, tangage du corps, objet tenu) et film/creatures.js le lit.
 import { coupe, deplacerBoite, rayonBloc } from './collision.js';
+import { blocSous, vitesseApresContact } from './rebond.js';
 import { direction } from './projectiles.js';
 import { lireVariante } from '../creatures/especes.js';
 
@@ -90,7 +91,7 @@ export const METHODES = {
   installerEspece(add) {
     const f = this.pr.fam, c = this.comportement;
     if (this.vol) this.a.vole = true;
-    if (this.installerBoss(add) || this.installerEau(add) || this.installerWarden(add)) return true;
+    if (this.installerBoss(add) || this.installerEau(add) || this.installerWarden(add) || this.installerBreeze(add)) return true;
     switch (f) {
       case 'chauve': this.perche = true; return true;   // Bat : pas de buts, tout est dans customServerAiStep (tickChauve)
       case 'abeille': add(0, 'volAttaque', MOVE | LOOK); add(8, 'volFlane', MOVE); add(9, 'regardeAutour', LOOK); return true;
@@ -124,14 +125,14 @@ export const METHODES = {
     if (this.vol?.mode === 'chauve') this.tickChauve();
     if (f === 'wither') this.tickWitherAvant();
     if (f === 'dragon') this.tickDragon();
-    this.avantEau(); this.avantWarden();
+    this.avantEau(); this.avantWarden(); this.avantBreeze();
     if (this.echangeAvec && this.sim.temps >= this.echangeFin) this.finEchange();
     if (this.mecontentFin && this.sim.temps >= this.mecontentFin) this.mecontentFin = 0;
   },
   // cibles propres (rend true si l'espece a choisi elle-meme)
   ciblesEspece() {
     const f = this.pr.fam, sim = this.sim;
-    if (this.ciblesWither() || f === 'dragon' || this.ciblesEau() || this.ciblesWarden()) return true;
+    if (this.ciblesWither() || f === 'dragon' || this.ciblesEau() || this.ciblesWarden() || this.ciblesBreeze()) return true;
     if (f === 'ghast') {   // NearestTarget joueur, |dy| <= 4
       if (this.cible && (this.cible.mort >= 0 || this.dist2(this.cible) > this.pr.suivi ** 2)) this.cible = null;
       if (this.cibleForcee) { const o = sim.acteurs.parNom.get(this.cibleForcee); this.cible = o && o.mort < 0 ? o : null; return true; }
@@ -210,9 +211,9 @@ export const METHODES = {
     a.vx += -zz * quant * sn; a.vz += zz * quant * cs; a.vy += yy * quant;
     if (V.mode === 'vex') { a.x += a.vx; a.y += a.vy; a.z += a.vz; a.auSol = false; }   // Vex : noPhysics, traverse les blocs
     else {
-      const r = deplacerBoite(lec, a.boite(), [a.vx, a.vy, a.vz], a.auSol, V.mode === 'chauve' || this.gravite ? 0.6 : 0);
+      const vy0 = a.vy, r = deplacerBoite(lec, a.boite(), [a.vx, a.vy, a.vz], a.auSol, V.mode === 'chauve' || this.gravite ? 0.6 : 0);
       a.x += r.dx; a.y += r.dy; a.z += r.dz;
-      if (r.bloqueX) a.vx = 0; if (r.bloqueZ) a.vz = 0; if (r.bloqueY) a.vy = 0;
+      if (r.bloqueX) a.vx = 0; if (r.bloqueZ) a.vz = 0; if (r.bloqueY) a.vy = r.auSol ? vitesseApresContact(vy0, r.dy, 0.08, blocSous(lec, a.x, a.y, a.z)) : 0;   // rebond (rebond.js)
       a.auSol = r.auSol; a.bute = r.bloqueX || r.bloqueZ;
     }
     a.distanceChute = 0;   // les volants ne prennent pas de degats de chute
@@ -752,6 +753,9 @@ export const METHODES = {
     sim.son('entity.villager.trade', a.x, a.y, a.z, 1, 1);
     this.stat('echanges'); (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${a.nom} echange avec ${joueur.nom} (reputation ${this.reputation(joueur.nom)}, prix ${this.prixDiff(joueur.nom) >= 0 ? '+' : ''}${this.prixDiff(joueur.nom)} par offre x 0,05)`);
     this.ragot(joueur.nom, 'trading', 2);   // ReputationEventType.TRADE
+    // Villager.rewardTradeXp : l'experience de l'offre (donnees villager_trade du jeu 26.3 : 1 par defaut, 2 pour certaines offres de novice) ;
+    // l'offre n'est pas choisie ici : 1, le moins qu'une offre donne (un villageois qui a echange ne perd plus son metier)
+    if (this.xpMetier !== undefined) this.xpMetier += 1;
     return 'echange';
   },
   finEchange() { if (!this.echangeAvec) return; const a = this.a; this.echangeAvec = null; this.sim.son('entity.villager.yes', a.x, a.y, a.z, 1, 1); },
@@ -819,7 +823,7 @@ export const METHODES = {
     if (this.boit > 0 || this.sommeil || this.echangeAvec || this.mecontentFin) this.a.entree.avance = 0;
     if (f === 'perroquet' && !this.surEpaule && this.volFini() && !this.vol.plane) this.gravite = true;
     if (f === 'wither') this.tickWither();
-    this.apresEau(); this.apresWarden();
+    this.apresEau(); this.apresWarden(); this.apresBreeze();
     if (this.type === 'villager') this.apresVillageois();   // regard verrouille sur l'autre villageois (ia-villageois.js)
   },
   drapeauxEspece() {

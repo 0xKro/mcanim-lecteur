@@ -9,6 +9,10 @@
 // Le hasard vient du monde (moteur/aleatoire.js) : meme graine, memes tirs.
 import { boitesLocales } from './collision.js';
 import { exploser } from './explosion.js';
+import { tickFusee } from './fusees.js';
+import { toucheVent } from './vent.js';
+import { lirePile } from './pile.js';
+import { couleurPotion } from './potions.js';
 
 const RAD = Math.PI / 180;
 const CUBE = [[0, 0, 0, 1, 1, 1]];
@@ -16,10 +20,13 @@ const CUBE = [[0, 0, 0, 1, 1, 1]];
 // type -> parametres du jeu
 export const TYPES = {
   fleche: { g: 0.05, eau: 0.6, boite: 0.5 },
-  boule: { g: 0.03, eau: 0.8, boite: 0.25, objet: 'snowball' },
-  oeuf: { g: 0.03, eau: 0.8, boite: 0.25, objet: 'egg' },
-  perle: { g: 0.03, eau: 0.8, boite: 0.25, objet: 'ender_pearl' },
-  potion: { g: 0.05, eau: 0.8, boite: 0.25, objet: 'splash_potion' },
+  // ThrowableProjectile (jete) : gravite PUIS trainee (0,99F ; 0,8F dans l'eau), puis le contact et le deplacement (Horizon projectiles.rs)
+  boule: { g: 0.03, eau: 0.8, boite: 0.25, objet: 'snowball', jete: true },
+  oeuf: { g: 0.03, eau: 0.8, boite: 0.25, objet: 'egg', jete: true },
+  perle: { g: 0.03, eau: 0.8, boite: 0.25, objet: 'ender_pearl', jete: true },
+  potion: { g: 0.05, eau: 0.8, boite: 0.25, objet: 'splash_potion', jete: true },
+  // fiole d'experience (ThrownExperienceBottle : gravite 0,07 ; lancee a 0,7, 20 degres plus haut ; distributeur 1,375, imprecision 3)
+  fiole: { g: 0.07, eau: 0.8, boite: 0.25, objet: 'experience_bottle', jete: true },
   trident: { g: 0.05, eau: 0.99, boite: 0.5, objet: 'trident' },
   // boules de feu (AbstractHurtingProjectile : sans gravite, acceleration 0,1 le long de la vitesse, inertie 0,95 (0,8 dans l'eau) ; LargeFireball 1 x 1,
   // SmallFireball 0,3125 ; dessinees comme une charge de feu x 3 et x 0,75, pleine lumiere)
@@ -28,12 +35,40 @@ export const TYPES = {
   // crane du wither (WitherSkull : 0,3125, inertie 0,95, bleu 0,73) ; boule de feu du dragon (DragonFireball : 1 x 1, trainee de souffle)
   crane: { g: 0, eau: 0.8, boite: 0.3125, feu: true, sansFeu: true },
   boule_dragon: { g: 0, eau: 0.8, boite: 1.0, feu: true, sansFeu: true },
+  // fusee d'artifice (moteur/fusees.js) ; charges de vent du joueur et du breeze (moteur/vent.js : 0,3125, vol droit, inertie 1, sans acceleration)
+  fusee: { g: 0, eau: 0.99, boite: 0.25, objet: 'firework_rocket', fusee: true },
+  vent: { g: 0, eau: 1, boite: 0.3125, objet: 'wind_charge', vent: true },
+  vent_breeze: { g: 0, eau: 1, boite: 0.3125, objet: 'wind_charge', vent: true },
 };
+// Entity.deflection : un breeze renvoie tout projectile sauf les charges de vent (ProjectileDeflection.REVERSE : vitesse x -0,5) ; son entity.breeze.deflect (5)
+export const estBreeze = (a) => !!a && (a.typeCreature === 'breeze' || a.ia?.type === 'breeze');
+// Le segment p0 + t x d contre un acteur, sa boite elargie de `marge` ; le dragon de l'Ender n'a pas de boite a toucher : seulement ses 8
+// parties (EnderDragonPart : tete, cou, corps, 3 de queue, 2 ailes), chacune elargie de la marge ; un projectile qui passe entre elles le
+// manque. Rend { t, face, partie } ou null.
+export function coupeCible(a, p0, d, marge) {
+  if (a.ia?.type === 'ender_dragon' && a.ia.partiesDragon) {
+    let best = null;
+    for (const [nom, b] of a.ia.partiesDragon()) {
+      const r = tranche([b[0] - marge, b[1] - marge, b[2] - marge, b[3] + marge, b[4] + marge, b[5] + marge], p0, d);
+      if (r && (!best || r.t < best.t)) best = { ...r, partie: nom };
+    }
+    return best;
+  }
+  const b = a.boite();
+  return tranche([b[0] - marge, b[1] - marge, b[2] - marge, b[3] + marge, b[4] + marge, b[5] + marge], p0, d);
+}
+// la partie du dragon touchee ce tick (ia-boss.js partieTouchee : tete = degats entiers, ailleurs d / 4 + min(d, 1))
+const marquerPartie = (s, a, r) => { if (r?.partie) a.partieCoup = { nom: r.partie, t: s.temps }; };
+export function renvoyerBreeze(s, e, a) {
+  e.vx *= -0.5; e.vy *= -0.5; e.vz *= -0.5; e.quitte = true;
+  s.son('entity.breeze.deflect', a.x, a.y, a.z, 1, 1);
+  s.stats.renvoisBreeze = (s.stats.renvoisBreeze || 0) + 1;
+}
 // objet tenu -> type de projectile lance (clic droit dans l'air, verbe `lance`)
-export const LANCABLES = { snowball: 'boule', egg: 'oeuf', ender_pearl: 'perle', splash_potion: 'potion', lingering_potion: 'potion', trident: 'trident' };
-// vitesse de depart et deviation (le jeu : Snowball.shootFromRotation(..., 1.5, 1.0) ; potion : 0,5 avec -20 degres ; trident : 2,5)
-export const VITESSE_LANCE = { boule: 1.5, oeuf: 1.5, perle: 1.5, potion: 0.5, trident: 2.5 };
-export const TANGAGE_LANCE = { potion: -20 };
+export const LANCABLES = { snowball: 'boule', egg: 'oeuf', ender_pearl: 'perle', splash_potion: 'potion', lingering_potion: 'potion', trident: 'trident', wind_charge: 'vent', experience_bottle: 'fiole' };
+// vitesse de depart et deviation (le jeu : Snowball.shootFromRotation(..., 1.5, 1.0) ; potion : 0,5 avec -20 degres ; fiole : 0,7 avec -20 ; trident : 2,5)
+export const VITESSE_LANCE = { boule: 1.5, oeuf: 1.5, perle: 1.5, potion: 0.5, trident: 2.5, vent: 1.5, fiole: 0.7 };
+export const TANGAGE_LANCE = { potion: -20, fiole: -20 };
 
 // puissance d'un arc (BowItem.getPowerForTime) : f = t / 20 ; (f x f + 2 f) / 3 ; au plus 1
 export function puissanceArc(ticks) { const f = ticks / 20; return Math.min(1, (f * f + f * 2) / 3); }
@@ -110,9 +145,8 @@ export class Projectiles {
   tirer(lacet, tangage, vitesse, deviation) {
     const s = this.sim, h = s.hasard, d = direction(lacet, tangage), k = 0.0172275 * deviation * this.R.valeur('projectiles.imprecision', 1);
     const v = [d[0] + (h.flottant() - h.flottant()) * k, d[1] + (h.flottant() - h.flottant()) * k, d[2] + (h.flottant() - h.flottant()) * k];
-    const L = Math.hypot(...v) || 1;
     const vit = vitesse * this.R.valeur('projectiles.vitesse', 1);
-    return v.map((c) => (c / L) * vit);
+    return v.map((c) => c * vit);   // Projectile.getMovementToShoot : (direction normalisee + triangle) x vitesse, sans renormaliser
   }
 
   // Cree le projectile. proprietaire : acteur (ou null) ; origine : [x, y, z] ; v : vitesse [vx, vy, vz]
@@ -132,7 +166,7 @@ export class Projectiles {
     const s = this.sim, vit = opt.vitesse ?? 3.0 * puissance;
     const origine = [acteur.x, acteur.oeil()[1] - 0.1, acteur.z];
     const v = this.tirer(lacet, tangage, vit, 1.0);
-    const e = this.creer('fleche', acteur, origine, v, { crit: opt.crit ?? puissance >= 1.0, degatsBase: opt.degatsBase ?? 2.0, arbalete: !!opt.arbalete, vitesse0: vit });
+    const e = this.creer('fleche', acteur, origine, v, { crit: opt.crit ?? puissance >= 1.0, degatsBase: opt.degatsBase ?? 2.0, arbalete: !!opt.arbalete, vitesse0: vit, ...(opt.extra ?? {}) });   // extra : arme, munition, Flamme, Perforation, effets (inventaire.js)
     if (e) s.dire(`${acteur.nom} tire une fleche (puissance ${puissance.toFixed(2)}, vitesse ${Math.hypot(e.vx, e.vy, e.vz).toFixed(2)})`);
     return e;
   }
@@ -140,9 +174,9 @@ export class Projectiles {
   // Objet lance (boule, oeuf, perle, potion, trident) dans la direction (lacet, tangage) de l'acteur
   lancer(acteur, type, lacet, tangage, opt = {}) {
     const vit = VITESSE_LANCE[type] ?? 1.5, dev = 1.0;
-    const origine = [acteur.x, acteur.oeil()[1] - 0.1, acteur.z];
+    const origine = [acteur.x, acteur.oeil()[1] - (type === 'vent' ? 0 : 0.1), acteur.z];   // WindChargeItem.use : la charge part des yeux
     const v = this.tirer(lacet, tangage + (TANGAGE_LANCE[type] ?? 0), vit, dev);
-    return this.creer(type, acteur, origine, v, { objet: opt.objet ?? TYPES[type].objet, effet: opt.effet ?? null });
+    return this.creer(type, acteur, origine, v, { objet: opt.objet ?? TYPES[type].objet, effet: opt.effet ?? null, effets: opt.effets ?? null, persistante: !!opt.persistante, pile: opt.pile ?? null });
   }
 
   // ------------------------------------------------------------ un tick
@@ -151,6 +185,13 @@ export class Projectiles {
     if (e.debut === s.temps) { this.ecrire(e); return true; }      // cree ce tick : elle part au suivant
     e.age++;
     const lec = this.lec();
+    // Loyaute (ThrownTrident.tick) : apres un coup, ou plantee depuis plus de 4 ticks, la lance revient vers les yeux de son lanceur
+    if (e.type === 'trident') {
+      e.loyaute ??= e.pile ? lirePile(e.pile).ench.loyalty ?? 0 : 0;
+      const o = s.acteurs?.parNom.get(e.proprietaire);
+      if (e.loyaute > 0 && (e.inflige || e.retour || (e.plantee && (e.vie ?? 0) > 4)) && o && o.mort < 0) return this.tickRetour(e, o);
+    }
+    if ((e.type === 'fleche' || e.type === 'trident') && (e.plantee || e.retour) && this.ramasser(e)) return false;
     if (e.plantee) {
       // bloc retire sous la fleche : elle tombe ; sinon elle attend sa fin de vie
       const [bx, by, bz] = e.cellulePlantee;
@@ -164,7 +205,13 @@ export class Projectiles {
       }
     }
     if (P.feu) return this.tickFeu(e);
+    if (P.fusee) { const vit = tickFusee(this, e); if (vit) this.ecrire(e); else this.E._fini.add(e); return vit; }
+    if (P.vent) return this.tickVent(e);
     const g = P.g * R.valeur('projectiles.gravite', 1);
+    if (P.jete) {   // ThrowableProjectile.tick : applyGravity puis applyInertia (dans l'eau du tick d'avant : 0,8F), avant le contact et le deplacement
+      const c = Math.fround(e.dansEau ? P.eau : 0.99);
+      e.vy -= g; e.vx *= c; e.vy *= c; e.vz *= c;
+    }
     const p0 = [e.x, e.y, e.z], p1 = [e.x + e.vx, e.y + e.vy, e.z + e.vz];
     // blocs puis acteurs : le plus proche des deux
     let bloc = coupeBlocs(lec, p0, p1), cible = null;
@@ -173,10 +220,11 @@ export class Projectiles {
     const prop = s.acteurs?.parNom.get(e.proprietaire) ?? null;
     if (!e.quitte && (!prop || !this.coupeActeur(prop, p0, d, P.boite))) e.quitte = true;     // le projectile quitte la boite de son lanceur avant de pouvoir le toucher
     for (const a of s.acteurs ? s.acteurs.liste : []) {
-      if (a.mort >= 0 || (a === prop && !e.quitte)) continue;
+      if (a.mort >= 0 || (a === prop && !e.quitte) || e.inflige || e.perces?.has(a)) continue;   // trident qui a deja touche, fleche qui a perce cet acteur
       const r = this.coupeActeur(a, p0, d, P.boite);
       if (r && r.t <= t1 && (!cible || r.t < cible.t)) cible = { ...r, acteur: a };
     }
+    if (cible && estBreeze(cible.acteur)) { renvoyerBreeze(s, e, cible.acteur); this.ecrire(e); return true; }   // renvoyee sans avancer (le contact n'est pas un deplacement)
     if (cible) { if (this.toucheActeur(e, cible)) return false; }
     else if (bloc) return this.toucheBloc(e, bloc);
     // deplacement, puis trainee et gravite (AbstractArrow.tick : setPos, puis x inertie, puis gravite)
@@ -187,10 +235,47 @@ export class Projectiles {
     if (eau && e.type === 'fleche') for (let i = 0; i < 4; i++) s.replay.particule(s.temps, 'bubble', e.x - e.vx * 0.25 * (i + 1), e.y - e.vy * 0.25 * (i + 1), e.z - e.vz * 0.25 * (i + 1), -e.vx, -e.vy, -e.vz, 1);
     if (e.type === 'fleche' && e.crit) for (let i = 0; i < 4; i++) s.replay.particule(s.temps, 'crit', e.x + e.vx * i / 4, e.y + e.vy * i / 4, e.z + e.vz * i / 4, -e.vx, -e.vy + 0.2, -e.vz, 1);
     if (e.type === 'perle') s.replay.particule(s.temps, 'portal', e.x, e.y + 0.1, e.z, 0, 0, 0, 1);
-    e.vx *= c; e.vy = e.vy * c - g; e.vz *= c;
+    if (e.feuFleche > 0) { if (eau) e.feuFleche = 0; else { e.feuFleche--; s.replay.particule(s.temps, 'flame', e.x, e.y, e.z, 0, 0.01, 0, 1); } }   // fleche en feu (Flamme) : l'eau l'eteint ; flammes comme les acteurs qui brulent (convention du film)
+    if (P.jete) e.dansEau = eau;
+    else { e.vx *= c; e.vy = e.vy * c - g; e.vz *= c; }   // AbstractArrow.tick : deplacement, puis inertie, puis gravite
     if (e.y < -80 || e.age > 6000) { this.E._fini.add(e); return false; }
     this.ecrire(e);
     return true;
+  }
+
+  // ThrownTrident.tick, retour de Loyaute (Horizon trident.rs loyalty_pull) : sans collisions, y += dy x 0,015 x niveau, v = v x 0,95 + direction x
+  // 0,05 x niveau ; son item.trident.return au depart ; le lanceur la reprend en la touchant
+  tickRetour(e, o) {
+    const s = this.sim, oeil = o.oeil();
+    if (!e.retour) { e.retour = true; e.plantee = false; s.son('item.trident.return', e.x, e.y, e.z, 10, 1); }
+    const v = [oeil[0] - e.x, oeil[1] - e.y, oeil[2] - e.z], L = Math.max(1e-9, Math.hypot(...v)), k = 0.05 * e.loyaute;
+    e.y += v[1] * 0.015 * e.loyaute;
+    e.vx = e.vx * 0.95 + v[0] / L * k; e.vy = e.vy * 0.95 + v[1] / L * k; e.vz = e.vz * 0.95 + v[2] / L * k;
+    e.x += e.vx; e.y += e.vy; e.z += e.vz;
+    e.vx *= 0.99; e.vy *= 0.99; e.vz *= 0.99;
+    if (this.ramasser(e)) return false;
+    this.ecrire(e);
+    return true;
+  }
+  // AbstractArrow.playerTouch : une fleche plantee (ramassable) ou un trident (plante, ou qui revient a son lanceur) touche par un acteur qui ramasse
+  // (ou par le lanceur du trident) : dans son sac, son entity.item.pickup
+  ramasser(e) {
+    const s = this.sim;
+    for (const a of s.acteurs ? s.acteurs.liste : []) {
+      if (a.mort >= 0 || a.typeCreature) continue;
+      const proprio = a.nom === e.proprietaire;
+      if (e.type === 'trident' ? !(proprio || a.ramasse) : !(a.ramasse && e.ramassable)) continue;
+      if (e.type === 'trident' && e.retour && !proprio) continue;
+      const b = a.boite();
+      if (e.x < b[0] - 1 || e.x > b[3] + 1 || e.y < b[1] - 0.5 || e.y > b[4] + 0.5 || e.z < b[2] - 1 || e.z > b[5] + 1) continue;
+      a.ajouter(e.pile ?? (e.type === 'trident' ? 'trident' : 'arrow'), 1);
+      if (e.type === 'trident' && proprio && !a.main.objet) a.main = { objet: a.pileDe(e.pile ?? 'trident') ?? e.pile, efficacite: 0 };
+      s.son('entity.item.pickup', e.x, e.y, e.z, 0.2, (s.hasard.flottant() - s.hasard.flottant()) * 0.7 + 1);
+      s.dire(`${a.nom} reprend ${e.pile ?? e.type}`);
+      this.E._fini.add(e);
+      return true;
+    }
+    return false;
   }
 
   // ------------------------------------------------------------ boules de feu (AbstractHurtingProjectile.tick, LargeFireball, SmallFireball)
@@ -202,7 +287,7 @@ export class Projectiles {
     const c0 = [e.x, e.y + demi, e.z], d = [e.vx, e.vy, e.vz], c1 = [c0[0] + d[0], c0[1] + d[1], c0[2] + d[2]];
     const bloc = coupeBlocs(lec, c0, c1);
     const prop = s.acteurs?.parNom.get(e.proprietaire) ?? null;
-    const coupe = (a) => { const b = a.boite(); return tranche([b[0] - demi, b[1] - demi, b[2] - demi, b[3] + demi, b[4] + demi, b[5] + demi], c0, d); };
+    const coupe = (a) => coupeCible(a, c0, d, demi);
     if (!e.quitte && (!prop || !coupe(prop))) e.quitte = true;
     let cible = null;
     for (const a of s.acteurs ? s.acteurs.liste : []) {
@@ -210,10 +295,11 @@ export class Projectiles {
       const r = coupe(a);
       if (r && r.t <= (bloc ? bloc.t : 1) && (!cible || r.t < cible.t)) cible = { ...r, acteur: a };
     }
+    if (cible && estBreeze(cible.acteur)) { renvoyerBreeze(s, e, cible.acteur); this.ecrire(e); return true; }
     if (cible || bloc) {
       const t = cible ? cible.t : bloc.t, pos = [c0[0] + d[0] * t, c0[1] + d[1] * t, c0[2] + d[2] * t];
       const evt = s.api.evenement('projectile.touche', { type: e.type, cible: cible?.acteur.nom ?? null, proprietaire: e.proprietaire });
-      if (!evt.annule) { this.finFeu(e, pos, cible?.acteur ?? null, bloc && !cible ? bloc : null); this.E._fini.add(e); return false; }
+      if (!evt.annule) { this.E._fini.add(e); if (cible) marquerPartie(s, cible.acteur, cible); this.finFeu(e, pos, cible?.acteur ?? null, bloc && !cible ? bloc : null); return false; }   // retiree avant d'exploser : son propre souffle ne la pousse pas
     }
     e.x += e.vx; e.y += e.vy; e.z += e.vz;
     const eau = s.fluide(Math.floor(e.x), Math.floor(e.y + demi), Math.floor(e.z)).type === 'water';
@@ -250,6 +336,31 @@ export class Projectiles {
       if (n >= 0 && /^(air|cave_air)$/.test(s.d.nomBloc(n))) s.api.poser(fx, fy, fz, 'minecraft:fire');
     }
   }
+  // ------------------------------------------------------------ charges de vent (AbstractWindCharge.tick : AbstractHurtingProjectile sans acceleration)
+  // contact (blocs puis acteurs, le lanceur une fois quitte), deplacement en ligne droite ; au-dessus de y = 350 : la rafale (moteur/vent.js)
+  tickVent(e) {
+    const s = this.sim, lec = this.lec(), demi = TYPES[e.type].boite / 2;
+    const c0 = [e.x, e.y - 0.15 + demi, e.z], d = [e.vx, e.vy, e.vz], c1 = [c0[0] + d[0], c0[1] + d[1], c0[2] + d[2]];
+    const bloc = coupeBlocs(lec, c0, c1), prop = s.acteurs?.parNom.get(e.proprietaire) ?? null;
+    const coupe = (a) => coupeCible(a, c0, d, demi);
+    if (!e.quitte && (!prop || !coupe(prop))) e.quitte = true;
+    let cible = null;
+    for (const a of s.acteurs ? s.acteurs.liste : []) {
+      if (a.mort >= 0 || (a === prop && !e.quitte) || a.typeCreature === 'end_crystal') continue;   // AbstractWindCharge.canHitEntity : pas un cristal
+      const r = coupe(a);
+      if (r && r.t <= (bloc ? bloc.t : 1) && (!cible || r.t < cible.t)) cible = { ...r, acteur: a };
+    }
+    if (cible || bloc) {
+      const t = cible ? cible.t : bloc.t, pos = [c0[0] + d[0] * t, c0[1] + d[1] * t, c0[2] + d[2] * t];
+      const evt = s.api.evenement('projectile.touche', { type: e.type, cible: cible?.acteur.nom ?? null, proprietaire: e.proprietaire });
+      if (!evt.annule) { this.E._fini.add(e); if (cible) marquerPartie(s, cible.acteur, cible); toucheVent(this, e, pos, cible?.acteur ?? null, bloc && !cible ? bloc : null); return false; }
+    }
+    e.x += e.vx; e.y += e.vy; e.z += e.vz;
+    if (e.y > 350) { this.E._fini.add(e); toucheVent(this, e, [e.x, e.y, e.z], null, null); return false; }
+    if (e.age > 1200) { this.E._fini.add(e); return false; }
+    this.ecrire(e);
+    return true;
+  }
   // Fireball.hurtServer -> deflect (AIM_DEFLECT) : la boule repart dans la direction du regard de celui qui frappe (vitesse 1), acceleration 0,1,
   // et change de proprietaire (elle peut alors toucher le ghast).
   renvoyer(e, acteur, dir) {
@@ -262,10 +373,7 @@ export class Projectiles {
   }
 
   // segment contre la boite de l'acteur, elargie de la marge de contact (0,3 pour une fleche)
-  coupeActeur(a, p0, d) {
-    const b = a.boite(), m = 0.3;
-    return tranche([b[0] - m, b[1] - m, b[2] - m, b[3] + m, b[4] + m, b[5] + m], p0, d);
-  }
+  coupeActeur(a, p0, d) { return coupeCible(a, p0, d, 0.3); }
 
   // ------------------------------------------------------------ contact avec un bloc
   toucheBloc(e, hit) {
@@ -281,6 +389,11 @@ export class Projectiles {
       s.stats.plantees = (s.stats.plantees || 0) + 1;
       s.dire(`${e.type} plantee en ${hit.cellule.join(',')} (vitesse ${vit.toFixed(2)})`);
       s.api.evenement('projectile.bloc', { type: e.type, pos: hit.cellule, proprietaire: e.proprietaire });
+      // composant hit_block des enchantements du trident (Canalisation sur un paratonnerre pendant l'orage : la foudre)
+      if (e.type === 'trident' && e.pile && s.objetsJeu) for (const [id, n] of Object.entries(lirePile(e.pile).ench)) for (const x of s.enchant.def(id)?.effects?.['minecraft:hit_block'] ?? []) {
+        const ctx = { ceci: 'trident', position: [hit.cellule[0] + 0.5, hit.cellule[1] + 0.5, hit.cellule[2] + 0.5] };
+        if (!x.requirements || s.enchant.condition(x.requirements, n, ctx)) s.enchant.effetEntite(x.effect, n, 'bloc', ctx);
+      }
       s.vibrations.emettre('projectile_land', e.x, e.y, e.z, { proprietaire: e.proprietaire });   // GameEvent.PROJECTILE_LAND
       this.ecrire(e);
       return true;
@@ -299,13 +412,36 @@ export class Projectiles {
     const dx = px - a.x, dz = pz - a.z, recul = R.valeur('projectiles.recul', 1);
     const evt = s.api.evenement('projectile.touche', { type: e.type, cible: a.nom, proprietaire: e.proprietaire });
     if (evt.annule) return false;
+    marquerPartie(s, a, cible);
     if (e.type === 'fleche' || e.type === 'trident') {
       const vit = Math.hypot(e.vx, e.vy, e.vz);
-      let q = Math.ceil(Math.min(vit * (e.type === 'trident' ? 8 : e.degatsBase), 2147483647));
-      if (e.type === 'trident') q = 8;
+      const prop0 = s.acteurs?.parNom.get(e.proprietaire) ?? null, typeDirect = e.type === 'trident' ? 'trident' : e.spectrale ? 'spectral_arrow' : 'arrow';
+      // AbstractArrow.onHitEntity : la base (2 ; trident 8) passe par les enchantements de l'arme (Puissance, Empalement : composant damage)
+      let base = e.type === 'trident' ? 8 : e.degatsBase;
+      const arme = e.type === 'trident' ? e.pile : e.arme;
+      if (arme && s.objetsJeu) base = s.enchant.valeurPile(arme, 'damage', { type: typeDirect, direct: false, ceci: a, attaquant: prop0, directAttaquant: typeDirect, outil: arme.replace(/\[.*$/, '') }, base);
+      let q = e.type === 'trident' ? base : Math.ceil(Math.min(vit * base, 2147483647));
       if (e.crit && e.type === 'fleche') q = Math.min(q + s.hasard.entierBorne(Math.floor(q / 2) + 2), 2147483647);
-      q = Math.round(q * R.valeur('projectiles.degats', 1));
+      q = e.type === 'trident' ? q * R.valeur('projectiles.degats', 1) : Math.round(q * R.valeur('projectiles.degats', 1));
+      if (e.feuFleche > 0) allumerActeur(a, 100);   // une fleche en feu (Flamme) allume la cible 5 s
+      a.attaquantCourant = prop0;
       const ok = a.frappe(q, e.type === 'trident' ? 'trident' : 'fleche', dx, dz, 0.4 * recul);
+      a.attaquantCourant = null;
+      if (ok && s.objetsJeu && arme) {
+        // Frappe (knockback de l'arme) : poussee le long du vol x 0,6 (AbstractArrow.doKnockback), effets apres l'attaque de l'arme (Canalisation)
+        const kb = e.type === 'fleche' ? s.enchant.valeurPile(arme, 'knockback', { type: typeDirect, ceci: a, directAttaquant: typeDirect }, 0) : 0;
+        if (kb > 0) { const h = Math.hypot(e.vx, e.vz) || 1, f = kb * 0.6 * (1 - (a.ia?.pr.antiRecul ?? 0)); a.vx += e.vx / h * f; a.vy += 0.1; a.vz += e.vz / h * f; a.auSol = false; }
+        s.enchant.apresAttaque(a, prop0, { type: typeDirect, direct: false, directAttaquant: typeDirect, arme, attaquantSeul: true });
+      }
+      if (ok && e.effetsFleche) for (const [id, t, n] of e.effetsFleche) a.appliquerEffet(id, t, n);   // fleche a effet (duree x 0,125)
+      if (ok && e.spectrale) a.appliquerEffet('glowing', 200, 0);   // SpectralArrow.doPostHurtEffects
+      if (ok && e.type === 'trident') {   // ThrownTrident.onHitEntity : la lance rebondit (x -0,01, -0,1, -0,01) et peut revenir (Loyaute)
+        e.inflige = true; e.vx *= -0.01; e.vy *= -0.1; e.vz *= -0.01;
+        s.son('item.trident.hit', px, py, pz, 1, 1);
+        s.dire(`trident touche ${a.nom} : ${q} degats`);
+        return false;
+      }
+      if (ok && e.perce > 0) { (e.perces ??= new Set()).add(a); e.perce--; s.stats.fleches = (s.stats.fleches || 0) + 1; s.dire(`fleche perce ${a.nom} : ${q} degats`); return false; }   // Perforation : elle continue
       if (ok) {
         s.stats.fleches = (s.stats.fleches || 0) + 1;
         s.dire(`${e.type} touche ${a.nom} : ${q} degats (vitesse ${vit.toFixed(2)}${e.crit ? ', critique' : ''})`);
@@ -357,12 +493,34 @@ export class Projectiles {
         s.stats.teleports = (s.stats.teleports || 0) + 1;
         s.dire(`${prop.nom} se teleporte en ${px.toFixed(1)},${py.toFixed(1)},${pz.toFixed(1)}`);
       }
+    } else if (e.type === 'fiole') {
+      // ThrownExperienceBottle.onHit : evenement 2002 (eclaboussure couleur 0x385DC6) et son 1053, puis 3 + nextInt(5) + nextInt(5) d'experience
+      // en orbes qui partent de la face touchee (ou a l'oppose de la vitesse sur une entite) : ExperienceOrb.awardWithDirection
+      eclaboussure(s, x, y, z, 0x385DC6, false);
+      const xp = 3 + s.hasard.entierBorne(5) + s.hasard.entierBorne(5);
+      s.entites.orbes(x, y, z, xp, hit?.face ? hit.face.slice() : [-e.vx, -e.vy, -e.vz]);
+      s.stats.experience = (s.stats.experience || 0) + xp; s.stats.fioles = (s.stats.fioles || 0) + 1;
+      (s.stats.iaJournal ??= []).push(`${(s.temps / 20).toFixed(2)} fiole d experience brisee en ${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)} : ${xp} points`);
+    } else if (e.type === 'potion' && e.effets) {
+      // potion du jeu (ThrownSplashPotion / ThrownLingeringPotion) : toutes ses effets ; persistante : un nuage (AreaEffectCloud)
+      const inst = e.effets.some(([id]) => id === 'instant_damage' || id === 'instant_health');
+      eclaboussure(s, x, y, z, couleurPotion(e.effets), inst);
+      if (e.persistante) { s.nuages?.creer([x, y, z], e.effets, prop); return; }
+      for (const a of s.acteurs ? s.acteurs.liste : []) {
+        if (a.mort >= 0) continue;
+        const b = a.boite();
+        if (!(b[3] > x - 4.25 && b[0] < x + 4.25 && b[4] > y - 2.25 && b[1] < y + 2.25 && b[5] > z - 4.25 && b[2] < z + 4.25)) continue;
+        const d2 = (a.x - x) ** 2 + (a.y + 0.9 - y) ** 2 + (a.z - z) ** 2;
+        if (d2 >= 16) continue;
+        const force = a === acteur ? 1 : 1 - Math.sqrt(d2) / 4;
+        for (const [id, t, n] of e.effets) {
+          if (id === 'instant_damage' || id === 'instant_health') a.appliquerEffet(id, 1, n, { force });
+          else { const dt = Math.floor(force * t + 0.5); if (dt > 20) a.appliquerEffet(id, dt, n); }   // ThrownSplashPotion.applySplash : plus d'une seconde
+        }
+      }
     } else if (e.type === 'potion') {
-      s.son('entity.splash_potion.break', x, y, z, 1, s.hasard.flottant() * 0.1 + 0.9);
       const effet = e.effet || { id: 'speed', ticks: 1800, niveau: 0 };
-      const couleur = COULEURS_EFFETS[effet.id] ?? 0.7;
-      for (let i = 0; i < 24; i++) s.replay.particule(s.temps, 'effet', x, y + 0.1, z, (s.hasard.flottant() - 0.5) * 0.6, 0.1 + s.hasard.flottant() * 0.3, (s.hasard.flottant() - 0.5) * 0.6, couleur);
-      for (let i = 0; i < 8; i++) s.replay.particule(s.temps, 'splash', x, y + 0.1, z, 0, 0, 0, 1);
+      eclaboussure(s, x, y, z, COULEURS_RGB[effet.id] ?? 0x385DC6, effet.id === 'instant_damage' || effet.id === 'instant_health');
       for (const a of s.acteurs ? s.acteurs.liste : []) {
         if (a.mort >= 0) continue;
         const b = a.boite();
@@ -403,6 +561,8 @@ export class Projectiles {
       rp.entite(s.temps, e.id, e.dangereux ? 'crane_bleu' : 'crane', e.x, e.y + 0.15625, e.z, Math.atan2(-vx, vz) / RAD, -Math.atan2(vy, h) / RAD);
     } else if (e.type === 'boule_dragon') rp.entite(s.temps, e.id, 'boule_dragon', e.x, e.y + 0.5, e.z, 2, -1);   // DragonFireballRenderer : sprite x 2
     else if (TYPES[e.type]?.feu) rp.entite(s.temps, e.id, 'boule_feu', e.x, e.y + TYPES[e.type].boite / 2, e.z, TYPES[e.type].echelle, rp.nom('fire_charge'));   // centre de la boule, echelle du dessin
+    else if (e.type === 'fusee') rp.entite(s.temps, e.id, e.attache ? 'fusee_attachee' : 'fusee', e.x, e.y, e.z, e.oblique ? 1 : 0, rp.nom('firework_rocket'));   // FireworkEntityRenderer (shouldRender : pas accrochee a un vivant)
+    else if (e.type === 'vent' || e.type === 'vent_breeze') rp.entite(s.temps, e.id, 'vent', e.x, e.y, e.z, e.age, 0);   // WindChargeRenderer (age : rotation, defilement)
     else rp.entite(s.temps, e.id, 'lance', e.x, e.y, e.z, 0, rp.nom(e.objet));
   }
 }
@@ -431,5 +591,16 @@ export function allumerActeur(a, ticks) {
   a.feuJoueur = Math.max(a.feuJoueur ?? 0, ticks);
 }
 
+// LevelEventHandler 2002 / 2007 (potionSplashParticles) et son 1053 / 1054 : 8 miettes de la potion jetee et 100 particules d'effet de la
+// couleur, au centre bas de la cellule ; le film les tire (film/effets-monde.js `eclat_potion`) ; son splash_potion.break, volume 1, hauteur
+// 0,9..1 (hasard du client : un hasard a part, pour ne pas changer celui du monde)
+export function eclaboussure(s, x, y, z, rgb, instant) {
+  const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
+  s.replay.particule(s.temps, `eclat_potion|${(rgb >> 16) & 255},${(rgb >> 8) & 255},${rgb & 255}|${instant ? 1 : 0}`, bx + 0.5, by, bz + 0.5, 0, 0, 0, 1);
+  const h = ((bx * 73856093) ^ (by * 19349663) ^ (bz * 83492791) ^ (s.temps * 2654435761)) >>> 0;
+  s.son('entity.splash_potion.break', bx + 0.5, by + 0.5, bz + 0.5, 1, (h % 1000) / 1000 * 0.1 + 0.9);
+}
+// MobEffect.getColor (Horizon horizon-client-core/src/potions.rs EFFECTS, MIT) : couleur d'une potion a un seul effet
+export const COULEURS_RGB = { speed: 3402751, slowness: 9154528, haste: 14270531, mining_fatigue: 4866583, strength: 16762624, instant_health: 16262179, instant_damage: 11101546, jump_boost: 16646020, nausea: 5578058, regeneration: 13458603, resistance: 9520880, fire_resistance: 16750848, water_breathing: 10017472, invisibility: 16185078, blindness: 2039587, night_vision: 12779366, hunger: 5797459, weakness: 4738376, poison: 8889187, wither: 7561558, health_boost: 16284963, absorption: 2445989, glowing: 9740385, levitation: 13565951, slow_falling: 15978425, dolphins_grace: 8954814, darkness: 2696993 };
 // couleur (teinte 0..1) des particules d'un effet de potion : sert a `effet` du rendu
 export const COULEURS_EFFETS = { speed: 0.55, slowness: 0.62, jump_boost: 0.35, invisibility: 0.8, glowing: 0.15, regeneration: 0.95, poison: 0.28, strength: 0.0, night_vision: 0.7, weakness: 0.66, instant_damage: 0.98, instant_health: 0.02, fire_resistance: 0.08, water_breathing: 0.6, absorption: 0.12 };

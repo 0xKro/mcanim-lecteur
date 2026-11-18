@@ -106,6 +106,7 @@ export class BibliothequeModeles {
   // Nom de la texture de particule ('block/dirt') d'un etat de bloc ('minecraft:dirt', 'oak_stairs[facing=north]') : celle des particules de casse. null si inconnue.
   texParticule(chaine) {
     const { nom, props } = analyserEtat(chaine);
+    if (this.perso?.has(nom)) { const e = this.etat(chaine); return e.geo[0]?.sprite?.nom ?? null; }   // bloc de mod : la texture de sa premiere face
     const emp = this._emplacements(nom, props);
     const v = emp && emp[0] && emp[0][0];
     const m = v && v.model ? this.modele(v.model) : null;
@@ -113,7 +114,75 @@ export class BibliothequeModeles {
     return this._resoudreTexture(m, '#particle') || null;
   }
 
+  // Blocs definis par les mods de la scene (mc.definirBloc, moteur/perso.js) : `blocs` = definitions normalisees, `baseDir` = dossier de la
+  // scene (modele et textures sont des fichiers de la scene). Le dessin : le modele de la scene, sinon celui de `aspect` (ou de `copieDe`) avec
+  // les textures de la scene a la place des variables nommees, et la teinte fixe.
+  definirPerso(blocs, baseDir) {
+    this.perso ??= new Map(); this.jsonPerso ??= new Map();
+    this.tex.fichiersPerso ??= new Map();
+    const lire = (rel, max) => {
+      const f = path.resolve(baseDir, rel);
+      if (path.relative(path.resolve(baseDir), f).startsWith('..')) throw new Error(`mc.definirBloc : ${rel} sort du dossier de la scene`);
+      const st = fs.statSync(f, { throwIfNoEntry: false });
+      if (!st) throw new Error(`mc.definirBloc : fichier introuvable : ${rel} (chemin relatif au fichier de scene)`);
+      if (st.size > max) throw new Error(`mc.definirBloc : ${rel} fait ${st.size} octets (maximum ${max})`);
+      return f;
+    };
+    for (const b of blocs) {
+      const cleP = 'mcanim_perso/' + b.id.replace(/[^a-z0-9_]/g, '_');
+      const tex = {};
+      for (const [k, rel] of Object.entries(b.textures ?? {})) { const nomT = `${cleP}/${k}`; this.tex.fichiersPerso.set(nomT, lire(rel, 256 * 1024)); tex[k] = nomT; }
+      let modele = null;
+      if (b.modele) {
+        let j;
+        try { j = JSON.parse(fs.readFileSync(lire(b.modele, 64 * 1024), 'utf8')); } catch (e) { throw new Error(`mc.definirBloc('${b.id}').modele : ${b.modele} : ${e.message}`); }
+        if (!j || typeof j !== 'object') throw new Error(`mc.definirBloc('${b.id}').modele : objet JSON de modele de bloc attendu`);
+        const textures = { ...(j.textures ?? {}) };
+        for (const [k, v] of Object.entries(textures)) if (typeof v === 'string' && tex[v.replace(/^#/, '')] && !v.startsWith('#')) textures[k] = tex[v];   // "dessus": "dessus" -> fichier de la scene
+        Object.assign(textures, tex);
+        modele = cleP + '/modele';
+        this.jsonPerso.set(`models/${modele}.json`, { ...j, textures });
+      }
+      this.perso.set(b.id, { def: b, cleP, tex, modele });
+    }
+  }
+  // Etat d'un bloc de mod : celui de son aspect (ou de son modele), textures et teinte de la scene
+  _etatPerso(chaine, nom, props) {
+    const P = this.perso.get(nom), def = P.def;
+    let e;
+    if (P.modele) {
+      const f = props.facing, ry = { north: 0, east: 90, south: 180, west: 270 }[f] ?? 0, rx = f === 'up' ? 270 : f === 'down' ? 90 : props.axis === 'x' || props.axis === 'z' ? 90 : 0;
+      const ry2 = props.axis === 'x' ? 90 : ry;
+      this.blockstates.set(P.cleP, { variants: { '': { model: P.modele, x: rx, y: ry2 } } });
+      e = this._construireEtat(`minecraft:${P.cleP}`);
+    } else {
+      const aspect = analyserEtat('minecraft:' + (def.aspect ?? def.copieDe));
+      const nomA = aspect.nom, propsA = { ...props, ...aspect.props };
+      let base = `minecraft:${nomA}${Object.keys(propsA).length ? '[' + Object.entries(propsA).map(([k, v]) => `${k}=${v}`).join(',') + ']' : ''}`;
+      if (Object.keys(P.tex).length) {   // textures de la scene : blockstate de l'aspect dont chaque modele est derive (variables remplacees)
+        const bs = this._blockstate(nomA);
+        if (bs) {
+          const derive = (v) => { if (!v || !v.model) return v; const mid = `${P.cleP}/${v.model.replace(/^minecraft:/, '').replace(/[^a-z0-9_/]/g, '_')}`; if (!this.jsonPerso.has(`models/${mid}.json`)) this.jsonPerso.set(`models/${mid}.json`, { parent: v.model, textures: { ...P.tex } }); return { ...v, model: mid }; };
+          const conv = (x) => (Array.isArray(x) ? x.map(derive) : derive(x));
+          const bs2 = bs.variants ? { variants: Object.fromEntries(Object.entries(bs.variants).map(([k, v]) => [k, conv(v)])) } : { multipart: bs.multipart.map((p) => ({ ...p, apply: conv(p.apply) })) };
+          this.blockstates.set(P.cleP, bs2);
+          base = `minecraft:${P.cleP}${Object.keys(propsA).length ? '[' + Object.entries(propsA).map(([k, v]) => `${k}=${v}`).join(',') + ']' : ''}`;
+        }
+      }
+      e = this._construireEtat(base);
+    }
+    e = { ...e, chaine, nom, props, geoParChoix: new Map() };
+    if (def.teinte) {   // teinte fixe : toutes les faces, a la place de la teinte de biome
+      const c = (Math.round(def.teinte[0] * 255) << 16) | (Math.round(def.teinte[1] * 255) << 8) | Math.round(def.teinte[2] * 255);
+      e.geo = e.geo.map((q) => ({ ...q, tint: 0 })); e.aleatoire = false; e.teintePerso = [c];
+    }
+    if (def.lumiere > 0) e.emission = true;
+    return e;
+  }
+
   _json(rel) {
+    const p = this.jsonPerso?.get(rel);
+    if (p) return p;
     try { return JSON.parse(fs.readFileSync(path.join(this.dir, ...rel.split('/')), 'utf8')); } catch { return null; }
   }
   _blockstate(nom) {
@@ -316,6 +385,7 @@ export class BibliothequeModeles {
 
   _construireEtat(chaine) {
     const { nom, props } = analyserEtat(chaine);
+    if (this.perso?.has(nom)) return this._etatPerso(chaine, nom, props);
     const e = {
       chaine, nom, props, geo: [], aleatoire: false, emplacements: [], geoParChoix: new Map(),
       type: 0, // 0 rien, 1 modele, 2 eau, 3 lave

@@ -11,6 +11,8 @@ import { resoudreObjet } from '../objets/definition.js';
 import { cuire, afficheDe } from '../objets/modele-objet.js';
 import { texture as texObjet, teinter, groupePresent } from '../objets/fichiers.js';
 import { Aleatoire } from '../moteur/aleatoire.js';
+import { aReflet, cuireReflet, idRendu } from '../objets/reflet.js';   // reflet des objets enchantes au sol (partie 26)
+import { rotationVrille } from './acteurs-vivants.js';   // Impulsion : pose et tourbillon (partie 26)
 
 const RAD = Math.PI / 180;
 const OMBRE_DIR = [0.5, 1, 0.8, 0.8, 0.6, 0.6];       // bas, haut, nord, sud, ouest, est
@@ -32,6 +34,27 @@ class Mailleur {
     if (genre === 'lumiere') { m.mode = 'melange'; m.additif = true; m.emissif = true; }   // rayons (laser du gardien, cristal, mort du dragon) : additifs, pleine lumiere
     return m;
   }
+}
+
+// ModelPart.translateAndRotate (pixels, radians) : parent . T(x, y, z) / 16 . Rz . Ry . Rx (. echelle)
+function matPartie(P, q) {
+  const mul = (A, B) => { const R = new Array(16); for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) { let v = 0; for (let k = 0; k < 4; k++) v += A[i * 4 + k] * B[k * 4 + j]; R[i * 4 + j] = v; } return R; };
+  const c = (v) => Math.cos(v), s = (v) => Math.sin(v);
+  const T4 = [1, 0, 0, q[0] / 16, 0, 1, 0, q[1] / 16, 0, 0, 1, q[2] / 16, 0, 0, 0, 1];
+  const RZ = [c(q[5]), -s(q[5]), 0, 0, s(q[5]), c(q[5]), 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], RY = [c(q[4]), 0, s(q[4]), 0, 0, 1, 0, 0, -s(q[4]), 0, c(q[4]), 0, 0, 0, 0, 1], RX = [1, 0, 0, 0, 0, c(q[3]), -s(q[3]), 0, 0, s(q[3]), c(q[3]), 0, 0, 0, 0, 1];
+  let M = mul(mul(mul(mul(P, T4), RZ), RY), RX);
+  if (q[6] !== 1 || q[7] !== 1 || q[8] !== 1) M = mul(M, [q[6], 0, 0, 0, 0, q[7], 0, 0, 0, 0, q[8], 0, 0, 0, 0, 1]);
+  return M;
+}
+// la texture repetee deux fois en largeur (le defilement de la charge de vent sort de [0, 1] ; le rendu ne repete pas les UV)
+const repetees = new WeakMap();
+function texRepetee(t) {
+  if (repetees.has(t)) return repetees.get(t);
+  const W = t.largeur, H = t.hauteur, rgba = new Uint8Array(W * 2 * H * 4);
+  for (let y = 0; y < H; y++) for (let k = 0; k < 2; k++) rgba.set(t.rgba.subarray(y * W * 4, (y + 1) * W * 4), (y * W * 2 + k * W) * 4);
+  const r = { largeur: W * 2, hauteur: H, rgba, repete: true };
+  repetees.set(t, r);
+  return r;
 }
 
 // hasard deterministe d'une entite (decalage de rotation, copies d'une pile) : pas de Math.random
@@ -70,7 +93,7 @@ function texFleche() {
   return TEX_FLECHE;
 }
 
-export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
+export function creerEntites({ rs, replay, kit, texOf, lum, notes, creatures = null }) {
   const E = replay.entitesVue, n = E.length / 8;
   const traits = new Map();   // replay.traits par tick (laser du gardien, rayon du cristal de l'End, rayons de la mort du dragon)
   for (const t of replay.traits ?? []) { const k = Math.round(t.tick); if (!traits.has(k)) traits.set(k, []); traits.get(k).push(t); }
@@ -81,8 +104,10 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
   const vus = new Set();
   const note = (t) => { if (!vus.has(t)) { vus.add(t); notes.push(t); } };
   const blanches = new Map();
-  const texBlanche = (nom) => {            // la texture avec tous les pixels blancs (alpha gardee) : le clignotement du TNT
-    if (!blanches.has(nom)) { const t = texOf(nom + '.png'); blanches.set(nom, t ? { largeur: t.largeur, hauteur: t.hauteur, rgba: t.rgba.map((v, i) => (i % 4 === 3 ? v : 255)) } : null); }
+  // clignotement du TNT amorce (TntMinecartRenderer.submitWhiteSolidBlock) : surcouche blanche OverlayTexture.u(1) (alpha 63/255) :
+  // texel = melange(blanc, texture, 63/255), eclaire normalement
+  const texBlanche = (nom, tex0 = null) => {
+    if (!blanches.has(nom)) { const t = tex0 ?? texOf(nom + '.png'); blanches.set(nom, t ? { largeur: t.largeur, hauteur: t.hauteur, rgba: t.rgba.map((v, i) => (i % 4 === 3 ? v : Math.round(255 + (v - 255) * 63 / 255))) } : null); }
     return blanches.get(nom);
   };
 
@@ -99,9 +124,10 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
 
   // ---- modeles d'objets (objets au sol) : quads du modele d'objet, affichage `ground`
   const cacheObjet = new Map();
-  const quadsObjet = (id) => {
-    if (cacheObjet.has(id)) return cacheObjet.get(id);
-    let r = { quads: [], aff: null };
+  const quadsObjet = (brut) => {
+    if (cacheObjet.has(brut)) return cacheObjet.get(brut);
+    const id = idRendu(brut);   // une pile avec composants (enchantements : moteur/pile.js) : le modele de l'objet, et son reflet
+    let r = { quads: [], aff: null, reflet: aReflet(brut, replay.refletsForces) };
     if (kit && groupePresent(kit, 'objets')) {
       const def = resoudreObjet(kit, id);
       for (const e of def.entrees) {
@@ -119,7 +145,7 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
       } catch { /* aucun modele */ }
     }
     if (!r.quads.length) note(`objet au sol : modele introuvable pour ${id} (les fichiers d'objets du kit sont-ils la ?)`);
-    cacheObjet.set(id, r);
+    cacheObjet.set(brut, r);
     return r;
   };
   const teintees = new Map();
@@ -130,6 +156,10 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
   };
 
   const blancTex = { largeur: 1, hauteur: 1, rgba: new Uint8Array([255, 255, 255, 255]) };
+  const noirTex = { largeur: 1, hauteur: 1, rgba: new Uint8Array([0, 0, 0, 255]) };   // fil de peche (FishingHookRenderer : lignes noires)
+  // main du pecheur par bouchon et par tick (moteur/peche.js : replay.peche [tick, id, x, y, z])
+  const mainsPeche = new Map();
+  for (const [tk, id2, hx, hy, hz] of replay.peche ?? []) { if (!mainsPeche.has(id2)) mainsPeche.set(id2, new Map()); mainsPeche.get(id2).set(tk, [hx, hy, hz]); }
   // rayons entre deux points (replay.traits)
   function dessinerTrait(t, u, M) {
     const [ax, ay, az] = t.de, [bx, by, bz] = t.vers;
@@ -180,6 +210,46 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
       }
     }
   }
+  // Impulsion (Riptide) : SpinAttackEffectLayer, deux boites autour du joueur qui tourne (texture entity/trident/trident_riptide, 64 x 64,
+  // dessinee sans culling). Geometrie de entity-models.json du jeu 26.3 (`minecraft:spin_attack#main`, lecture seule) : box0 addBox(-8, -9,6,
+  // -8, 16, 32, 16) x 0,75 ; box1 addBox(-8, 0, -8, 16, 32, 16) x 1,5 ; yRot = age x -(45 + (i + 1) x 5) degres (SpinAttackEffectModel ;
+  // Horizon game/perspective.rs, MIT). Le corps est couche par la meme rotation que la pose (film/acteurs-vivants.js rotationVrille).
+  const RA = replay.acteursVue ?? [], vrilles = new Map();
+  for (let i = 0; i + 15 < RA.length; i += 16) if (((RA[i + 8] >> 6) & 7) === 7) { if (!vrilles.has(RA[i])) vrilles.set(RA[i], []); vrilles.get(RA[i]).push([RA[i + 1], i]); }
+  const suivante = (ida, i) => { for (let j = i + 16; j < Math.min(RA.length, i + 16 * 64); j += 16) if (RA[j + 1] === ida) return j; return i; };
+  const BOITES_VRILLE = [{ y0: -9.6, s: 0.75 }, { y0: 0, s: 1.5 }];
+  const dessinerVrille = (ida, a, u, f, M) => {
+    const t = textureDe('entity/trident/trident_riptide', null);
+    if (!t) { note('Impulsion : texture entity/trident/trident_riptide absente du kit (groupe projectiles)'); return; }
+    const b = suivante(ida, a), L3 = (j) => RA[a + j] + (RA[b + j] - RA[a + j]) * f;
+    const x = L3(2), y = L3(3), z = L3(4), lacet = RA[a + 5], R = rotationVrille(lacet, L3(7), u);
+    const th = (180 - lacet) * Math.PI / 180, c = Math.cos(th), s = Math.sin(th);
+    const vers = (p) => {   // modele (pixels) -> monde : echelle (-1, -1, 1), 1,501 au-dessus des pieds, lacet du corps, puis la rotation de la vrille
+      const lx = -p[0] / 16, ly = 1.501 - p[1] / 16, lz = p[2] / 16;
+      const wx = c * lx + s * lz, wz = -s * lx + c * lz;
+      return [x + R[0] * wx + R[1] * ly + R[2] * wz, y + R[3] * wx + R[4] * ly + R[5] * wz, z + R[6] * wx + R[7] * ly + R[8] * wz];
+    };
+    const L = lum(x, y + 1, z);
+    BOITES_VRILLE.forEach(({ y0, s: k }, i) => {
+      const ang = u * -(45 + (i + 1) * 5) * Math.PI / 180, ca = Math.cos(ang), sa = Math.sin(ang);
+      const P = (px, py, pz) => { const X = px * k, Y = py * k, Z = pz * k; return vers([ca * X + sa * Z, Y, -sa * X + ca * Z]); };
+      const y1 = y0 + 32;
+      // faces du cube (u, v en 64e : ModelPart.Cube, texOffs 0, 0, taille 16 x 32 x 16)
+      const F = [
+        [[[8, y0, 8], [-8, y0, 8], [-8, y0, -8], [8, y0, -8]], [[32, 0], [16, 0], [16, 16], [32, 16]]],
+        [[[8, y1, -8], [-8, y1, -8], [-8, y1, 8], [8, y1, 8]], [[48, 16], [32, 16], [32, 0], [48, 0]]],
+        [[[-8, y0, -8], [-8, y0, 8], [-8, y1, 8], [-8, y1, -8]], [[16, 16], [0, 16], [0, 48], [16, 48]]],
+        [[[8, y0, -8], [-8, y0, -8], [-8, y1, -8], [8, y1, -8]], [[32, 16], [16, 16], [16, 48], [32, 48]]],
+        [[[8, y0, 8], [8, y0, -8], [8, y1, -8], [8, y1, 8]], [[48, 16], [32, 16], [32, 48], [48, 48]]],
+        [[[-8, y0, 8], [8, y0, 8], [8, y1, 8], [-8, y1, 8]], [[64, 16], [48, 16], [48, 48], [64, 48]]],
+      ];
+      for (const [pts, uv] of F) {
+        const q = pts.map((p) => P(...p)), w = uv.map(([uu, vv]) => [uu / 64, vv / 64]);
+        M('vrille', t, 'objet').quad(q, w, L);
+        M('vrille', t, 'objet').quad([q[3], q[2], q[1], q[0]], [w[3], w[2], w[1], w[0]], L);   // entityCutoutNoCull : les deux faces
+      }
+    });
+  };
   return {
     maillages(u, camera) {
       const tick = Math.floor(u), f = u - tick, parTex = new Map();
@@ -201,11 +271,19 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
             [[-h, h, -h], [-h, h, h], [-h, -h, h], [-h, -h, -h]], [[h, h, h], [h, h, -h], [h, -h, -h], [h, -h, h]],
             [[-h, h, -h], [h, h, -h], [h, h, h], [-h, h, h]], [[-h, -h, h], [h, -h, h], [h, -h, -h], [-h, -h, -h]],
           ];
+          if (E[a + 7] >= 0) {   // PrimedTnt.block_state : un bloc de mod qui copie la TNT (moteur/perso.js) garde son aspect amorce
+            for (const q of quadsBloc(E[a + 7])) {
+              const t0 = textureDe(q.tex, null), tex = fl ? texBlanche('pal|' + q.tex, t0) : t0;
+              if (!tex) continue;
+              M((fl ? 'blanc|' : 'b|') + q.tex, tex, 'tnt').quad(q.p.map((p) => [x + (p[0] - 0.5) * ech, cy + (p[1] - 0.5) * ech, z + (p[2] - 0.5) * ech]), q.uv, q.ombre * L);
+            }
+            continue;
+          }
           const noms = ['block/tnt_side', 'block/tnt_side', 'block/tnt_side', 'block/tnt_side', 'block/tnt_top', 'block/tnt_bottom'], ombre = [0.8, 0.8, 0.6, 0.6, 1, 0.5];
           for (let i = 0; i < 6; i++) {
             const nom = fl ? 'blanc|' + noms[i] : noms[i], tex = fl ? texBlanche(noms[i]) : texOf(noms[i] + '.png');
             if (!tex) continue;
-            M(nom, tex, 'tnt').quad(F[i].map((p) => [x + p[0], cy + p[1], z + p[2]]), [[0, 0], [1, 0], [1, 1], [0, 1]], fl ? 1 : ombre[i] * L);
+            M(nom, tex, 'tnt').quad(F[i].map((p) => [x + p[0], cy + p[1], z + p[2]]), [[0, 0], [1, 0], [1, 1], [0, 1]], ombre[i] * L);
           }
         } else if (type === 'chute' || (type === 'piston' && k < lignes.length - 1)) {   // bloc en mouvement d'un piston : meme dessin ; le dernier enregistrement est celui du tick ou le vrai bloc est pose
           const L = lum(x, y + 0.5, z);
@@ -285,6 +363,48 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
           const fw = [-Math.sin(ya) * Math.cos(pa), -Math.sin(pa), Math.cos(ya) * Math.cos(pa)], rr = [-Math.cos(ya), 0, -Math.sin(ya)];
           const hh = [rr[1] * fw[2] - rr[2] * fw[1], rr[2] * fw[0] - rr[0] * fw[2], rr[0] * fw[1] - rr[1] * fw[0]], s = 0.15, cy = y + 0.1 + 0.075;
           M('orbe', t, 'orbe').quad([[x - rr[0] * s + hh[0] * s, cy - rr[1] * s + hh[1] * s, z - rr[2] * s + hh[2] * s], [x + rr[0] * s + hh[0] * s, cy + rr[1] * s + hh[1] * s, z + rr[2] * s + hh[2] * s], [x + rr[0] * s - hh[0] * s, cy + rr[1] * s - hh[1] * s, z + rr[2] * s - hh[2] * s], [x - rr[0] * s - hh[0] * s, cy - rr[1] * s - hh[1] * s, z - rr[2] * s - hh[2] * s]], [[u0, v0], [u0 + 0.25, v0], [u0 + 0.25, v0 + 0.25], [u0, v0 + 0.25]], col);
+        } else if (type === 'fusee') {
+          // FireworkEntityRenderer : le modele de l'objet (affichage ground) tourne vers la camera ; tiree de biais : puis Z 180, Y 180, X 90
+          const modele = quadsObjet('firework_rocket');
+          if (!modele.quads.length) continue;
+          const cam = camera ?? { lacet: 0, tangage: 0 }, ya = (cam.lacet ?? 0) * RAD, pa = (cam.tangage ?? 0) * RAD;
+          const fw = [-Math.sin(ya) * Math.cos(pa), -Math.sin(pa), Math.cos(ya) * Math.cos(pa)], rr = [-Math.cos(ya), 0, -Math.sin(ya)];
+          const hh = [rr[1] * fw[2] - rr[2] * fw[1], rr[2] * fw[0] - rr[0] * fw[2], rr[0] * fw[1] - rr[1] * fw[0]], zz = [-fw[0], -fw[1], -fw[2]];
+          const biais = E[a + 6] > 0.5, L = lum(x, y, z);
+          for (const q of modele.quads) {
+            const tex = textureDe(q.tex, q.tint);
+            if (!tex) continue;
+            const P = q.p.map((p0) => {
+              let [px, py, pz] = transformer(p0, modele.aff);
+              if (biais) { [py, pz] = [-pz, py]; [px, pz] = [-px, -pz]; [px, py] = [-px, -py]; }   // pile du jeu Z 180 . Y 180 . X 90 : X d'abord
+              return [x + rr[0] * px + hh[0] * py + zz[0] * pz, y + rr[1] * px + hh[1] * py + zz[1] * pz, z + rr[2] * px + hh[2] * py + zz[2] * pz];
+            });
+            M('fusee|' + q.tex + '|' + (q.tint ?? ''), tex, 'objet').quad(P, q.uv, L);
+          }
+        } else if (type === 'vent') {
+          // WindChargeRenderer : le modele wind_charge du jeu (cube de la charge et son vent), parties tournees de -age x 16 et +age x 16 degres
+          // autour de Y, texture entity/projectiles/wind_charge qui defile en u de age x 0,03 (RenderTypes.breezeWind), pleine lumiere
+          const racine = creatures?.modeles?.wind_charge?.main?.r, t = textureDe('entity/projectiles/wind_charge', null);
+          if (!racine || !t) { note('charge de vent : modele wind_charge (table des creatures) ou texture entity/projectiles/wind_charge absents'); continue; }
+          const age = E[a + 6] + f, rot = { wind_charge: -age * 16 * RAD, wind: age * 16 * RAD }, defile = (age * 0.03) % 1;
+          const W = creatures.modeles.wind_charge.main.t?.[0] || t.largeur, H = creatures.modeles.wind_charge.main.t?.[1] || t.hauteur;
+          const marche = (part, nom, Mp) => {
+            const q = [0, 0, 0, 0, 0, 0, 1, 1, 1]; (part.p ?? []).forEach((v, i) => { q[i] = v; });
+            if (rot[nom] !== undefined) q[4] += rot[nom];
+            const Mn = matPartie(Mp, q);
+            for (let k = 0; k + 19 < (part.q?.length ?? 0); k += 20) {
+              const P = [], uv = [];
+              for (let c = 0; c < 4; c++) {
+                const b = k + c * 5, X = part.q[b] / 16, Y = part.q[b + 1] / 16, Z = part.q[b + 2] / 16;
+                const w = [Mn[0] * X + Mn[1] * Y + Mn[2] * Z + Mn[3], Mn[4] * X + Mn[5] * Y + Mn[6] * Z + Mn[7], Mn[8] * X + Mn[9] * Y + Mn[10] * Z + Mn[11]];
+                P.push([x - w[0], y - w[1], z + w[2]]);   // translation(position) . scale(-1, -1, 1)
+                uv.push([(part.q[b + 3] / W + defile) / 2, part.q[b + 4] / H]);   // texture repetee deux fois en largeur
+              }
+              M('vent', texRepetee(t), 'objet').quad(P, uv, 1);
+            }
+            for (const kk of Object.keys(part.c ?? {}).sort()) marche(part.c[kk], kk, Mn);
+          };
+          marche(racine, 'root', [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
         } else if (type === 'lance') {
           // sprite de l'objet lance, de face a la camera (taille 0,5 comme l'affichage ground)
           const nom = replay.noms[E[a + 7]], modele = quadsObjet(nom), nomTex = modele.quads[0]?.tex;
@@ -295,6 +415,30 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
           const fw = [-Math.sin(ya) * Math.cos(pa), -Math.sin(pa), Math.cos(ya) * Math.cos(pa)], rr = [-Math.cos(ya), 0, -Math.sin(ya)];
           const hh = [rr[1] * fw[2] - rr[2] * fw[1], rr[2] * fw[0] - rr[0] * fw[2], rr[0] * fw[1] - rr[1] * fw[0]], s = 0.25, L = lum(x, y, z), cy = y + 0.125;
           M('lance|' + nomTex, t, 'objet').quad([[x - rr[0] * s + hh[0] * s, cy - rr[1] * s + hh[1] * s, z - rr[2] * s + hh[2] * s], [x + rr[0] * s + hh[0] * s, cy + rr[1] * s + hh[1] * s, z + rr[2] * s + hh[2] * s], [x + rr[0] * s - hh[0] * s, cy + rr[1] * s - hh[1] * s, z + rr[2] * s - hh[2] * s], [x - rr[0] * s - hh[0] * s, cy - rr[1] * s - hh[1] * s, z - rr[2] * s - hh[2] * s]], [[0, 0], [1, 0], [1, 1], [0, 1]], L);
+        } else if (type === 'bouchon') {
+          // FishingHookRenderer : le bouchon (entity/fishing/fishing_hook, carre de 0,5 face a la camera) et le fil : 16 segments noirs depuis
+          // 0,25 au-dessus du bouchon jusqu'a la canne, y = dy x (a^2 + a) / 2 + 0,25 (moteur/peche.js ecrit la main dans replay.peche)
+          const t = textureDe('entity/fishing/fishing_hook', null);
+          if (!t) { note('bouchon de peche : texture entity/fishing/fishing_hook absente du kit (groupe projectiles)'); continue; }
+          const cam = camera ?? { lacet: 0, tangage: 0, x, y, z }, ya = (cam.lacet ?? 0) * RAD, pa = (cam.tangage ?? 0) * RAD;
+          const fw = [-Math.sin(ya) * Math.cos(pa), -Math.sin(pa), Math.cos(ya) * Math.cos(pa)];
+          const rr0 = [fw[2], 0, -fw[0]], nr = Math.hypot(...rr0) || 1, rr = rr0.map((c) => c / nr);
+          const up = [rr[1] * fw[2] - rr[2] * fw[1], rr[2] * fw[0] - rr[0] * fw[2], rr[0] * fw[1] - rr[1] * fw[0]], s = 0.25, L = lum(x, y, z);
+          const C = (a2, b2) => [x + rr[0] * a2 + up[0] * b2, y + rr[1] * a2 + up[1] * b2, z + rr[2] * a2 + up[2] * b2];
+          // rr pointe vers la gauche de l'ecran et up vers le bas : le coin (0, 0) de la texture est en haut a gauche a l'ecran
+          M('bouchon', t, 'objet').quad([C(s, -s), C(-s, -s), C(-s, s), C(s, s)], [[0, 0], [1, 0], [1, 1], [0, 1]], L);
+          const main = mainsPeche.get(id)?.get(tick) ?? mainsPeche.get(id)?.get(tick - 1);
+          if (main) {
+            const o = [main[0] - x, main[1] - (y + 0.25), main[2] - z], pt = (a2) => [x + o[0] * a2, y + o[1] * (a2 * a2 + a2) * 0.5 + 0.25, z + o[2] * a2];
+            for (let i = 0; i < 16; i++) {
+              const A = pt(i / 16), B = pt((i + 1) / 16), d = Math.hypot(A[0] - (cam.x ?? x), A[1] - (cam.y ?? y), A[2] - (cam.z ?? z)), w = Math.max(0.004, d * 0.0026);   // ~2 pixels a l'ecran (1080 lignes, 70 degres)
+              const seg = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], vc = [A[0] - (cam.x ?? x), A[1] - (cam.y ?? y), A[2] - (cam.z ?? z)];
+              let n = [seg[1] * vc[2] - seg[2] * vc[1], seg[2] * vc[0] - seg[0] * vc[2], seg[0] * vc[1] - seg[1] * vc[0]]; const ln = Math.hypot(...n) || 1; n = n.map((c) => c / ln * w / 2);
+              const q4 = [[A[0] - n[0], A[1] - n[1], A[2] - n[2]], [A[0] + n[0], A[1] + n[1], A[2] + n[2]], [B[0] + n[0], B[1] + n[1], B[2] + n[2]], [B[0] - n[0], B[1] - n[1], B[2] - n[2]]];
+              M('fil', noirTex, 'objet').quad(q4, [[0, 0], [1, 0], [1, 1], [0, 1]], 1);
+              M('fil', noirTex, 'objet').quad([q4[3], q4[2], q4[1], q4[0]], [[0, 1], [1, 1], [1, 0], [0, 0]], 1);   // les deux faces (une ligne n'a pas d'envers)
+            }
+          }
         } else if (type === 'objet') {
           const nom = replay.noms[E[a + 7]], N = E[a + 6], modele = quadsObjet(nom);
           if (!modele.quads.length) continue;
@@ -305,18 +449,20 @@ export function creerEntites({ rs, replay, kit, texOf, lum, notes }) {
           for (let c = 0; c < copies; c++) {
             const dx = c ? (hash(id * 7 + c) * 2 - 1) * 0.15 * 0.5 : 0, dy = c ? (hash(id * 11 + c) * 2 - 1) * 0.15 * 0.5 : 0, dz = c ? (hash(id * 13 + c) * 2 - 1) * 0.15 * 0.5 : 0;
             for (const q of modele.quads) {
-              const tex = textureDe(q.tex, q.tint);
-              if (!tex) continue;
+              const tex0 = textureDe(q.tex, q.tint);
+              if (!tex0) continue;
+              const tex = modele.reflet && kit ? cuireReflet(kit, tex0, u * 50) : tex0;   // objet enchante au sol : reflet (objets/reflet.js)
               const P = q.p.map((p) => { const [px, py, pz] = transformer(p, modele.aff); return [x + px * cs + pz * sn + dx, y + bob + 0.25 * ey + py + dy, z - px * sn + pz * cs + dz]; });
               const A = P[0], B = P[1], C = P[2], ux = B[0] - A[0], uy = B[1] - A[1], uz = B[2] - A[2], wx = C[0] - A[0], wy = C[1] - A[1], wz = C[2] - A[2];
               const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx, l = Math.hypot(nx, ny, nz) || 1;
               const ombre = 0.75 + 0.25 * Math.abs(ny / l);       // eclairage plat des objets : le dessus un peu plus clair
-              M('o|' + q.tex + '|' + (q.tint ?? ''), tex, 'objet').quad(P, q.uv, ombre * L);
+              M('o|' + q.tex + '|' + (q.tint ?? '') + (modele.reflet ? '|reflet' : ''), tex, 'objet').quad(P, q.uv, ombre * L);
             }
           }
         }
       }
       for (const t of traits.get(tick) ?? []) dessinerTrait(t, u, M);
+      for (const [ida, a] of vrilles.get(tick) ?? []) dessinerVrille(ida, a, u, f, M);
       const out = [];
       for (const { texture, genre, m } of parTex.values()) if (!m.vide()) out.push(m.maillage(texture, genre));
       return out;

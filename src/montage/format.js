@@ -325,7 +325,8 @@ const PAR_TYPE = {
   inventaire: ['cases', 'colonnes', 'surligner', 'selection', 'style'],
   coffre: ['titre', 'cases', 'contenu', 'rangees', 'joueur'],
   marchand: ['titre', 'offres', 'selection'],
-  hud: ['coeurs', 'faim', 'xp', 'niveau', 'cases', 'selection', 'viseur'],
+  hud: ['coeurs', 'faim', 'xp', 'niveau', 'cases', 'selection', 'viseur', 'joueur'],
+  poste: ['joueur'],   // ecran du poste ouvert par un acteur simule (etabli, table d'enchantement, enclume, alambic, tailleur, forge : partie 26)
   image: ['fichier'],
   carte: ['fond', 'acteurs', 'vue', 'incrustations', 'lumiere'],
 };
@@ -514,11 +515,17 @@ function lireContenu(D, e, o, ch, duree) {
       texte('titre', false); o.titre ??= 'Villageois';
       break;
     }
+    case 'poste':
+      if (typeof e.joueur !== 'string' || !e.joueur) D.err(`${ch}.joueur`, 'nom de l acteur a intentions dont on montre l ecran (fabrique, enchante, forge, alambic) attendu');
+      o.joueur = e.joueur;
+      break;
     case 'hud':
       o.coeurs = nombreEntre(D, e.coeurs, `${ch}.coeurs`, 0, 40, 20); o.faim = nombreEntre(D, e.faim, `${ch}.faim`, 0, 40, 20);
       o.xp = nombreEntre(D, e.xp, `${ch}.xp`, 0, 1, 0); o.niveau = e.niveau === undefined ? null : (Number.isInteger(e.niveau) && e.niveau >= 0 && e.niveau <= 999 ? e.niveau : D.err(`${ch}.niveau`, 'entier de 0 a 999'));
       o.selection = e.selection === undefined ? 0 : (Number.isInteger(e.selection) && e.selection >= 0 && e.selection <= 8 ? e.selection : D.err(`${ch}.selection`, 'entier de 0 a 8'));
       o.viseur = e.viseur !== false;
+      // relie a un acteur simule (docs/SIMULATION.md partie 26) : vie, faim, experience, armure, air et objet tenu suivent la simulation
+      if (e.joueur !== undefined) { if (typeof e.joueur !== 'string' || !e.joueur) D.err(`${ch}.joueur`, 'nom d un acteur a intentions (actes) attendu'); o.joueur = e.joueur; }
       if (e.cases !== undefined) { if (!Array.isArray(e.cases) || e.cases.length > 9) D.err(`${ch}.cases`, '9 cases au plus'); o.cases = e.cases.map((c) => (c === null ? null : typeof c === 'string' ? { objet: c } : { objet: c[0], nombre: c[1], barre: c[2] })); }
       break;
     case 'carte':

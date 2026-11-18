@@ -6,18 +6,20 @@
 // bow_power), mobs/rabbit.rs (fuite du lapin) ; nombres du jeu : creeper (SwellGoal, maxSwell 30, rayon 3 / 6 charge), golem de fer
 // (doHurtTarget : 7,5 + [0, 15[ et 0,4 vers le haut), degats selon la difficulte (Player.hurt : facile min(d / 2 + 1, d), difficile x 1,5),
 // brulure au soleil (Mob.isSunBurnTick), portes cassees par les zombies en difficile (BreakDoorGoal, 240 ticks).
-// Ce qui n'est PAS porte : cerveaux complets (villageois : maison la nuit, travail le jour, fuite ; pas de ragots ni d'echanges), apparition,
-// conversion des villageois, teleportation de l'enderman, potions de la sorciere, boules de feu.
+// Le reste est dans les modules melanges a la classe (ia-especes, ia-vie, ia-villageois, ia-boss, ia-eau, ia-warden, ia-oeufs) : cerveau complet
+// du villageois, conversions, enderman, sorciere, boules de feu, nage, boss (docs/SIMULATION.md parties 15 a 22). L'apparition spontanee des
+// mobs (spawn) n'est pas voulue : le realisateur place ses creatures.
 // Tout passe par l'API publique : evenements `creature.cible`, `creature.attaque` (annulable, ev.degats modifiable), `creature.explose`
 // (annulable, ev.puissance), regles `monde.difficulte` et `ia.*` (mcanim regles --liste ia).
-import { chercherChemin, blocsOuvrables, segmentLibre } from './navigation.js';
+import { chercherChemin, blocsOuvrables } from './navigation.js';
 import { rayonBloc } from './collision.js';
 import { exploser } from './explosion.js';
 import { VOLS, METHODES } from './ia-especes.js';
 import { VIE, declarerReglesVie } from './ia-vie.js';   // age, amour, bebes, abeilles, danse, conversions, golems, blocs de l'enderman
 import { METHODES_BOSS, declarerReglesBoss } from './ia-boss.js';   // wither, dragon de l'Ender
 import { METHODES_EAU } from './ia-eau.js';   // nage dirigee : poissons, bancs, calmars, dauphins, axolotls, tortues, gardiens
-import { METHODES_WARDEN } from './ia-warden.js';   // warden : vibrations, colere, flairer, rugir, onde sonique, creuser
+import { METHODES_WARDEN } from './ia-warden.js';
+import { METHODES_BREEZE } from './ia-breeze.js';   // breeze : cerveau, tir de charges de vent, saut long, glissade   // warden : vibrations, colere, flairer, rugir, onde sonique, creuser
 import { METHODES_OEUFS, declarerReglesOeufs } from './ia-oeufs.js';   // oeufs et reproductions a part : tortue, grenouille, renifleur, panda, ocelot, axolotl, poule
 import { METHODES_VILLAGEOIS } from './ia-villageois.js';   // villageois : temps libre, echanges, reproduction, jeu des bebes, lits et postes pris
 import { declarerReglesPoussee } from './poussee.js';   // les corps vivants se poussent (acteurs.poussee)
@@ -52,11 +54,11 @@ export const PROFILS = {
   bat: P('chauve'), bee: P('abeille', { degats: 2, suivi: 48 }), allay: P('allay'), parrot: P('perroquet'), ghast: P('ghast', { suivi: 100, immuniseFeu: true }), happy_ghast: P('ghast', { suivi: 16 }),
   phantom: P('phantom', { degats: 6, suivi: 64, soleil: true }), vex: P('vex', { degats: 4, immuniseFeu: true }), blaze: P('blaze', { degats: 6, suivi: 48, immuniseFeu: true }),
   witch: P('sorciere', { suivi: 16 }), enderman: P('enderman', { degats: 7, suivi: 64 }),
-  wither: P('wither', { suivi: 40, immuniseFeu: true }), ender_dragon: P('dragon', { immuniseFeu: true, antiRecul: 1 }), warden: P('warden', { degats: 30, suivi: 24, antiRecul: 1 }),
+  wither: P('wither', { suivi: 40, immuniseFeu: true }), ender_dragon: P('dragon', { immuniseFeu: true, antiRecul: 1 }), warden: P('warden', { degats: 30, suivi: 24, antiRecul: 1 }), breeze: P('breeze', { degats: 3, suivi: 24 }),
   cod: P('poisson', { panique: 1.25 }), salmon: P('poisson', { panique: 1.25 }), tropical_fish: P('poisson', { panique: 1.25 }), pufferfish: P('poisson', { panique: 1.25 }), tadpole: P('poisson', { panique: 1.25 }),
   squid: P('calmar'), glow_squid: P('calmar'), dolphin: P('dauphin', { degats: 3 }), axolotl: P('axolotl', { degats: 2, panique: 2.0 }),
   guardian: P('gardien', { degats: 6 }), elder_guardian: P('gardien', { degats: 8 }), sniffer: P('passif', { panique: 2.0 }),
-  villager: P('villageois', { panique: 0.75 }), wandering_trader: P('villageois', { panique: 0.75 }),
+  villager: P('villageois', { panique: 0.75, chemin: 48 }), wandering_trader: P('villageois', { panique: 0.75 }),
 };
 const MONSTRES = new Set(['zombie', 'zombie_villager', 'husk', 'drowned', 'skeleton', 'stray', 'bogged', 'parched', 'wither_skeleton', 'creeper', 'spider', 'cave_spider', 'witch', 'enderman', 'zombified_piglin', 'piglin_brute', 'vindicator', 'pillager', 'evoker', 'ravager', 'vex', 'phantom', 'slime', 'magma_cube', 'blaze', 'ghast', 'silverfish', 'endermite', 'hoglin', 'zoglin', 'guardian', 'elder_guardian', 'warden', 'breeze', 'creaking', 'bogged']);
 export const estMonstre = (t) => MONSTRES.has(t);
@@ -115,7 +117,7 @@ export class IA {
     this.vol = VOLS[d.type] ?? null; this.dard = true; this.epaule = d.epaule ?? null; this.ami = d.ami ?? null;
     this.lit = d.lit ?? null; this.rassemblement = d.rassemblement ?? null; this.variante = d.variante ?? null; this.bebe = !!d.bebe;
     this.tangageCorps = 0; this.laissePiste = d.laisse ?? null;
-    this.charge = !!d.charge; this.initVie(d); this.initBoss(d); this.initEau?.(d); this.initWarden?.(d); this.initOeufs?.(d);
+    this.charge = !!d.charge; this.initVie(d); this.initBoss(d); this.initEau?.(d); this.initWarden?.(d); this.initBreeze?.(d); this.initOeufs?.(d);
     this.installerButs();
   }
   get sim() { return this.a.sim; }
@@ -187,6 +189,12 @@ export class IA {
     if (this.cible === o) return;
     const ev = this.sim.api.evenement('creature.cible', { creature: this.a.nom, type: this.type, cible: o?.nom ?? null });
     if (ev.annule) return;
+    const ec = this.a.evEntite('cible', { cible: o?.nom ?? null, candidats: o ? [o.nom] : [] });   // gestionnaires d'entite : annuler, ou rendre le nom d'une autre cible
+    if (ec) {
+      if (ec.annule) return;
+      if (typeof ec.resultat === 'string') { const o2 = this.sim.acteurs.parNom.get(ec.resultat); if (o2 && o2 !== this.a && o2.mort < 0) o = o2; }
+      if (this.cible === o) return;
+    }
     this.cible = o; this.cibleDepuis = this.sim.temps;
     if (o) { this.sim.dire(`${this.a.nom} vise ${o.nom}`); this.stat('cibles'); }
   }
@@ -227,19 +235,22 @@ export class IA {
   arreter(b) { this.actifs.delete(b); this['fin_' + b.nom]?.(b); }
 
   // ---- navigation (PathNavigation : chemin recalcule, suivi des points) ----------------------------------------------
-  allerVers(x, y, z, vit, { ouvrePortes = false, rayon = 0.6, recalcul = 10 } = {}) {
+  allerVers(x, y, z, vit, { ouvrePortes = false, rayon = 0.6, recalcul = 10, precision = 1 } = {}) {
     const a = this.a, sim = this.sim, n = this.nav;
     a.kVit = (this.attr * vit) ** 2 / 0.098;
     if (n && sim.temps < n.prochain && Math.hypot(n.but[0] - x, n.but[2] - z) < 1) return;
-    const gab = { L: Math.max(0.6, a.L), H: a.H, chute: this.pr.fam === 'volant' ? 64 : 3 };
-    // ligne droite libre au meme niveau : pas de recherche (le chemin du jeu serait le meme segment)
-    if (!ouvrePortes && y !== undefined && Math.abs(y - a.y) < 0.02 && Math.hypot(x - a.x, z - a.z) < 24 && segmentLibre(a.lec, [a.x, a.y, a.z], [x, a.y, z], gab)) {
-      this.nav = { but: [x, y, z], chemin: [[x, a.y, z]], i: 0, portes: [], complet: true, prochain: sim.temps + recalcul, ouvrePortes };
-      return;
-    }
-    const r = chercherChemin(a.lec, [a.x, a.y, a.z], { x, z, y }, { ouvrePortes, rayon, maxNoeuds: 1500, gabarit: gab });
+    const gab = this.gabaritNav();
+    // PathNavigation.createPath : la recherche du jeu (moteur/chemins.js), longueur follow_range, accuracy 1 (moveTo), noeuds visites suivi x 16
+    const r = chercherChemin(a.lec, [a.x, a.y, a.z], { x, z, y }, { ouvrePortes, rayon: Math.max(1, rayon), precision, gabarit: gab, suivi: Math.max(this.pr.suivi ?? 16, this.pr.chemin ?? 0), auSol: a.auSol, dansEau: a.dansEau });   // getMaxPathLength : max(follow_range, setRequiredPathLength : villageois 48)
     const ch = r.chemin.length > 1 ? r.chemin.slice(1) : r.complet ? [[x, y, z]] : [];
     this.nav = { but: [x, y, z], chemin: ch, i: 0, portes: r.portes, complet: r.complet, prochain: sim.temps + (r.complet ? recalcul : Math.max(recalcul, 20)), ouvrePortes };   // pas de chemin : on reessaie moins souvent (PathNavigation : 20 ticks)
+  }
+  // boite du type, chute permise, eau : malus 8 des cases d'eau et de bord d'eau (PathType.WATER / WATER_BORDER du jeu) ; le renifleur et
+  // l'arpenteur evitent l'eau (malus -1) ; les creatures qui ont FloatGoal (tous sauf zombies et squelettes) flottent a la surface ; pas de
+  // chemin sur une cloture ou un muret
+  gabaritNav() {
+    const a = this.a, f = this.pr.fam, sec = this.type === 'sniffer' || this.type === 'strider';
+    return { L: Math.max(0.6, a.L), H: a.H, chute: f === 'volant' ? 64 : 3, eau: sec ? 0 : 8, flotte: f !== 'zombie' && f !== 'squelette', surClotures: false };   // PathType.FENCE : -1
   }
   arreterNav() { this.nav = null; }
   suivreChemin() {
@@ -328,7 +339,7 @@ export class IA {
     if (!this.nav || this.sim.temps >= this.nav.prochain) this.allerVers(a.x + dx / L * 8, undefined, a.z + dz / L * 8, 1.25, { recalcul: 20 });
   }
 
-  // villageois : rentre a la maison la nuit (heure >= 18 ou < 6), au travail le jour (cerveau du villageois, tres simplifie)
+  // maison la nuit, travail le jour : ces methodes sont remplacees par celles de ia-especes.js (emploi du temps du jeu, melange a la classe)
   peut_maison() { return !!this.maison && !this.jour() && Math.hypot(this.a.x - this.maison[0], this.a.z - this.maison[2]) > 1.2; }
   continue_maison() { return this.peut_maison() && !this.navFinie(); }
   debut_maison() { this.allerVers(this.maison[0], this.maison[1], this.maison[2], VITESSES.villageoisMarche * 1.4, { ouvrePortes: true, recalcul: 1e9 }); }
@@ -363,7 +374,7 @@ export class IA {
     const vit = this.pr.fam === 'golem' ? VITESSES.golemCible : VITESSES.attaque;
     if (!this.nav || sim.temps >= this.nav.prochain) {
       const casse = this.pr.portes && this.difficulte() >= 3 && sim.regles.valeur('ia.cassePortes', true);
-      this.allerVers(o.x, o.auSol ? o.y : undefined, o.z, vit, { rayon: 0.5, recalcul: 4 + this.h.entierBorne(7) });   // cible en l'air (projetee) : son point au sol
+      this.allerVers(o.x, o.auSol ? o.y : undefined, o.z, vit, { rayon: 0.5, precision: 0, recalcul: 4 + this.h.entierBorne(7) });   // MeleeAttackGoal : moveTo(cible, accuracy 0) ; cible en l'air (projetee) : son point au sol
       if (casse && this.nav && !this.nav.complet) this.casserPorte();
       if (this.nav && !this.nav.complet && this.dist2(o) < 16 && this.voit(o)) this.nav.chemin = [[o.x, o.y, o.z]];   // tout pres : droit sur elle
     }
@@ -387,6 +398,8 @@ export class IA {
     const ev = sim.api.evenement('creature.attaque', { creature: a.nom, type: this.type, cible: o.nom, degats: q });
     if (ev.annule) return;
     q = Number(ev.degats);
+    const ea = a.evEntite('attaque', { cible: o.nom, degats: q });   // gestionnaires d'entite (mc.entite(type | id de mod).sur('attaque'))
+    if (ea) { if (ea.annule) return; q = Number(ea.degats) || 0; }
     a.balancer(); this.attaqueTick = sim.temps;
     const ok = q > 0 ? o.frappe(q, 'mob:' + this.type, a.x - o.x, a.z - o.z, 0.4 * sim.regles.valeur('combat.recul', 1)) : false;
     if (ok) {
@@ -454,6 +467,7 @@ export class IA {
   debut_tir() { this.arc = { voit: 0, attente: -1, tension: 0, tempsStrafe: -1 }; }
   fin_tir() { this.arc.tension = 0; this.nav = null; }
   tick_tir() {
+    if (this.pr.arbalete) return this.tickArbalete();
     const a = this.a, o = this.cible, A = this.arc, d2 = this.dist2(o), voit = this.voit(o), sim = this.sim;
     if (voit !== A.voit > 0) A.voit = 0;
     A.voit += voit ? 1 : -1;
@@ -468,6 +482,36 @@ export class IA {
         else A.tension++;   // getTicksUsingItem : compte apres le controle (tir au 20e tick d'utilisation)
       }
     } else if (--A.attente <= 0 && A.voit >= -60) A.tension = 1;
+  }
+  // RangedCrossbowAttackGoal(1,0 ; 8 blocs) du pillard (Horizon mobs/illager.rs CrossbowAttack) : il s'approche (chemin toutes les 20 a 40 ticks ;
+  // vitesse 1,0 non chargee, 0,5 sinon) tant qu'il est a plus de 8 blocs ou ne voit pas la cible depuis 5 ticks ; puis charge (son
+  // loading_start, 25 ticks : CrossbowItem.getChargeDuration), chargee (son loading_end), attend 20 + [0, 20[ ticks, tire s'il voit (fleche de
+  // base 2, vitesse 1,6, imprecision 14 - 4 x difficulte, visee au tiers de la hauteur + distance x 0,2 ; son shoot), et recommence
+  tickArbalete() {
+    const a = this.a, o = this.cible, A = this.arc, sim = this.sim, h = this.h, voit = this.voit(o), d2 = this.dist2(o);
+    A.etat ??= 'vide'; A.delai ??= 0; A.chemin ??= 0; A.utilise ??= 0;
+    if (voit !== A.voit > 0) A.voit = 0;
+    A.voit += voit ? 1 : -1;
+    const bouge = (d2 > 64 || A.voit < 5) && A.delai === 0;
+    if (bouge) { if (--A.chemin <= 0) { this.nav = null; this.allerVers(o.x, o.auSol ? o.y : undefined, o.z, A.etat === 'vide' ? 1.0 : 0.5, { recalcul: 1e9 }); A.chemin = 20 + h.entierBorne(21); } }
+    else { A.chemin = 0; this.nav = null; }
+    this.regarder(o);
+    const centre = [a.x, a.y + a.H / 2, a.z];
+    if (A.etat === 'vide') { if (!bouge) { A.etat = 'charge'; A.utilise = 0; sim.son('item.crossbow.loading_start', ...centre, 1, (h.flottant() - h.flottant()) * 0.2 + 1); } }
+    else if (A.etat === 'charge') {
+      if (++A.utilise >= 25) { A.utilise = 0; A.etat = 'chargee'; A.delai = 20 + h.entierBorne(20); sim.son('item.crossbow.loading_end', ...centre, 1, 1 / (h.flottant() * 0.5 + 1) + 0.2); this.stat('chargesArbalete'); }
+    } else if (A.etat === 'chargee') { if (--A.delai === 0) A.etat = 'prete'; }
+    else if (A.etat === 'prete' && voit) { this.tirerArbalete(o); A.etat = 'vide'; }
+    A.tension = A.etat === 'charge' ? Math.max(1, A.utilise) : 0;   // replay.ia : drapeau 4 + duree d'utilisation -> pose CROSSBOW_CHARGE du film
+  }
+  tirerArbalete(o) {
+    const a = this.a, sim = this.sim, h = this.h, dif = this.difficulte();
+    const y0 = a.oeil()[1] - 0.1, xd = o.x - a.x, zd = o.z - a.z, dist = Math.hypot(xd, zd), b = o.boite(), yd = b[1] + (b[4] - b[1]) / 3 - y0 + dist * 0.2;
+    const L = Math.hypot(xd, yd, zd) || 1, lacet = Math.atan2(-xd, zd) / RAD, tangage = -Math.asin(yd / L) / RAD;
+    const P = sim.entites.proj, vit = P.tirer(lacet, tangage, 1.6, 14 - dif * 4);
+    P.creer('fleche', a, [a.x, y0, a.z], vit, { crit: false, degatsBase: 2, vitesse0: 1.6, sansHerite: true });
+    sim.son('item.crossbow.shoot', a.x, a.y + a.H / 2, a.z, 1, 1 / (h.flottant() * 0.5 + 1.8) + 0.53);
+    this.stat('tirs'); (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${a.nom} tire a l arbalete sur ${o.nom}`);
   }
   // AbstractSkeleton.performRangedAttack : vise 1/3 de la hauteur de la cible + dist x 0,2, vitesse 1,6, imprecision 14 - 4 x difficulte,
   // degats de base puissance x 2 + triangle(difficulte x 0,11, 0,57425)
@@ -553,13 +597,15 @@ export class IA {
   }
   soleil() {
     const a = this.a, sim = this.sim;
-    if (this.pr.soleil && sim.regles.valeur('ia.soleil', true) && this.jour() && !a.dansEau && sim.temps % 1 === 0) {
+    // Entity.isInWaterOrRain : sous la pluie (Level.isRainingAt aux pieds ou en haut de la boite) une creature ne brule pas et s'eteint
+    const pluie = !!sim.meteo && (sim.meteo.pleutEn(Math.floor(a.x), Math.floor(a.y), Math.floor(a.z)) || sim.meteo.pleutEn(Math.floor(a.x), Math.floor(a.y + a.H), Math.floor(a.z)));
+    if (this.pr.soleil && sim.regles.valeur('ia.soleil', true) && this.jour() && !a.dansEau && !pluie && sim.temps % 1 === 0) {
       const lum = 1;   // ciel visible en plein jour : luminosite 1 (lumiere du ciel 15)
       if (this.h.flottant() * 30 < (lum - 0.4) * 2 && this.cielVisible(a.x, a.y, a.z)) {
-        if (this.casque) { /* le casque s'abime a la place (non suivi) */ } else if (this.feu < 160) { if (this.feu <= 0) { this.stat('brulures'); (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${a.nom} brule au soleil`); } this.feu = 160; }
+        if (this.casque || a.armure?.tete) { /* le casque s'abime a la place (non suivi) */ } else if (this.feu < 160) { if (this.feu <= 0) { this.stat('brulures'); (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${a.nom} brule au soleil`); } this.feu = 160; }
       }
     }
-    if (a.dansEau) this.feu = 0;
+    if (a.dansEau || pluie) this.feu = 0;
     if (this.feu > 0) {
       this.feu--;
       if (this.feu % 20 === 0) a.degats(1, 'feu');
@@ -579,7 +625,7 @@ export class IA {
     dr |= this.drapeauxEspece();
     // colonnes 7 et 8 : tangage du corps (phantom, volants), direction du lit (villageois endormi)
     sim.replay.ia(sim.temps, a.id, dr, this.gonfle / 30, this.arc.tension, sim.temps - this.attaqueTick === 0 ? 1 : 0, this.tangageCorps ?? 0, this.sommeil ? this.directionLit : 0);
-    const plus = this.plusBoss() ?? this.plusEau() ?? this.plusWarden();   // colonne en plus (wither, dragon, gardiens, warden, calmars) : rien pour les autres
+    const plus = this.plusBoss() ?? this.plusEau() ?? this.plusWarden() ?? this.plusBreeze();   // colonne en plus (wither, dragon, gardiens, warden, calmars) : rien pour les autres
     if (plus) sim.replay.iaPlus(sim.temps, a.id, ...plus);
   }
 }
@@ -604,4 +650,4 @@ export function coupJoueur(objet, ticksDepuis, { critique = false } = {}) {
 }
 
 // comportements des especes (vol, sorciere, enderman, blaze, cerveau du villageois) : moteur/ia-especes.js
-Object.assign(IA.prototype, METHODES, VIE, METHODES_BOSS, METHODES_EAU, METHODES_WARDEN, METHODES_OEUFS, METHODES_VILLAGEOIS);
+Object.assign(IA.prototype, METHODES, VIE, METHODES_BOSS, METHODES_EAU, METHODES_WARDEN, METHODES_BREEZE, METHODES_OEUFS, METHODES_VILLAGEOIS);

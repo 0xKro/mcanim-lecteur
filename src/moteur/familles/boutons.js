@@ -104,8 +104,11 @@ export function installer(mc, regles) {
   };
   // getSignalStrength : entites qui touchent la zone de contact ; la plaque de pierre ne sent que les etres vivants (MOBS), la plaque de bois toute entite
   const compter = (monde, pos) => {
-    const [x, y, z] = pos;
-    return monde.entites({ boite: [x + ZONE_TOUCHE[0], y + ZONE_TOUCHE[1], z + ZONE_TOUCHE[2], x + ZONE_TOUCHE[3], y + ZONE_TOUCHE[4], z + ZONE_TOUCHE[5]] }).length;
+    const [x, y, z] = pos, boite = [x + ZONE_TOUCHE[0], y + ZONE_TOUCHE[1], z + ZONE_TOUCHE[2], x + ZONE_TOUCHE[3], y + ZONE_TOUCHE[4], z + ZONE_TOUCHE[5]];
+    // BlockSetType.pressurePlateSensitivity : pierre et pierre noire polie = MOBS (vivants seulement) ; bois et plaques pesantes = EVERYTHING
+    // (objets au sol, wagonnets, fleches comptent : partie 27)
+    if (!/^(stone|polished_blackstone)_pressure_plate$/.test(monde.nom(x, y, z)) && monde.entitesDans) return monde.entitesDans(boite);
+    return monde.entites({ boite }).filter((e) => !/minecart$|boat$/.test(e.typeCreature ?? '')).length;
   };
   const force = (monde, b, n) => {
     if (b.etat.power !== undefined) {                     // plaque pesante : ceil(min(n, maxWeight) / maxWeight * 15)

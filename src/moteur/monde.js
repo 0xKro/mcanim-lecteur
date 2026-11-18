@@ -25,6 +25,25 @@ export const LIMITES = { cotes: 512, cellules: 60_000_000 };
 
 const NIVEAU_MAX = 15;
 
+// VoxelShape.getFaceShape d'une liste de boites : pour chaque face (bas, haut, nord, sud, ouest, est), les boites qui touchent le bord du bloc
+// projetees sur la face, en masque de 16 x 16 (lignes de 16 bits). Rend 6 valeurs : PLEINE, null (vide) ou le masque (Uint16Array(16)).
+export const PLEINE = 1;
+const AXE_FACE = [1, 1, 2, 2, 0, 0], POS_FACE = [0, 1, 0, 1, 0, 1];
+export function facesOcclusion(boites) {
+  const r = [];
+  for (let f = 0; f < 6; f++) {
+    const a = AXE_FACE[f], [u, v] = [0, 1, 2].filter((k) => k !== a), m = new Uint16Array(16);
+    let vide = true;
+    for (const b of boites) {
+      const touche = POS_FACE[f] ? b[a + 3] >= 1 - 1e-7 : b[a] <= 1e-7;
+      if (!touche) continue;
+      for (let i = Math.round(b[u] * 16); i < Math.round(b[u + 3] * 16); i++) for (let j = Math.round(b[v] * 16); j < Math.round(b[v + 3] * 16); j++) { m[i] |= 1 << j; vide = false; }
+    }
+    r.push(vide ? null : m.every((x) => x === 0xffff) ? PLEINE : m);
+  }
+  return r;
+}
+
 export class Monde {
   // zone : rendu/zone.js ; donnees : moteur/donnees.js ; options : { lumiere: true|false (calcul de la lumiere), suivi: true (liste des cellules salies pour le rendu) }
   constructor({ zone, donnees, suivi = false }) {
@@ -36,6 +55,7 @@ export class Monde {
     const CAP = 65536;
     this.tEtat = new Int32Array(CAP).fill(-1); this.tOpac = new Uint8Array(CAP); this.tEmis = new Uint8Array(CAP);
     this.tOcc = new Uint8Array(CAP); this.tDrap = new Uint16Array(CAP);
+    this.tFace = new Array(CAP).fill(null);   // faces partielles de la forme d'occlusion (lumiere) : 6 masques 16 x 16 (Uint16Array(16) par face) ou null
     for (let i = 0; i < this.palette.length; i++) this._remplirTable(i);
     this._poserGeometrie(zone.x0, zone.y0, zone.z0, zone.sx, zone.sy, zone.sz);
     this.pal = new Uint16Array(this.PX * this.PY * this.PZ);
@@ -87,9 +107,26 @@ export class Monde {
     let id = d.etatId(s);
     if (id < 0) id = d.pierre;      // etat inconnu des donnees : cube plein (le mailleur dira qu'il ne sait pas le dessiner)
     this.tEtat[i] = id; this.tOpac[i] = d.opacite(id); this.tEmis[i] = d.emission(id); this.tDrap[i] = d.drapeaux(id);
-    let occ = 0;
-    if (d.a(id, D.OCCLUSION_FORME)) for (let f = 0; f < 6; f++) if (d.solideFace(id, f)) occ |= 1 << f;
-    this.tOcc[i] = occ;
+    // LightEngine.shapeOccludes : faces de la forme d'occlusion du jeu (getFaceOcclusionShape) des blocs qui s'en servent pour la lumiere
+    // (canOcclude et useShapeForLightOcclusion : dalles, escaliers, couches de neige...) ; une face pleine bloque seule, deux faces
+    // partielles qui se completent (Shapes.faceShapeOccludes : leur union couvre la face) bloquent ensemble
+    let occ = 0, faces = null;
+    if (d.a(id, D.OCCLUSION_FORME) && d.a(id, D.PEUT_OCCLURE)) {
+      const boites = d.formeOcclusion ? d.formeOcclusion(id) : null;
+      if (boites) {
+        const m = facesOcclusion(boites);
+        for (let f = 0; f < 6; f++) { if (m[f] === PLEINE) occ |= 1 << f; else if (m[f]) (faces ??= [null, null, null, null, null, null])[f] = m[f]; }
+      } else for (let f = 0; f < 6; f++) if (d.solideFace(id, f)) occ |= 1 << f;   // donnees sans formes d'occlusion : appui des faces
+    }
+    this.tOcc[i] = occ; this.tFace[i] = faces;
+  }
+  // La lumiere passe-t-elle de la cellule de palette `a` vers `b` dans la direction f (face f de a, face opposee de b) ?
+  occulte(a, b, f) {
+    if ((this.tOcc[a] & (1 << f)) !== 0 || (this.tOcc[b] & (1 << FACE_OPPOSEE[f])) !== 0) return true;
+    const fa = this.tFace[a]?.[f], fb = this.tFace[b]?.[FACE_OPPOSEE[f]];
+    if (!fa || !fb) return false;
+    for (let k = 0; k < 16; k++) if ((fa[k] | fb[k]) !== 0xffff) return false;
+    return true;
   }
   // indice de palette d'un texte d'etat ('minecraft:torch', 'torch[...]', '#hidden') ; ajoute l'entree si besoin
   indicePalette(txt) {

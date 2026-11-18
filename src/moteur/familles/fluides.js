@@ -67,7 +67,7 @@ export function installer(mc, regles) {
   // ---- lecture des cellules ----
   const bloc = (m, x, y, z) => m.bloc(x, y, z);
   const estAir = (b) => /^minecraft:(cave_|void_)?air$/.test(b.nom);
-  const pleine = (m, x, y, z) => m.boites(x, y, z).length > 0;          // BlockState.isSolid (approche : une boite de collision)
+  const pleine = (m, x, y, z) => m.solide(x, y, z);                     // BlockState.isSolid du jeu (legacySolid : panneaux, plaques, toile oui ; tapis, pots non)
   const conteneur = (b) => 'waterlogged' in b.etat || SANS_CONTENANT.test(b.nom);   // LiquidBlockContainer (dalles, escaliers... + varech, herbes marines)
   const peutPlacerLiquide = (b, t) => {                                // LiquidBlockContainer.canPlaceLiquid
     if (SANS_CONTENANT.test(b.nom) || b.nom === 'minecraft:barrier') return false;

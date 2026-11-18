@@ -10,7 +10,7 @@
 // villager_make_bread), horizon-client-render particles.rs (Burst::VILLAGER : 5 particules, +1 en hauteur, vitesse 0,02).
 // Les nombres du jeu sont ecrits a cote de chaque regle.
 import { chercherChemin } from './navigation.js';
-import { rayonBloc } from './collision.js';
+import { rayonBloc, coupe } from './collision.js';
 import { lireVariante } from '../creatures/especes.js';
 
 const MOVE = 1, LOOK = 2;
@@ -43,7 +43,23 @@ function melanger(h, liste) {
   return liste.map(([nom, w], i) => ({ nom, i, k: -Math.pow(h.flottant(), 1 / w) })).sort((p, q) => p.k - q.k || p.i - q.i).map((x) => x.nom);
 }
 const bloc = (p) => [Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2])];
+const sectionDe = (b) => [b[0] >> 4, b[1] >> 4, b[2] >> 4];
+const DANGER = /^(lava|fire|soul_fire|cactus|magma_block|campfire|soul_campfire|sweet_berry_bush|wither_rose|powder_snow|cobweb)$/;
+// PoiManager.sectionsToVillage : distance de Chebyshev (en sections) a la section du village la plus proche, 7 au plus (pas de village : 7)
+export function sectionsAuVillage(V, s) { let m = 7; for (const v of V) m = Math.min(m, Math.max(Math.abs(v[0] - s[0]), Math.abs(v[1] - s[1]), Math.abs(v[2] - s[2]))); return m; }
+// BehaviorUtils.findSectionClosestToVillage : la section (a +-r) plus proche du village que celle-ci (ordre z, y, x), sinon elle
+export function sectionLaPlusProche(V, c, r) {
+  const ici = sectionsAuVillage(V, c); let best = null, bd = Infinity;
+  for (let z = c[2] - r; z <= c[2] + r; z++) for (let y = c[1] - r; y <= c[1] + r; y++) for (let x = c[0] - r; x <= c[0] + r; x++) { const d = sectionsAuVillage(V, [x, y, z]); if (d < ici && d < bd) { bd = d; best = [x, y, z]; } }
+  return best ?? c;
+}
 const memeBloc = (p, q) => !!p && !!q && Math.floor(p[0]) === Math.floor(q[0]) && Math.floor(p[1]) === Math.floor(q[1]) && Math.floor(p[2]) === Math.floor(q[2]);
+
+// un bloc change en (x, y, z) : est-ce (ou etait-ce) un POI ? (lit, bloc de metier, cloche ; ou une position des listes gardees)
+export function poiChange(sim, x, y, z) {
+  const e = sim.monde.etatEn(x, y, z), n = e >= 0 ? sim.d.nomBloc(e) : '';
+  return n.endsWith('_bed') || n === 'bell' || !!POSTES[n] || !!sim._poiPos?.has(`${x},${y},${z}`);
+}
 
 export const METHODES_VILLAGEOIS = {
   installerVillageois(add) {
@@ -56,10 +72,12 @@ export const METHODES_VILLAGEOIS = {
     add(6, 'sautLit', 0);                  // JumpOnBed (choisi par RunOne)
     add(3, 'versPoste', MOVE);             // CORE : GoToPotentialJobSite (priorite 7 du coeur ; il repose la cible de marche a chaque tick, avant les marches du temps libre)
     add(10, 'prendPoi', 0);                // CORE : AcquirePoi (poste 6, lit et cloche 10) et AssignProfessionFromJobSite (10)
+    add(0, 'poiPerdus', 0);                // CORE : ValidateNearbyPoi (0), PoiCompetitorScan (2), YieldJobSite (8), ResetProfession (10)
   },
   initVillageois(d) {
     this.marche = null; this.cibleInteraction = null; this.cibleAmour = null; this.regardVerrou = null; this.posteVise = null;
     this.prochainPoi = { poste: 0, lit: 0, cloche: 0 };
+    this.xpMetier = d?.xp ?? 0; this.posteBloc = null; this.poiInit = false; this.essaisPoi = {};   // experience de metier (Villager.xp), poste (JOB_SITE)
   },
 
   // ---- inventaire --------------------------------------------------------------------------------------------------------------------
@@ -167,11 +185,19 @@ export const METHODES_VILLAGEOIS = {
     if (!o) return false;
     this.cibleInteraction = o; this.marcherVers(o, 0.5, 2); return true;
   },
-  // VillageBoundRandomStroll(0,5, 10, 7) : un point a +-10 blocs
+  // VillageBoundRandomStroll(0,5, 10, 7) : dans le village (a une section au plus d'une section du village) : LandRandomPos.getPos(10, 7) ;
+  // dehors : vers le centre de la section la plus proche du village (BehaviorUtils.findSectionClosestToVillage, 2 sections autour ;
+  // DefaultRandomPos.getPosTowards, pi/2), sinon LandRandomPos. Pas de point : le comportement a quand meme tourne (rien a faire).
   option_flane() {
-    const a = this.a, h = this.h, x = a.x + h.entierBorne(21) - 10, z = a.z + h.entierBorne(21) - 10;
-    if (!this.dansVillage([x, a.y, z])) return false;   // VillageBoundRandomStroll : un point du village
-    this.marcherVers([Math.floor(x) + 0.5, a.y, Math.floor(z) + 0.5], 0.5, 0); return true;
+    const a = this.a, sec = sectionDe(bloc([a.x, a.y, a.z])), V = this.sectionsVillage();
+    let p;
+    if (sectionsAuVillage(V, sec) <= 1) p = this.posAleatoireSol(10, 7);
+    else {
+      const best = sectionLaPlusProche(V, sec, 2);
+      p = best.join() !== sec.join() ? this.posAleatoireVers(10, 7, [best[0] * 16 + 8 + 0.5, best[1] * 16 + 8, best[2] * 16 + 8 + 0.5], Math.fround(Math.PI / 2)) : this.posAleatoireSol(10, 7);
+    }
+    if (p) this.marcherVers(p, 0.5, 0);
+    return true;
   },
   // SetWalkTargetFromLookTarget(0,5, 2) : il marche vers ce qu'il regarde
   option_versRegard() {
@@ -204,11 +230,65 @@ export const METHODES_VILLAGEOIS = {
   estLit(p) { const e = this.sim.monde.etatEn(p[0], p[1], p[2]); return e >= 0 && this.sim.d.nomBloc(e).endsWith('_bed'); },
   surLit() { const b = bloc([this.a.x, this.a.y, this.a.z]); return this.estLit(b) || this.estLit([b[0], b[1] - 1, b[2]]); },
 
-  // PoiManager.sectionsToVillage <= 1 : a une section (16 blocs) au plus d'une section qui a un lit, un poste ou une cloche
-  dansVillage(p) {
-    const l = this.pois(); if (!l.length) return true;
-    const s = [Math.floor(p[0]) >> 4, Math.floor(p[1]) >> 4, Math.floor(p[2]) >> 4];
-    return l.some((q) => Math.max(Math.abs((q.p[0] >> 4) - s[0]), Math.abs((q.p[1] >> 4) - s[1]), Math.abs((q.p[2] >> 4) - s[2])) <= 1);
+  // Les sections du village (PoiManager : sections qui ont un POI PRIS) : lits, postes, postes vises et cloches des villageois vivants dont le
+  // bloc est encore un POI (Horizon villager_brain.rs village_sections) ; un point de travail de la scene qui n'est pas un bloc de metier ne compte pas
+  sectionsVillage() {
+    const sim = this.sim;
+    if (sim._sectionsVillage?.t === sim.temps) return sim._sectionsVillage.l;
+    const l = [], vus = new Set();
+    for (const v of sim.acteurs.liste) {
+      if (v.mort >= 0 || v.ia?.type !== 'villager') continue;
+      for (const p of [v.ia.posteBloc, v.ia.posteVise, v.ia.lit, v.ia.rassemblement]) {
+        if (!p || !this.poiEn(p)) continue;
+        const s = sectionDe(bloc(p)), k = s.join(); if (!vus.has(k)) { vus.add(k); l.push(s); }
+      }
+    }
+    sim._sectionsVillage = { t: sim.temps, l }; return l;
+  },
+  dansVillage(p) { return sectionsAuVillage(this.sectionsVillage(), sectionDe(bloc(p))) <= 1; },
+  // genre de POI du bloc (lit : la tete ; un pied de lit compte par sa tete), ou null
+  poiEn(p) {
+    const sim = this.sim, b = bloc(p), e = sim.monde.etatEn(b[0], b[1], b[2]); if (e < 0) return null;
+    const n = sim.d.nomBloc(e);
+    return n.endsWith('_bed') ? 'lit' : POSTES[n] ? 'poste' : n === 'bell' ? 'cloche' : null;
+  },
+  // ---- points au hasard (LandRandomPos.getPos, DefaultRandomPos.getPosTowards : le meilleur de 10 essais ; le poids de marche du villageois
+  // est 0 partout : le premier point valide) -------------------------------------------------------------------------------------------
+  posAleatoireSol(h, v) {
+    const a = this.a, H = this.h;
+    let best = null;
+    for (let i = 0; i < 10; i++) {
+      const d = [H.entierBorne(2 * h + 1) - h, H.entierBorne(2 * v + 1) - v, H.entierBorne(2 * h + 1) - h];
+      let p = [Math.floor(a.x + d[0]), Math.floor(a.y + d[1]), Math.floor(a.z + d[2])];
+      if (!best && this.destinationStable(p)) { p = this.sortirDuSolide(p); if (p) best = p; }
+    }
+    return best ? [best[0] + 0.5, best[1], best[2] + 0.5] : null;
+  },
+  posAleatoireVers(h, v, vers, maxRad) {
+    const a = this.a, H = this.h, centre = Math.atan2(vers[2] - a.z, vers[0] - a.x) - Math.fround(Math.PI / 2);
+    let best = null;
+    for (let i = 0; i < 10; i++) {
+      const yr = centre + (2 * H.flottant() - 1) * maxRad, dist = Math.sqrt(H.reel()) * h * Math.fround(Math.SQRT2);
+      const xt = -dist * Math.sin(yr), zt = dist * Math.cos(yr);
+      if (Math.abs(xt) > h || Math.abs(zt) > h) continue;
+      const yt = H.entierBorne(2 * v + 1) - v, p = [Math.floor(a.x + Math.floor(xt)), Math.floor(a.y + yt), Math.floor(a.z + Math.floor(zt))];
+      if (!best && this.destinationStable(p) && this.caseOuverte(p)) best = p;
+    }
+    return best ? [best[0] + 0.5, best[1], best[2] + 0.5] : null;
+  },
+  // GroundPathNavigation.isStableDestination : le bloc dessous est un bloc plein opaque (isSolidRender)
+  destinationStable(p) { const e = this.sim.monde.etatEn(p[0], p[1] - 1, p[2]); return e >= 0 && this.sim.d.opacite(e) >= 15 && this.solide(p[0], p[1] - 1, p[2]); },
+  solide(x, y, z) { return coupe(this.a.lec, [x + 0.01, y + 0.01, z + 0.01, x + 0.99, y + 0.99, z + 0.99]); },
+  // RandomPos.moveUpOutOfSolid puis : pas dans l'eau, case sans malus (ouverte : la boite y tient, rien de dangereux)
+  sortirDuSolide(p) {
+    p = p.slice(); while (p[1] < 320 && this.solide(p[0], p[1], p[2])) p[1]++;
+    return this.caseOuverte(p) ? p : null;
+  },
+  caseOuverte(p) {
+    const sim = this.sim, a = this.a;
+    for (const dy of [0, 1]) { const f = sim.fluide(p[0], p[1] + dy, p[2]); if (f.type) return false; const e = sim.monde.etatEn(p[0], p[1] + dy, p[2]); if (e >= 0 && DANGER.test(sim.d.nomBloc(e))) return false; }
+    const L = Math.max(0.6, a.L) / 2;
+    return !coupe(a.lec, [p[0] + 0.5 - L, p[1] + 0.01, p[2] + 0.5 - L, p[0] + 0.5 + L, p[1] + a.H, p[2] + 0.5 + L]);
   },
   // ---- jeu des bebes : PlayTagWithOtherKids (1 chance sur 10 ; poursuite a 0,6) --------------------------------------------------------
   bebesVus() { return this.villageoisVus().filter((o) => this.estVillageois(o) && o.ia.bebe); },
@@ -225,14 +305,12 @@ export const METHODES_VILLAGEOIS = {
       this.cibleInteraction = cible; this.marcherVers(cible, 0.6, 1, 80 + this.h.entierBorne(41)); this.regardVerrou = { o: cible, fin: this.sim.temps + 45 };
       this.stat('poursuites'); journal(this.sim, `${this.a.nom} poursuit ${cible.nom}`);
     } else {
-      // poursuivi : il court vers un point a 20 blocs (8 de haut) (LandRandomPos.getPos(20, 8)), 10 essais
+      // poursuivi : il court (0,6) vers un point LandRandomPos.getPos(20, 8) qui reste dans le village (sectionsToVillage <= 1), 10 essais
       const a = this.a, h = this.h;
       for (let i = 0; i < 10; i++) {
-        const x = Math.floor(a.x + h.entierBorne(41) - 20) + 0.5, z = Math.floor(a.z + h.entierBorne(41) - 20) + 0.5;
-        if (!this.dansVillage([x, a.y, z])) continue;   // sectionsToVillage <= 1 : il reste dans le village
-        const r = chercherChemin(a.lec, [a.x, a.y, a.z], { x, z }, { rayon: 0.6, maxNoeuds: 600, gabarit: { L: Math.max(0.6, a.L), H: a.H, chute: 3 } });
-        if (!r.complet) continue;
-        this.marcherVers([x, r.chemin.at(-1)?.[1] ?? a.y, z], 0.6, 0, 80 + h.entierBorne(41)); journal(this.sim, `${a.nom} s enfuit en riant`); break;
+        const p = this.posAleatoireSol(20, 8);
+        if (!p || !this.dansVillage(p)) continue;
+        this.marcherVers(p, 0.6, 0, 80 + h.entierBorne(41)); journal(this.sim, `${a.nom} s enfuit en riant`); break;
       }
     }
     return false;
@@ -297,7 +375,7 @@ export const METHODES_VILLAGEOIS = {
       p.ia.particulesAutour('angry_villager', 5, 1); this.particulesAutour('angry_villager', 5, 1);
       journal(sim, `${a.nom} et ${p.nom} : pas de lit libre, pas de bebe`); this.stat('sansLit'); return;
     }
-    typeV ??= typeDuBiome(sim.zone.biome?.(Math.floor(a.x), Math.floor(a.y), Math.floor(a.z)));
+    typeV ??= typeDuBiome(sim.zone.biome?.(Math.floor(a.x), Math.floor(a.z)));   // Zone.biome(x, z) : un biome par colonne
     p.ia.age = NOMBRES.attenteParents;
     const b = sim.acteurs.naitre({ type: 'villager', variante: `${typeV} none`, bebe: true, x: a.x, y: a.y, z: a.z, lacet: 0, modele: a.nom, raison: 'reproduction', gabaritParent: { l: a.L, h: a.H, oeil: a.O, vitesse: a.kVit }, ia: { lit, parents: [a.nom, p.nom], maison: this.maison ?? null, rassemblement: this.rassemblement ?? null } });
     if (b) { b.ia.particulesAutour('heart', 5, 1); this.stat('naissances'); journal(sim, `${a.nom} et ${p.nom} ont un bebe villageois : ${b.nom} (lit ${lit.join(',')})`); }
@@ -305,75 +383,104 @@ export const METHODES_VILLAGEOIS = {
   typeVillageois() { return lireVariante('villager', this.variante).choix?.[0] ?? 'plains'; },
 
   // ---- lits, postes, cloches (POI) ----------------------------------------------------------------------------------------------------
-  // les blocs POI a 48 blocs (16 de haut) ; la liste est gardee 100 ticks par cellule de 16 blocs
+  // PoiManager.getInRange : la SPHERE de 48 blocs (distSqr entre le bloc du villageois et celui du POI <= 48 x 48, comme Horizon
+  // villager_brain.rs pois_in_range). La liste brute est gardee 100 ticks par section de 16 blocs : elle couvre les chunks a 48 + 8 blocs du
+  // centre de la section, dans l'ordre du jeu (chunk par chunk en z puis x ; dans un chunk : y, z, x), bornee a la boite du monde.
   pois() {
     const sim = this.sim, a = this.a, o = bloc([a.x, a.y, a.z]), cle = `${o[0] >> 4},${o[1] >> 4},${o[2] >> 4}`;
     const C = (sim._poiCache ??= new Map()), c = C.get(cle);
     if (c && sim.temps - c.t < 100) return c.l;
-    const l = [], d = sim.d, R = NOMBRES.litRayon, cx = (o[0] >> 4) * 16 + 8, cy = (o[1] >> 4) * 16 + 8, cz = (o[2] >> 4) * 16 + 8;
-    for (let x = cx - R - 8; x <= cx + R + 8; x++) for (let z = cz - R - 8; z <= cz + R + 8; z++) for (let y = cy - 24; y <= cy + 24; y++) {
-      const e = sim.monde.etatEn(x, y, z); if (e < 0) continue;
-      const n = d.nomBloc(e);
-      if (n.endsWith('_bed')) { if (d.prop(e, 'part') === 'head') l.push({ p: [x, y, z], genre: 'lit' }); }
-      else if (POSTES[n]) l.push({ p: [x, y, z], genre: 'poste', metier: POSTES[n] });
-      else if (n === 'bell') l.push({ p: [x, y, z], genre: 'cloche' });
+    const l = [], d = sim.d, m = sim.monde, R = NOMBRES.litRayon + 8, cx = (o[0] >> 4) * 16 + 8, cy = (o[1] >> 4) * 16 + 8, cz = (o[2] >> 4) * 16 + 8;
+    const x0 = Math.max(cx - R, m.x0), x1 = Math.min(cx + R, m.x0 + m.sx - 1), z0 = Math.max(cz - R, m.z0), z1 = Math.min(cz + R, m.z0 + m.sz - 1);
+    const y0 = Math.max(cy - R, m.y0), y1 = Math.min(cy + R, m.y0 + m.sy - 1);
+    for (let qz = z0 >> 4; qz <= z1 >> 4; qz++) for (let qx = x0 >> 4; qx <= x1 >> 4; qx++) {
+      for (let y = y0; y <= y1; y++) for (let z = Math.max(z0, qz * 16); z <= Math.min(z1, qz * 16 + 15); z++) for (let x = Math.max(x0, qx * 16); x <= Math.min(x1, qx * 16 + 15); x++) {
+        const e = m.etatEn(x, y, z); if (e < 0) continue;
+        const n = d.nomBloc(e);
+        if (n.endsWith('_bed')) { if (d.prop(e, 'part') === 'head') l.push({ p: [x, y, z], genre: 'lit' }); }
+        else if (POSTES[n]) l.push({ p: [x, y, z], genre: 'poste', metier: POSTES[n] });
+        else if (n === 'bell') l.push({ p: [x, y, z], genre: 'cloche' });
+      }
     }
+    const P = (sim._poiPos ??= new Set()); for (const q of l) P.add(q.p.join());
     C.set(cle, { t: sim.temps, l }); return l;
   },
+  // les POI de la sphere de 48 blocs autour du bloc du villageois, les plus proches d'abord (distSqr ; egalite : l'ordre du parcours)
+  poisProches(test) {
+    const c = bloc([this.a.x, this.a.y, this.a.z]), R2 = NOMBRES.litRayon * NOMBRES.litRayon, d2 = (p) => (p[0] - c[0]) ** 2 + (p[1] - c[1]) ** 2 + (p[2] - c[2]) ** 2;
+    return this.pois().filter((q) => d2(q.p) <= R2 && test(q)).map((q, i) => ({ q, i, d: d2(q.p) })).sort((u, v) => u.d - v.d || u.i - v.i).map((x) => x.q);
+  },
   poiValide(q) { const e = this.sim.monde.etatEn(q.p[0], q.p[1], q.p[2]); if (e < 0) return false; const n = this.sim.d.nomBloc(e); return q.genre === 'lit' ? n.endsWith('_bed') && this.sim.d.prop(e, 'part') === 'head' && this.sim.d.prop(e, 'occupied') !== 'true' : q.genre === 'poste' ? POSTES[n] === q.metier : n === 'bell'; },
-  pris(genre) {
-    const s = new Set();
+  // tickets pris par les villageois vivants (lui compris) (lit, poste, poste vise, cloche) ; un POI a 1 ticket (lit, poste), la cloche 32
+  tickets(genre) {
+    const s = new Map(), add = (p) => { const k = bloc(p).join(); s.set(k, (s.get(k) ?? 0) + 1); };
     for (const v of this.sim.acteurs.liste) {
-      if (v.mort >= 0 || !v.ia || v.ia.type !== 'villager') continue;
-      const l = genre === 'lit' ? [v.ia.lit] : genre === 'poste' ? [v.ia.travail, v.ia.posteVise] : [];
-      for (const p of l) if (p) s.add(bloc(p).join());
-      if (genre === 'lit' && v.ia.lit) s.add(teteLit(this.sim, bloc(v.ia.lit)).join());
+      if (v.mort >= 0 || !v.ia || v.ia.type !== 'villager') continue;   // ses propres POI comptent aussi (Horizon tickets)
+      if (genre === 'lit' && v.ia.lit) { add(v.ia.lit); const t = teteLit(this.sim, bloc(v.ia.lit)); if (t.join() !== bloc(v.ia.lit).join()) add(t); }
+      if (genre === 'poste') { for (const p of [v.ia.posteBloc, v.ia.posteVise]) if (p) add(p); }
+      if (genre === 'cloche' && v.ia.rassemblement) add(v.ia.rassemblement);
     }
     return s;
   },
+  pris(genre) { const t = this.tickets(genre), max = genre === 'cloche' ? 32 : 1; return new Set([...t].filter(([, n]) => n >= max).map(([k]) => k)); },
   // un chemin y mene (canReach : validRange 1)
   atteignable(p) {
     const a = this.a;
-    const r = chercherChemin(a.lec, [a.x, a.y, a.z], { x: p[0] + 0.5, z: p[2] + 0.5, y: p[1] }, { ouvrePortes: true, rayon: 1.5, maxNoeuds: 3000, gabarit: { L: Math.max(0.6, a.L), H: a.H, chute: 3 } });
+    const r = chercherChemin(a.lec, [a.x, a.y, a.z], { x: p[0] + 0.5, z: p[2] + 0.5, y: p[1] }, { ouvrePortes: true, rayon: 1, suivi: Math.max(this.pr.suivi ?? 16, this.pr.chemin ?? 0), gabarit: this.gabaritNav(), auSol: a.auSol, dansEau: a.dansEau });   // createPath(poi, 1) : accuracy 1
     return r.complet;
   },
-  // les plus proches d'abord (5 au plus), le premier qu'il peut atteindre
-  premierAtteignable(liste) {
-    const o = [this.a.x, this.a.y, this.a.z], d2 = (p) => (p[0] + 0.5 - o[0]) ** 2 + (p[1] + 0.5 - o[1]) ** 2 + (p[2] + 0.5 - o[2]) ** 2;
-    return liste.filter((q) => d2(q.p) <= NOMBRES.litRayon ** 2).sort((p, q) => d2(p.p) - d2(q.p)).slice(0, 5).find((q) => this.atteignable(q.p)) ?? null;
+  // AcquirePoi : les candidats de la sphere (les plus proches d'abord), filtres par l'attente de chacun (JitteredLinearRetry : un POI sans
+  // chemin attend 40 + [0, 40[ ticks de plus a chaque echec, 400 au plus, oublie apres 400 ticks), les 5 premiers ; le premier qu'un chemin
+  // atteint est pris (et les attentes effacees) ; sinon chacun recoit une attente
+  premierAtteignable(liste, k = 'lit') {
+    const t = this.sim.temps, R = (this.essaisPoi ??= {})[k] ??= new Map();
+    for (const [p, r] of R) if (t - r.prec >= 400) R.delete(p);
+    const marquer = (r) => { r.prec = t; r.delai = Math.min(400, r.delai + this.h.entierBorne(40) + 40); r.proch = t + r.delai; };
+    const gardes = [];
+    for (const q of liste) {
+      const r = R.get(q.p.join());
+      if (!r) gardes.push(q); else if (t >= r.proch) { marquer(r); gardes.push(q); }
+    }
+    const cinq = gardes.slice(0, 5), trouve = cinq.find((q) => this.atteignable(q.p)) ?? null;
+    if (trouve) R.clear();
+    else for (const q of cinq) if (!R.has(q.p.join())) { const r = { prec: 0, proch: 0, delai: 0 }; marquer(r); R.set(q.p.join(), r); }
+    return trouve;
   },
   // VillagerMakeLove.takeVacantBed : PoiManager.take(HOME, 48) : la tete de lit la plus proche, libre (aucun villageois, pas occupee), atteignable
   litLibre() {
     const pris = this.pris('lit');
-    const q = this.premierAtteignable(this.pois().filter((x) => x.genre === 'lit' && !pris.has(x.p.join()) && this.poiValide(x)));
+    const q = this.premierAtteignable(this.poisProches((x) => x.genre === 'lit' && !pris.has(x.p.join()) && this.poiValide(x)), 'naissance');
     return q ? q.p : null;
   },
   // NearestBedSensor (bebes) : le lit le plus proche qu'il peut atteindre, pris ou non
-  litLePlusProche() { const q = this.premierAtteignable(this.pois().filter((x) => x.genre === 'lit')); return q ? q.p : null; },
-  // AcquirePoi : un essai toutes les 20 a 39 ticks (le premier dans les 20 ticks) ; lit (tous) et cloche (adultes), poste (adultes sans poste,
-  // sans metier ou du metier du bloc ; pas l'idiot)
+  litLePlusProche() { const q = this.poisProches((x) => x.genre === 'lit').find((x) => this.atteignable(x.p)); return q ? q.p : null; },
+  niveauMetier() { return Number(lireVariante('villager', this.variante).choix?.[2] ?? 1) || 1; },
+  // AcquirePoi : un essai toutes les 20 a 39 ticks (le premier dans les 20 ticks) ; lit (tous), cloche (adultes), poste (adultes sans poste
+  // ni poste vise, sans metier : tous les blocs ; avec un metier : le sien ; pas l'idiot)
   peut_prendPoi() {
     const sim = this.sim, t = sim.temps, a = this.a;
     if (this.sommeil) return false;
     const essai = (k) => { const n = this.prochainPoi[k]; if (n === 0) { this.prochainPoi[k] = t + this.h.entierBorne(20) || 1; return false; } if (t < n) return false; this.prochainPoi[k] = t + 20 + this.h.entierBorne(20); return true; };
     if (!this.lit && essai('lit')) {
-      const l = this.litLibre();
-      if (l) { this.lit = l; this.particulesAutour('happy_villager', 5, 1); this.stat('litsPris'); journal(sim, `${a.nom} prend le lit ${l.join(',')}`); }
+      const pris = this.pris('lit');
+      const q = this.premierAtteignable(this.poisProches((x) => x.genre === 'lit' && !pris.has(x.p.join()) && this.poiValide(x)), 'lit');
+      if (q) { this.lit = q.p; this.particulesAutour('happy_villager', 5, 1); this.stat('litsPris'); journal(sim, `${a.nom} prend le lit ${q.p.join(',')}`); }
     }
     const m = this.metier();
     if (!this.bebe && !this.travail && !this.posteVise && m !== 'nitwit' && essai('poste')) {
       const pris = this.pris('poste');
-      const q = this.premierAtteignable(this.pois().filter((x) => x.genre === 'poste' && (m === 'none' || x.metier === m) && !pris.has(x.p.join()) && this.poiValide(x)));
-      if (q) { this.posteVise = q.p; journal(sim, `${a.nom} vise le poste ${sim.d.nomBloc(sim.monde.etatEn(...q.p))} ${q.p.join(',')}`); }
+      const q = this.premierAtteignable(this.poisProches((x) => x.genre === 'poste' && (m === 'none' || x.metier === m) && !pris.has(x.p.join()) && this.poiValide(x)), 'poste');
+      if (q) { this.posteVise = q.p; journal(sim, `${a.nom} vise le poste ${sim.d.nomBloc(sim.monde.etatEn(...q.p))} ${q.p.join(',')} (${Math.sqrt((q.p[0] - Math.floor(a.x)) ** 2 + (q.p[1] - Math.floor(a.y)) ** 2 + (q.p[2] - Math.floor(a.z)) ** 2).toFixed(1)} blocs, ${q.p[1] - Math.floor(a.y) >= 0 ? '+' : ''}${q.p[1] - Math.floor(a.y)} en hauteur)`); }
     }
     if (!this.bebe && !this.rassemblement && essai('cloche')) {
-      const q = this.premierAtteignable(this.pois().filter((x) => x.genre === 'cloche' && this.poiValide(x)));
+      const pris = this.pris('cloche');
+      const q = this.premierAtteignable(this.poisProches((x) => x.genre === 'cloche' && !pris.has(x.p.join()) && this.poiValide(x)), 'cloche');
       if (q) { this.rassemblement = q.p; this.particulesAutour('happy_villager', 5, 1); journal(sim, `${a.nom} prend la cloche ${q.p.join(',')}`); }
     }
     // AssignProfessionFromJobSite : a moins de 2 blocs du centre du poste vise, il le prend ; sans metier : celui du bloc
     const p = this.posteVise;
     if (p && (p[0] + 0.5 - a.x) ** 2 + (p[1] + 0.5 - a.y) ** 2 + (p[2] + 0.5 - a.z) ** 2 < 4) {
-      this.posteVise = null; this.travail = [p[0] + 0.5, p[1], p[2] + 0.5];
+      this.posteVise = null; this.travail = [p[0] + 0.5, p[1], p[2] + 0.5]; this.posteBloc = p.slice();
       this.particulesAutour('happy_villager', 5, 1);   // evenement 14
       const nouveau = POSTES[sim.d.nomBloc(sim.monde.etatEn(p[0], p[1], p[2]))];
       if (m === 'none' && nouveau) {
@@ -384,6 +491,59 @@ export const METHODES_VILLAGEOIS = {
     return false;
   },
   tick_prendPoi() {},
+  // ---- POI perdus (coeur, priorite 0 a 10 du jeu) ------------------------------------------------------------------------------------
+  // ValidateNearbyPoi (poste, poste vise ; lit au repos ; cloche au rassemblement) : a moins de 16 blocs du centre du bloc, le POI n'existe plus
+  // (ou n'est plus du bon metier) : oublie ; un lit ou dort un autre : oublie. PoiCompetitorScan : un villageois du meme metier a 16 blocs qui a
+  // le meme poste : celui qui a le plus d'experience le garde, a egalite c'est l'autre (selectWinner). YieldJobSite : un adulte sans metier
+  // laisse le poste vise a un villageois vu du metier de ce bloc qui n'a pas de poste vise et pas d'autre poste. ResetProfession : sans poste,
+  // un novice (niveau 1) qui n'a jamais echange (xp 0) perd son metier (pas l'idiot) ; il en reprendra un au prochain poste libre (AcquirePoi).
+  // Un point `travail` de la scene qui n'est pas un bloc de metier reste un point de mise en scene : il n'est jamais perdu.
+  peut_poiPerdus() {
+    const sim = this.sim, a = this.a, m = this.metier(), act = this.activite();
+    if (!this.poiInit) {   // un `travail` de la scene pose sur un bloc de metier est un vrai poste (POI)
+      this.poiInit = true;
+      if (this.travail) { const b = bloc(this.travail); if (POSTES[sim.d.nomBloc(sim.monde.etatEn(b[0], b[1], b[2]))]) this.posteBloc = b; }
+    }
+    const pres = (p) => (p[0] + 0.5 - a.x) ** 2 + (p[1] + 0.5 - a.y) ** 2 + (p[2] + 0.5 - a.z) ** 2 < 256;
+    const blocEn = (p) => { const e = sim.monde.etatEn(p[0], p[1], p[2]); return e >= 0 ? sim.d.nomBloc(e) : ''; };
+    const employe = m !== 'none' && m !== 'nitwit';
+    if (this.posteBloc && pres(this.posteBloc) && !(employe && POSTES[blocEn(this.posteBloc)] === m)) {
+      journal(sim, `${a.nom} perd son poste ${this.posteBloc.join(',')} (${blocEn(this.posteBloc).replace(/_/g, ' ') || 'bloc casse'})`); this.stat('postesPerdus');
+      this.posteBloc = null; this.travail = null;
+    }
+    if (this.posteVise && pres(this.posteVise) && !(POSTES[blocEn(this.posteVise)] && (m === 'none' || (employe && POSTES[blocEn(this.posteVise)] === m)))) { this.posteVise = null; this.nav = null; }
+    if (this.lit && act === 'repos' && !this.sommeil && pres(this.lit)) {
+      const t = teteLit(sim, bloc(this.lit)), autre = sim.acteurs.liste.some((v) => v !== a && v.mort < 0 && v.ia?.sommeil && v.ia.lit && bloc(v.ia.lit).join() === t.join());
+      if (!blocEn(t).endsWith('_bed') || autre) { journal(sim, `${a.nom} perd son lit ${this.lit.join(',')}`); this.lit = null; }
+    }
+    if (this.rassemblement && act === 'rassemblement' && pres(this.rassemblement) && blocEn(this.rassemblement) !== 'bell') this.rassemblement = null;
+    // PoiCompetitorScan
+    if (this.posteBloc) {
+      let gagnant = this.xpMetier, moi = true;
+      for (const o of this.autres()) {
+        if (o.ia?.type !== 'villager' || this.dist2(o) > NOMBRES.vue2 || !o.ia.posteBloc || o.ia.posteBloc.join() !== this.posteBloc.join() || o.ia.metier() !== m) continue;
+        if (!(gagnant > o.ia.xpMetier)) {
+          if (moi) { journal(sim, `${a.nom} laisse le poste ${this.posteBloc.join(',')} a ${o.nom} (experience ${this.xpMetier} contre ${o.ia.xpMetier})`); this.stat('postesPerdus'); this.posteBloc = null; this.travail = null; }
+          moi = false; gagnant = o.ia.xpMetier;
+        }
+      }
+    }
+    // YieldJobSite
+    if (this.posteVise && !this.posteBloc && !this.bebe && m === 'none') {
+      const metierBloc = POSTES[blocEn(this.posteVise)];
+      if (metierBloc) for (const o of this.autres()) {
+        if (o.ia?.type !== 'villager' || this.dist2(o) > NOMBRES.vue2 || o.ia.posteVise || o.ia.metier() !== metierBloc) continue;
+        if (!o.ia.posteBloc || o.ia.posteBloc.join() === this.posteVise.join()) { journal(sim, `${a.nom} laisse le poste vise ${this.posteVise.join(',')} a ${o.nom}`); this.posteVise = null; this.marche = null; this.nav = null; break; }
+      }
+    }
+    // ResetProfession
+    if (!this.travail && employe && this.xpMetier === 0 && this.niveauMetier() <= 1) {
+      this.variante = `${this.typeVillageois()} none`; this.changer({ variante: this.variante });
+      this.stat('metiersPerdus'); journal(sim, `${a.nom} perd son metier (${m} novice sans experience, sans poste)`);
+    }
+    return false;
+  },
+  tick_poiPerdus() {},
   // GoToPotentialJobSite (au plus 1200 ticks, temps libre, travail ou jeu) : il va au poste vise (0,5 ; a 1 bloc)
   peut_versPoste() {
     if (!this.posteVise || this.sommeil || !['libre', 'travail', 'jeu'].includes(this.activite())) return false;

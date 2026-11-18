@@ -6,7 +6,7 @@
 // Le replay se serialise en octets (stable : meme scene, meme graine = memes octets) ; son SHA-256 sert de preuve de determinisme.
 import crypto from 'node:crypto';
 
-class Colonne {   // tableau typé qui grandit
+class Colonne {   // tableau typÃ© qui grandit
   constructor(Type, nb) { this.Type = Type; this.nb = nb; this.a = new Type(1024 * nb); this.n = 0; }
   pousser(...v) {
     if ((this.n + 1) * this.nb > this.a.length) { const b = new this.Type(this.a.length * 2); b.set(this.a); this.a = b; }
@@ -34,7 +34,16 @@ export class Replay {
     this.mods = [];
     // souffles d'explosion recus par les acteurs (pour le pantin du film, docs/SIMULATION.md partie 21) : { tick, i, v (poussee), m (moment), sol } ; rien sans eux
     this.souffles = [];
+    // vol plane aux elytres (moteur/acteurs.js) : [tick, indice d'acteur, vx, vy, vz, ticks de vol] par tick plane ; rien sans lui
+    this.vols = [];
+    // blocs et machines (docs/SIMULATION.md partie 27) ; rien sans eux : montures prises et quittees { tick, cavalier, vehicule|null }, vehicules
+    // [tick, indice d'acteur, lacet du jeu, tangage, secousse, degats x sens, meche, angle des bulles], balises { x, y, z, d: [[tick, sections]] }
+    // (sections [[couleur, hauteur], ...] a chaque changement), cadres { id, x, y, z, face, d: [[tick, objet, rotation]] }, pupitres { x, y, z, d: [[tick, livre, page, pages]] }
+    this.montures = []; this.vehicules = []; this.balises = []; this.cadres = []; this.pupitres = [];
   }
+  // vehicule : [tick, indice, lacet du rendu (jeu), tangage du rendu, secousse (hurtTime), degats x sens, meche, angle des bulles, decalage x, y, z du rendu sur le rail]
+  vehicule(tick, i, yaw, pitch, secousse, degats, meche, bulle, dx = 0, dy = 0, dz = 0, wagon = 1) { const r = (x) => Math.round(x * 1e4) / 1e4; this.vehicules.push([tick, i, r(yaw), r(pitch), secousse, r(degats), meche, r(bulle), r(dx), r(dy), r(dz), wagon]); }
+  vol(tick, i, vx, vy, vz, n) { const r = (x) => Math.round(x * 1e6) / 1e6; this.vols.push([tick, i, r(vx), r(vy), r(vz), n]); }
   souffle(tick, i, v, m, sol = 0) { const r = (x) => Math.round(x * 1e5) / 1e5; this.souffles.push({ tick, i, v: v.map(r), m: m.map(r), sol }); }
   nom(n) { let i = this.nomIdx.get(n); if (i === undefined) { i = this.noms.length; this.noms.push(n); this.nomIdx.set(n, i); } return i; }
   bloc(tick, x, y, z, ancien, nouveau) { this._blocs.pousser(tick, x, y, z, ancien, nouveau); }
@@ -73,10 +82,33 @@ export class Replay {
 
   // octets stables du replay
   octets() {
-    const entete = Buffer.from(JSON.stringify({ moteur: this.moteur, graine: this.graine, ticks: this.ticks, ralenti: this.ralenti, palAjouts: this.palAjouts, noms: this.noms, textes: this.textes, mods: this.mods, n: [this._blocs.n, this._sons.n, this._parts.n, this._act.n, this._bev.n], ...(this.acteurs.length ? { acteurs: this.acteurs, actes: this.actes } : {}), ...(this._ent.n ? { ne: this._ent.n } : {}), ...(this._ia.n ? { ni: this._ia.n } : {}), ...(this.naissances.length ? { naissances: this.naissances } : {}), ...(this.croissances.length ? { croissances: this.croissances } : {}), ...(this._iax.n ? { nx: this._iax.n } : {}), ...(this.traits.length ? { traits: this.traits } : {}), ...(this.obscurite.length ? { obscurite: this.obscurite } : {}), ...(this.souffles.length ? { souffles: this.souffles } : {}) }), 'utf8');
+    const entete = Buffer.from(JSON.stringify({ moteur: this.moteur, graine: this.graine, ticks: this.ticks, ralenti: this.ralenti, palAjouts: this.palAjouts, noms: this.noms, textes: this.textes, mods: this.mods, n: [this._blocs.n, this._sons.n, this._parts.n, this._act.n, this._bev.n], ...(this.acteurs.length ? { acteurs: this.acteurs, actes: this.actes } : {}), ...(this._ent.n ? { ne: this._ent.n } : {}), ...(this._ia.n ? { ni: this._ia.n } : {}), ...(this.naissances.length ? { naissances: this.naissances } : {}), ...(this.croissances.length ? { croissances: this.croissances } : {}), ...(this._iax.n ? { nx: this._iax.n } : {}), ...(this.traits.length ? { traits: this.traits } : {}), ...(this.obscurite.length ? { obscurite: this.obscurite } : {}), ...(this.souffles.length ? { souffles: this.souffles } : {}), ...(this.vols.length ? { vols: this.vols } : {}), ...(this.montures.length ? { montures: this.montures } : {}), ...(this.vehicules.length ? { vehicules: this.vehicules } : {}), ...(this.balises.length ? { balises: this.balises } : {}), ...(this.cadres.length ? { cadres: this.cadres } : {}), ...(this.pupitres.length ? { pupitres: this.pupitres } : {}), ...(this.visionNuit?.length ? { visionNuit: this.visionNuit } : {}), ...(this.ecrans?.length ? { ecrans: this.ecrans } : {}), ...(this.visions?.length ? { visions: this.visions } : {}), ...(this.armures?.length ? { armures: this.armures } : {}), ...(this.peche?.length ? { peche: this.peche } : {}), ...(this.etats?.length ? { etats: this.etats } : {}) }), 'utf8');   // objets (partie 26) : ecrans, vue, armure, fil de peche, vie et faim
     const l = Buffer.alloc(4); l.writeUInt32LE(entete.length);
     const tab = (v) => Buffer.from(v.buffer, v.byteOffset, v.byteLength);
     return Buffer.concat([Buffer.from('MCR1'), l, entete, tab(this.blocs), tab(this.sons), tab(this.particules), tab(this.acteursVue), tab(this.blocsEntite), ...(this._ent.n ? [tab(this.entitesVue)] : []), ...(this._ia.n ? [tab(this.iaVue)] : []), ...(this._iax.n ? [tab(this.iaPlusVue)] : [])]);
   }
   sha256() { return crypto.createHash('sha256').update(this.octets()).digest('base64url'); }
+}
+
+// Passage du replay d'un processus a l'autre (simulation isolee des mods : moteur/isolement.js) : copie structuree (v8) de TOUS les champs,
+// les colonnes typees en { Type, nb, a, n }. Generique : un champ ajoute plus tard au replay passe sans rien changer ici.
+const TYPES = { Int32Array, Float64Array, Float32Array, Uint8Array, Uint16Array, Uint32Array, Int16Array, Int8Array };
+export function replayVersObjet(r) {
+  const o = {};
+  for (const [k, v] of Object.entries(r)) o[k] = v instanceof Colonne ? { __colonne: v.Type.name, nb: v.nb, a: v.vue().slice(), n: v.n } : v;
+  return o;
+}
+export function replayDepuisObjet(o) {
+  const r = Object.create(Replay.prototype);
+  for (const [k, v] of Object.entries(o)) {
+    if (v && typeof v === 'object' && typeof v.__colonne === 'string') {
+      const Type = TYPES[v.__colonne];
+      if (!Type) throw new Error('replay : colonne de type inconnu ' + v.__colonne);
+      const c = new Colonne(Type, v.nb);
+      if (v.a.length > c.a.length) c.a = new Type(v.a.length);
+      c.a.set(v.a); c.n = v.n;
+      r[k] = c;
+    } else r[k] = v;
+  }
+  return r;
 }

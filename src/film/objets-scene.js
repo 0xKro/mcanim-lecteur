@@ -6,7 +6,7 @@
 // Le controle ne regarde pas le kit (la scene se lit sans lui) : l'existence de l'objet est controlee par mcanim avant le rendu.
 export const MAX_CLES_OBJETS = 16;
 export const EMPLACEMENTS_ARMURE = ['tete', 'torse', 'jambes', 'pieds'];
-const ID = /^(minecraft:)?[a-z0-9_./-]{1,80}$/;
+const ID = /^(minecraft:)?[a-z0-9_./-]{1,80}(\[[a-z0-9_=,]{1,200}\])?(#([0-9a-fA-F]{6}|[a-z_]{3,12}))?$/;   // #couleur : cuir teint (objets/armure.js couleurArmure)   // composants permis (enchantements : diamond_sword[sharpness=5]) : id sans eux, pile avec (moteur/pile.js)
 
 const estNombre = (x) => typeof x === 'number' && Number.isFinite(x);
 
@@ -17,7 +17,8 @@ function lirePisteTexte(brut, ch, erreur, quoi) {
     if (typeof v !== 'string' || !ID.test(v) || v.includes('..')) erreur(c, `${quoi} attendu (minuscules, chiffres, _ - . / ; par exemple "cod" ou "diamond_sword"), ou null pour une main vide, pas ${JSON.stringify(v)}`);
     return v.replace(/^minecraft:/, '');
   };
-  if (typeof brut === 'string') return { cles: [{ t: 0, id: verifie(brut, ch) }] };
+  const cle = (t, v) => (v === null ? { t, id: null } : { t, id: v.replace(/\[.*$/, ''), ...(v.includes('[') ? { pile: v } : {}) });
+  if (typeof brut === 'string') return { cles: [cle(0, verifie(brut, ch))] };
   if (!Array.isArray(brut) || brut.length === 0) erreur(ch, `${quoi} (texte) ou liste de changements [[t, "id" ou null], ...] attendu`);
   if (brut.length > MAX_CLES_OBJETS) erreur(ch, `${MAX_CLES_OBJETS} changements au maximum`);
   return {
@@ -25,7 +26,7 @@ function lirePisteTexte(brut, ch, erreur, quoi) {
       const c = `${ch}[${i}]`;
       if (!Array.isArray(k) || k.length !== 2 || !estNombre(k[0]) || k[0] < 0) erreur(c, 'forme attendue : [temps, "id" ou null] (temps >= 0)');
       if (i > 0 && k[0] < brut[i - 1][0]) erreur(`${c}[0]`, 'les cles doivent etre classees par temps croissant');
-      return { t: k[0], id: verifie(k[1], `${c}[1]`) };
+      return cle(k[0], verifie(k[1], `${c}[1]`));
     }),
   };
 }
@@ -49,6 +50,12 @@ export function lireHabillage(a, ch, erreur) {
   return o;
 }
 
+// La pile complete (avec ses composants : enchantements) de la derniere cle atteinte, sinon null
+export function pileObjet(piste, t) {
+  let p = null;
+  for (const k of piste.cles) { if (k.t <= t) p = k.pile ?? k.id; else break; }
+  return p;
+}
 // Valeur d'une piste de changements au temps t : l'id de la derniere cle atteinte, sinon null (main vide, pas d'armure).
 export function valeurObjet(piste, t) {
   let id = null;

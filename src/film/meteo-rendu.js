@@ -7,6 +7,7 @@
 import { Aleatoire } from '../moteur/aleatoire.js';
 import { boitesLocales } from '../moteur/collision.js';
 import { niveauxMeteo } from './meteo.js';
+import { precipitationBiome } from '../moteur/temperature.js';
 
 const RAD = Math.PI / 180;
 const RAYON = 10;
@@ -56,10 +57,7 @@ export function creerMeteoRendu({ rs, replay, scene, donnees, terrain, texOf, lu
   const type = (x, z, y) => {          // 'pluie' | 'neige' | null selon le biome de la colonne
     let b = null;
     try { b = donnees.biome(rs.zone.biome(x, z)); } catch { b = null; }
-    if (!b || !b[1]) return null;
-    let t = b[2] ? Math.min(b[0], 0) : b[0];
-    if (y > 80) t -= (y - 80) * 0.05 / 40;
-    return t < 0.15 ? 'neige' : 'pluie';
+    return precipitationBiome(b, x, y, z);   // Biome.getPrecipitationAt du jeu, bruits de temperature compris (moteur/temperature.js)
   };
   const alea = new Map();
   const tire = (x, z) => {             // les tirages d'une colonne (graine du jeu), gardes
@@ -73,8 +71,9 @@ export function creerMeteoRendu({ rs, replay, scene, donnees, terrain, texOf, lu
   };
 
   // ---- foudre : la forme du jeu
-  // couleur par couche (de la plus fine, tres claire, a la plus large, bleutee et faible) : un coeur mince tres brillant, un halo discret
-  const CL = [[1, 1, 1], [0.27, 0.32, 0.5], [0.1, 0.12, 0.22], [0.04, 0.05, 0.1]];
+  // LightningBoltRenderer : chaque couche (4 epaisseurs) est un quad de couleur (0,45 ; 0,45 ; 0,5) et d'opacite 0,3 dessine en RenderType.lightning
+  // (SRC_ALPHA, ONE : ajoute) ; le coeur, ou les 4 couches se superposent, recoit 4 fois 0,3 x la couleur
+  const CL = [[0.45, 0.45, 0.5], [0.45, 0.45, 0.5], [0.45, 0.45, 0.5], [0.45, 0.45, 0.5]];
   const bolt = (graine, x, y, z, P) => {
     const af = new Float64Array(8), af1 = new Float64Array(8);
     let f = 0, f1 = 0;
@@ -94,15 +93,16 @@ export function creerMeteoRendu({ rs, replay, scene, donnees, terrain, texOf, lu
           if (j === 0) { w1 *= i1 * 0.1 + 1; w2 *= (i1 - 1) * 0.1 + 1; }
           const face = (a, b, c, d) => {
             const S = (cond, w) => (cond ? w : -w);
-            P.quad([[x + f2 + S(a, w1), y + i1 * 16, z + f3 + S(b, w1)], [x + f4 + S(a, w2), y + (i1 + 1) * 16, z + f5 + S(b, w2)], [x + f4 + S(c, w2), y + (i1 + 1) * 16, z + f5 + S(d, w2)], [x + f2 + S(c, w1), y + i1 * 16, z + f3 + S(d, w1)]], [[0, 0], [1, 0], [1, 1], [0, 1]], CL[k1]);
+            // Horizon gfx/lightning.rs (geometry) : bas du segment a la largeur w2 ((i1 - 1) x 0,1 + 1), haut a w1 (i1 x 0,1 + 1)
+            P.quad([[x + f2 + S(a, w2), y + i1 * 16, z + f3 + S(b, w2)], [x + f4 + S(a, w1), y + (i1 + 1) * 16, z + f5 + S(b, w1)], [x + f4 + S(c, w1), y + (i1 + 1) * 16, z + f5 + S(d, w1)], [x + f2 + S(c, w2), y + i1 * 16, z + f3 + S(d, w2)]], [[0, 0], [1, 0], [1, 1], [0, 1]], CL[k1]);
           };
           face(false, false, true, false); face(true, false, true, true); face(true, true, false, true); face(false, true, false, false);
         }
       }
     }
   };
-  // couche de 0,3 d'opacite en blanc bleute (0,45 0,45 0,5 dans LightningBoltRenderer), ici un peu renforcee ; dessinee en ADDITIF : 4 couches empilees, coeur tres clair, halo bleute
-const texEclair = { largeur: 1, hauteur: 1, rgba: new Uint8Array([255, 255, 255, 235]) };
+  // texel blanc d'opacite 0,3 (77/255) : le raster ajoute couleur x opacite (meme calcul que le melange SRC_ALPHA, ONE du jeu)
+const texEclair = { largeur: 1, hauteur: 1, rgba: new Uint8Array([255, 255, 255, 77]) };
 
   return {
     // niveaux de pluie et d'orage au temps du monde tm (secondes de film)
@@ -156,7 +156,8 @@ const texEclair = { largeur: 1, hauteur: 1, rgba: new Uint8Array([255, 255, 255,
               const h = hash(Math.imul(x, 73856093) ^ Math.imul(z, 19349663) ^ Math.imul(tick - a, 83492791));
               if (h > 0.2 * niv.pluie) continue;
               const px = x + hash(h * 977) , pz = z + hash(h * 1999), s = 0.07 + 0.05 * hash(h * 31), yy = surf + 0.04 + a * 0.05;
-              P('goutte', 7).quad([[px - s, yy, pz - s], [px + s, yy, pz - s], [px + s, yy, pz + s], [px - s, yy, pz + s]], [[0, 0], [1, 0], [1, 1], [0, 1]], [0.9, 0.95, 1]);
+              const Lg = lum(px, yy + 0.1, pz);   // gouttes (WaterDropParticle) : eclairees par la lumiere du lieu, comme toute particule du jeu (sombres la nuit)
+              P('goutte', 7).quad([[px - s, yy, pz - s], [px + s, yy, pz - s], [px + s, yy, pz + s], [px - s, yy, pz + s]], [[0, 0], [1, 0], [1, 1], [0, 1]], [0.9 * Lg, 0.95 * Lg, 1 * Lg]);
             }
           }
         }

@@ -7,6 +7,7 @@
 // air 4800), mobs/axolotl.rs, mobs/turtle.rs (TurtleMoveControl), mobs/guardian.rs (GuardianAttackGoal 80 / 60 ticks, degats 1 + 2 + 2 de
 // magie puis le coup, GuardianMoveControl, sauts sur la terre, malediction de l'ancien toutes les 1200 ticks a 50 blocs).
 import { coupe, deplacerBoite } from './collision.js';
+import { blocSous, vitesseApresContact } from './rebond.js';
 
 const RAD = Math.PI / 180, MOVE = 1, LOOK = 2;
 const wrap = (a) => { a = (a + 180) % 360; if (a < 0) a += 360; return a - 180; };
@@ -358,7 +359,7 @@ export const METHODES_EAU = {
     const s = Math.sin(a.lacet * RAD), c = Math.cos(a.lacet * RAD);
     a.vx += -zza * quant * s; a.vz += zza * quant * c; a.vy += yya * quant;
     const r = deplacerBoite(a.lec, a.boite(), [a.vx, a.vy, a.vz], a.auSol, this.type === 'turtle' ? 1 : 0);
-    a.x += r.dx; a.y += r.dy; a.z += r.dz; if (r.bloqueX) a.vx = 0; if (r.bloqueZ) a.vz = 0; if (r.bloqueY) a.vy = 0;
+    const vy0 = a.vy; a.x += r.dx; a.y += r.dy; a.z += r.dz; if (r.bloqueX) a.vx = 0; if (r.bloqueZ) a.vz = 0; if (r.bloqueY) a.vy = r.auSol ? vitesseApresContact(vy0, r.dy, 0.08, blocSous(a.lec, a.x, a.y, a.z)) : 0;   // rebond (rebond.js)
     a.auSol = r.auSol; a.bute = r.bloqueX || r.bloqueZ; a.distanceChute = 0;
     a.vx *= 0.9; a.vy *= 0.9; a.vz *= 0.9;
     if (!this.cible && (f === 'poisson' || f === 'dauphin' || (f === 'gardien' && !this.bouge) || (this.type === 'turtle' && !this.versMaison))) a.vy -= 0.005;
@@ -385,7 +386,7 @@ export const METHODES_EAU = {
       a.vx = 0; a.vz = 0; a.vy = (a.vy - 0.08) * 0.98; T.xRot += (-90 - T.xRot) * 0.02;
     }
     const r = deplacerBoite(a.lec, a.boite(), [a.vx, a.vy, a.vz], a.auSol, 0);
-    a.x += r.dx; a.y += r.dy; a.z += r.dz; if (r.bloqueX) a.vx = 0; if (r.bloqueZ) a.vz = 0; if (r.bloqueY) a.vy = 0;
+    const vy0 = a.vy; a.x += r.dx; a.y += r.dy; a.z += r.dz; if (r.bloqueX) a.vx = 0; if (r.bloqueZ) a.vz = 0; if (r.bloqueY) a.vy = r.auSol ? vitesseApresContact(vy0, r.dy, 0.08, blocSous(a.lec, a.x, a.y, a.z)) : 0;   // rebond (rebond.js)
     a.auSol = r.auSol; a.distanceChute = 0;
     return true;
   },

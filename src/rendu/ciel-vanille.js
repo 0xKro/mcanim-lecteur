@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { decoderPNG } from './png.js';
 import { ternir } from '../film/meteo.js';
+import { Aleatoire } from '../moteur/aleatoire.js';   // java.util.Random : eclairs du ciel de l'End
 
 export const PERIODE = 24000;
 export const RAYON_CIEL_CHUNKS = 12;
@@ -119,6 +120,7 @@ function lirePng(f) {
 
 export class CielVanille {
   constructor(kitDir, couleursBiomes) {
+    this.kitDir = kitDir;
     const env = path.join(kitDir, 'assets', 'minecraft', 'textures', 'environment');
     this.soleil = lirePng(path.join(env, 'celestial', 'sun.png'));
     this.lunes = PHASES.map((p) => lirePng(path.join(env, 'celestial', 'moon', p + '.png')));
@@ -254,6 +256,44 @@ export function etatAvecMeteo(et, { pluie = 0, orage = 0, eclair = false } = {})
   return { ...et, sky, fog, starBrightness: et.starBrightness * (1 - pluie), sunrise: [et.sunrise[0], et.sunrise[1], et.sunrise[2], et.sunrise[3] * (1 - pluie)], cloud: [et.cloud[0] * sombre, et.cloud[1] * sombre, et.cloud[2] * sombre, et.cloud[3]], pluie };
 }
 
+// ---------------------------------------------------------------- monde de l'End (scene avec monde.dimension = "end")
+// SkyRenderer.buildEndSky (Horizon gfx/end_sky.rs : MIT, voir ATTRIBUTIONS.md) : les 6 faces d'un cube a 100 blocs, texture environment/end_sky.png
+// repetee 16 fois par face, teinte 0x282828 ; sky_color #000000 et fog_color #181318 (attributs du type de dimension the_end du jeu) ; pas de
+// soleil, lune, etoiles, lueur ni nuages. EndFlashState (Horizon game/end.rs EndFlash) : toutes les 600 ticks, graine floor(t / 600) (java.util.Random),
+// un tirage perdu, decalage 0..200, duree 100..min(380, 600 - decalage), angles x = f x 70 - 60, y = f x 360 - 180 ; intensite sin((t - decalage) x pi
+// / duree) ; le sprite environment/celestial/end_flash (60 de demi-cote a 100 blocs) tourne vers l'eclair, et la lumiere du ciel (sky_light_factor) monte
+// d'autant (d'un tiers sous la brume du dragon).
+const BRUME_END = [0x18, 0x13, 0x18];
+function intensiteEnd(t) {
+  const s = Math.floor(t / 600), h = new Aleatoire(s);
+  h.flottant();
+  const decal = h.entierBorne(201), duree = h.entierBorne(Math.min(380, 600 - decal) - 100 + 1) + 100;
+  const ax = h.flottant() * 70 - 60, ay = h.flottant() * 360 - 180;
+  const k = ((t % 600) + 600) % 600;
+  return { i: k >= decal && k <= decal + duree ? Math.fround(Math.sin(((k - decal) * Math.PI) / duree)) : 0, ax, ay, debut: s * 600 + decal };
+}
+// ticks (flottant) -> { intensite, ax, ay, debut (tick de depart de l'eclair) }
+export function eclairEnd(ticks) {
+  const k = Math.floor(ticks), u = ticks - k, a = intensiteEnd(k), b = intensiteEnd(k + 1);
+  return { intensite: a.i + (b.i - a.i) * u, ax: a.ax, ay: a.ay, debut: a.debut };
+}
+export function cielEnd(cv, ticksMonde) {
+  if (cv.ciel_end === undefined) {
+    const env = path.join(cv.kitDir ?? '', 'assets', 'minecraft', 'textures', 'environment');
+    cv.ciel_end = lirePng(path.join(env, 'end_sky.png')); cv.eclair_end = lirePng(path.join(env, 'celestial', 'end_flash.png'));
+  }
+  const e = eclairEnd(ticksMonde), astres = [];
+  if (e.intensite > 1e-5 && cv.eclair_end) {
+    // pose = rotation Y (180 - ay) x rotation X (-90 - ax), appliquee aux axes du sprite (x, y = 100, z)
+    const a = ((180 - e.ay) * Math.PI) / 180, b = ((-90 - e.ax) * Math.PI) / 180;
+    const R = ([x, y, z]) => { const y1 = y * Math.cos(b) - z * Math.sin(b), z1 = y * Math.sin(b) + z * Math.cos(b); return [x * Math.cos(a) + z1 * Math.sin(a), y1, -x * Math.sin(a) + z1 * Math.cos(a)]; };
+    const I = Math.min(1, Math.max(0, e.intensite));
+    astres.push({ n: R([0, 1, 0]), ex: R([1, 0, 0]), ez: R([0, 0, 1]), taille: 60, lune: false, tex: cv.eclair_end, mult: [I, I, I], rond: false, rayonRond: 30, couleur: [255, 255, 255], halo: 0, haloRayon: 0 });
+  }
+  const vanille = { sky: [0, 0, 0], fog: BRUME_END, bas: null, fin: RAYON_CIEL_CHUNKS * 16, sunrise: null, etoiles: null, astres, boiteEnd: cv.ciel_end ? { tex: cv.ciel_end, teinte: 0x28 / 255 } : null };
+  return { vanille, nuage: null, couleurs: { zenith: [0, 0, 0], horizon: BRUME_END, bas: BRUME_END } };
+}
+
 export function construireCiel(cv, et, cam, mods, ticksMonde) {
   const m = mods || {};
   const teinte = m.teinte || [1, 1, 1], k = m.intensite ?? 1;
@@ -323,18 +363,24 @@ export function lumiereMonde(ticks, gamma = 0.5) {
 // de l'overworld (#0a0a0a), block_light_tint par defaut du jeu (#ffd88c : chaud). Le scintillement n'est pas simule (0).
 // Rend { R, G, B } : trois Float32Array(256), indice ciel * 16 + bloc, valeurs 0..1.
 export const TEINTE_BLOC = [0xff / 255, 0xd8 / 255, 0x8c / 255];
-export function tableLumiere(ticks, gamma = 0.5, { flicker = 0, nightVision = 0, facteurCiel = 1 } = {}) {
-  const f = piste(PISTE_LUM_FACTEUR, ticks)[0] * facteurCiel, sc = piste(PISTE_LUM_COULEUR, ticks);
+// Ajouts (partie 28) : vision nocturne (`nightVision` 0..1 : ambiance = max(ambient_light_color, 0,6 x vision)), assombrissement des boss
+// (`boss` 0..1 : couleur melangee vers couleur x (0,7 ; 0,6 ; 0,6)), `obscurite` retiree, puis bornee ; monde de l'End (`dimension: 'end'`) :
+// attributs du type de dimension the_end du jeu (ambient_light_color #3f473f, sky_light_color #ac60cd, sky_light_factor 0).
+export const AMBIANT_END = [0x3f / 255, 0x47 / 255, 0x3f / 255], CIEL_END = [0xac / 255, 0x60 / 255, 0xcd / 255];
+export function tableLumiere(ticks, gamma = 0.5, { flicker = 0, nightVision = 0, facteurCiel = 1, boss = 0, obscurite = 0, dimension = 'overworld', eclairEnd = 0 } = {}) {
+  const end = dimension === 'end';
+  const f = end ? eclairEnd : piste(PISTE_LUM_FACTEUR, ticks)[0] * facteurCiel, sc = end ? CIEL_END : piste(PISTE_LUM_COULEUR, ticks);
   const R = new Float32Array(256), G = new Float32Array(256), B = new Float32Array(256);
   const lum = (v) => v / (4 - 3 * v);
-  const amb = Math.max(AMBIANT_OVERWORLD, 0.6 * nightVision);
+  const ambB = end ? AMBIANT_END : [AMBIANT_OVERWORLD, AMBIANT_OVERWORLD, AMBIANT_OVERWORLD], amb = ambB.map((a) => Math.max(a, 0.6 * nightVision));
+  const ASS = [0.7, 0.6, 0.6];
   for (let s = 0; s < 16; s++) {
     for (let b = 0; b < 16; b++) {
       const lb = b / 15, ls = s / 15;
       const sk = lum(ls) * f, bk = lum(lb) * (1.4 + flicker);
       const par = (2 * lb - 1) ** 2;
       const bc = TEINTE_BLOC.map((t) => t + (1 - t) * 0.9 * par);
-      const c = [0, 1, 2].map((k) => Math.min(1, Math.max(0, amb + sc[k] * sk + bc[k] * bk)));
+      const c = [0, 1, 2].map((k) => { let v = amb[k] + sc[k] * sk + bc[k] * bk; if (boss) v += (v * ASS[k] - v) * boss; return Math.min(1, Math.max(0, v - obscurite)); });
       const max = Math.max(...c, 1e-6), k = (1 - Math.pow(1 - max, 4)) / max;
       R[s * 16 + b] = c[0] + (c[0] * k - c[0]) * gamma; G[s * 16 + b] = c[1] + (c[1] * k - c[1]) * gamma; B[s * 16 + b] = c[2] + (c[2] * k - c[2]) * gamma;
     }

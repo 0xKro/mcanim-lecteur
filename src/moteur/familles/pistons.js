@@ -309,33 +309,69 @@ export function installer(mc, regles) {
       place(m.id2, txt.replace(/\[.*$/, '') + `[extended=true,facing=${JEU[m.dir]}]`, 0);
     } else place(m.id1, txt, off);
   }
-  // moveCollidedEntities : les acteurs touches par le bloc qui bouge sont pousses avec lui
-  function pousserActeurs(monde, m, p0, p1) {
+  // PistonMovingBlockEntity.moveCollidedEntities et moveStuckEntities (Horizon horizon-world/src/piston_push.rs, horizon-client/src/game/
+  // piston_push.rs : MIT) : toutes les entites (acteurs, vehicules, objets au sol, TNT amorce, blocs qui tombent, orbes) que la forme du bloc
+  // balaie pendant ce progres sont poussees de ce qu'elle entre en elles (au plus le progres) + 0,01 (PUSH_OFFSET), par Entity.move(PISTON) :
+  // 0,51 au plus par axe et par tick (limitPistonMovement), collisions comprises. Bloc de slime : la vitesse de l'entite sur l'axe du mouvement
+  // devient +-1 (causeBounce). Bloc de miel qui bouge de cote : les entites posees dessus (dans [0 ; haut ; 0]..[1 ; 1,5000010000000001 ; 1])
+  // suivent du progres. Piston source qui rentre : une entite restee dans sa cellule est tiree (fixEntityWithinPistonBase).
+  const PUSH_OFFSET = 0.01;
+  const pas = (d) => V[d];
+  const aire = (b, d, n) => {   // PistonMath.getMovementArea
+    const s = (d === 'est' || d === 'haut' || d === 'sud' ? 1 : -1) * n, lo = Math.min(s, 0), hi = Math.max(s, 0);
+    switch (d) {
+      case 'ouest': return [b[0] + lo, b[1], b[2], b[0] + hi, b[4], b[5]];
+      case 'est': return [b[3] + lo, b[1], b[2], b[3] + hi, b[4], b[5]];
+      case 'bas': return [b[0], b[1] + lo, b[2], b[3], b[1] + hi, b[5]];
+      case 'haut': return [b[0], b[4] + lo, b[2], b[3], b[4] + hi, b[5]];
+      case 'nord': return [b[0], b[1], b[2] + lo, b[3], b[4], b[2] + hi];
+      default: return [b[0], b[1], b[5] + lo, b[3], b[4], b[5] + hi];
+    }
+  };
+  const coupeB = (a, b) => a[3] > b[0] && a[0] < b[3] && a[4] > b[1] && a[1] < b[4] && a[5] > b[2] && a[2] < b[5];
+  const entree = (blk, d, e) => (d === 'est' ? blk[3] - e[0] : d === 'ouest' ? e[3] - blk[0] : d === 'haut' ? blk[4] - e[1] : d === 'bas' ? e[4] - blk[1] : d === 'sud' ? blk[5] - e[2] : e[5] - blk[2]);   // getMovement
+  function pousserCorps(monde, m, p0, p1) {
     if (!monde.regle('pistons.pousseActeurs', true)) return;
-    const acteurs = monde.acteursListe();
-    if (!acteurs.length) return;
-    const dm = m.ext ? m.dir : OPP[m.dir], ax = { x: 0, y: 1, z: 2 }[AXE[dm]], s = V[dm][ax];
-    const boites = monde.boitesEtat(monde.texteEtat(m.etat));
-    const o0 = decalage(m, p0), o1 = decalage(m, p1), v = V[m.dir];
-    for (const a of acteurs) {
-      let meilleur = 0;
-      for (const b of boites) {
-        const n = [0, 1, 2].map((i) => [m.p[i] + v[i] * o1 + b[i], m.p[i] + v[i] * o1 + b[i + 3]]);
-        const anc = [0, 1, 2].map((i) => [m.p[i] + v[i] * o0 + b[i], m.p[i] + v[i] * o0 + b[i + 3]]);
-        let ok = true;
-        for (let i = 0; i < 3; i++) {
-          if (i === ax) continue;
-          if (!(a.boite[i + 3] > n[i][0] + 1e-4 && a.boite[i] < n[i][1] - 1e-4)) { ok = false; break; }
+    const dp = p1 - p0;
+    if (dp <= 0) return;
+    const txt = monde.texteEtat(m.etat);
+    const forme = m.source && !m.ext ? `minecraft:piston_head[facing=${JEU[m.dir]},short=false,type=${/^minecraft:sticky/.test(txt) ? 'sticky' : 'normal'}]` : txt;
+    const boites = monde.boitesEtat(forme);
+    if (!boites.length) return;
+    const dm = m.ext ? m.dir : OPP[m.dir], st = pas(dm), o = decalage(m, p0), v = V[m.dir];
+    const place = (b) => [b[0] + m.p[0] + v[0] * o, b[1] + m.p[1] + v[1] * o, b[2] + m.p[2] + v[2] * o, b[3] + m.p[0] + v[0] * o, b[4] + m.p[1] + v[1] * o, b[5] + m.p[2] + v[2] * o];
+    const tous = boites.map(place), en = tous.reduce((a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2]), Math.max(a[3], b[3]), Math.max(a[4], b[4]), Math.max(a[5], b[5])]);
+    const zone = (() => { const a = aire(en, dm, dp); return [Math.min(a[0], en[0]), Math.min(a[1], en[1]), Math.min(a[2], en[2]), Math.max(a[3], en[3]), Math.max(a[4], en[4]), Math.max(a[5], en[5])]; })();
+    const slime = /^minecraft:slime_block/.test(txt), miel = /^minecraft:honey_block/.test(txt);
+    const corps = monde.corpsPoussables();
+    for (const c of corps) {
+      const b0 = c.boite();
+      if (!coupeB(zone, b0)) continue;
+      let delta = 0;
+      for (const k of tous) { const a = aire(k, dm, dp); if (coupeB(a, b0)) { delta = Math.max(delta, entree(a, dm, b0)); if (delta >= dp) break; } }
+      if (slime) c.rebond(dm);
+      if (delta > 0) {
+        const n = Math.min(delta, dp) + PUSH_OFFSET;
+        c.pousser([st[0] * n, st[1] * n, st[2] * n]);
+        if (!m.ext && m.source) {   // fixEntityWithinPistonBase
+          const b1 = c.boite(), cell = [m.p[0], m.p[1], m.p[2], m.p[0] + 1, m.p[1] + 1, m.p[2] + 1];
+          if (coupeB(b1, cell)) {
+            const op = OPP[dm], d1 = entree(cell, op, b1) + PUSH_OFFSET, inter = [Math.max(b1[0], cell[0]), Math.max(b1[1], cell[1]), Math.max(b1[2], cell[2]), Math.min(b1[3], cell[3]), Math.min(b1[4], cell[4]), Math.min(b1[5], cell[5])];
+            const d2 = entree(cell, op, inter) + PUSH_OFFSET;
+            if (Math.abs(d1 - d2) < PUSH_OFFSET) { const f = Math.min(d1, dp) + PUSH_OFFSET, sp = pas(op); c.pousser([sp[0] * f, sp[1] * f, sp[2] * f]); }
+          }
         }
-        if (!ok) continue;
-        const lo = Math.min(n[ax][0], anc[ax][0]), hi = Math.max(n[ax][1], anc[ax][1]);
-        if (!(a.boite[ax + 3] > lo && a.boite[ax] < hi)) continue;
-        const decal = s > 0 ? n[ax][1] - a.boite[ax] : a.boite[ax + 3] - n[ax][0];
-        if (decal > meilleur) meilleur = decal;
       }
-      if (meilleur > 0) {
-        const d = Math.min(meilleur, Math.abs(p1 - p0) + 0.01) * s, dd = [0, 0, 0]; dd[ax] = d;
-        monde.deplacerActeur(a.nom, dd[0], dd[1], dd[2]);
+    }
+    if (miel && st[1] === 0) {
+      const haut = Math.max(...monde.boitesEtat(txt).map((b) => b[4]), 0);
+      const zoneM = place([0, haut, 0, 1, 1.5000010000000001, 1]);
+      for (const c of corps) {
+        const b = c.boite();
+        if (!coupeB(zoneM, b) || !c.poussable || !c.auSol()) continue;
+        const [x, , z] = c.position();
+        if (!c.surPiston?.() && !(x >= zoneM[0] && x <= zoneM[3] && z >= zoneM[2] && z <= zoneM[5])) continue;
+        c.pousser([st[0] * dp, 0, st[2] * dp]);
       }
     }
   }
@@ -355,7 +391,7 @@ export function installer(mc, regles) {
       }
     } else {
       const neuf = Math.min(m.progres + monde.regle('pistons.vitesse', 0.5), 1);
-      pousserActeurs(monde, m, m.progres, neuf);
+      pousserCorps(monde, m, m.progres, neuf);
       m.progres = neuf;
     }
   }

@@ -9,7 +9,9 @@
 //     pendant la chute de la mort du jeu (rougeur, puis nuage au tick 20).
 // Deterministe : tout vient du replay (memes octets = memes images). Regle `explosion.ragdoll: false` : aucun souffle n'est ecrit, rien ici.
 import { ESPECES } from '../creatures/especes.js';
-import { couchesDe, matricePartie, mul, T, S } from '../creatures/rendu.js';
+import { couchesDe, matricePartie, mul, T, S, basCreature } from '../creatures/rendu.js';
+import { Personnage, matriceMembre } from '../perso/modele.js';
+let JOUEUR_GEO = null;   // corps du joueur (modele large) quand le film n'a pas ses personnages : geometrie seulement
 
 const DT = 1 / 20, G = 32;                              // seconde par tick ; gravite du jeu 0,08 bloc/tick^2 = 32 blocs/s^2
 const SEUIL = 0.2;                                      // poussee (blocs/tick) en dessous de laquelle le corps ne part pas en pantin
@@ -46,6 +48,48 @@ function tourner(phi, v) {
   const a = Math.hypot(...phi); if (a < 1e-9) return v;
   const k = phi.map((x) => x / a), c = Math.cos(a), s = Math.sin(a), kv = croix(k, v), d = k[0] * v[0] + k[1] * v[1] + k[2] * v[2];
   return [0, 1, 2].map((i) => v[i] * c + kv[i] * s + k[i] * d * (1 - c));
+}
+
+// ---------------------------------------------------------------- rotations exactes des membres (repere du modele)
+// Rodrigues : matrice 3x3 (ligne par ligne) de la rotation de vecteur phi
+export function matPhi(phi) {
+  const a = Math.hypot(...phi);
+  if (a < 1e-12) return [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const [x, y, z] = phi.map((v) => v / a), c = Math.cos(a), s = Math.sin(a), t = 1 - c;
+  return [t * x * x + c, t * x * y - s * z, t * x * z + s * y, t * x * y + s * z, t * y * y + c, t * y * z - s * x, t * x * z - s * y, t * y * z + s * x, t * z * z + c];
+}
+const m3 = (A, B) => [0, 1, 2].flatMap((i) => [0, 1, 2].map((j) => A[i * 3] * B[j] + A[i * 3 + 1] * B[3 + j] + A[i * 3 + 2] * B[6 + j]));
+const tr3 = (A) => [A[0], A[3], A[6], A[1], A[4], A[7], A[2], A[5], A[8]];
+const rx = (a) => [1, 0, 0, 0, Math.cos(a), -Math.sin(a), 0, Math.sin(a), Math.cos(a)];
+const ry = (a) => [Math.cos(a), 0, Math.sin(a), 0, 1, 0, -Math.sin(a), 0, Math.cos(a)];
+const rz = (a) => [Math.cos(a), -Math.sin(a), 0, Math.sin(a), Math.cos(a), 0, 0, 0, 1];
+const borne = (v) => Math.max(-1, Math.min(1, v));
+// angles (x, y, z) tels que M = Rz(z) . Ry(y) . Rx(x) (ModelPart : zRot, yRot, xRot)
+export const eulerZYX = (M) => [Math.atan2(M[7], M[8]), Math.asin(borne(-M[6])), Math.atan2(M[3], M[0])];
+// angles (x, y, z) tels que M = Rz(z) . Rx(x) . Ry(y) (bras et jambes du joueur : perso/modele.js rotationMembre)
+export const eulerZXY = (M) => [Math.asin(borne(M[7])), Math.atan2(-M[6], M[8]), Math.atan2(-M[1], M[4])];
+// angles (x, y, z) tels que M = Ry(y) . Rx(x) . Rz(z) (tete du joueur : lacet, tangage, roulis)
+export const eulerYXZ = (M) => [Math.asin(borne(-M[5])), Math.atan2(M[2], M[8]), Math.atan2(M[3], M[4])];
+const ecart = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+// Membre du joueur (repere du modele = celui des parties de perso/modele.js) : la pose v = [avant, cote, torsion] (degres) suivie de la
+// rotation phi autour de la hanche ou de l'epaule, rendue comme une pose du meme modele : R = Rz(lat x cote) . Rx(-avant) . Ry(-lat x torsion)
+export function poseMembreJoueur(nom, v, phi) {
+  const lat = nom.endsWith('D') ? 1 : -1, M = m3(matPhi(phi), matriceMembre(nom, v ?? [0, 0]));
+  const [x, y, z] = eulerZXY(M);
+  return [-x * DEG, lat * z * DEG, -lat * y * DEG];
+}
+// Tete du joueur : R = Ry(lacet) . Rx(tangage) . Rz(-roulis)
+export function poseTeteJoueur(t, phi) {
+  const M = m3(matPhi(phi), m3(m3(ry((t?.[0] ?? 0) * RAD), rx((t?.[1] ?? 0) * RAD)), rz(-(t?.[2] ?? 0) * RAD)));
+  const [x, y, z] = eulerYXZ(M);
+  return [y * DEG, x * DEG, -z * DEG];
+}
+// Partie d'une creature : nouvelle rotation locale L = Rp^T . R(phi) . Rp . L0 (Rp : rotation du parent au repos, L0 : la partie au repos) ;
+// rend l'ecart d'angles (degres) a ajouter aux angles de la partie (rendu : pistes `parties`)
+export function ecartPartie(m, phi) {
+  const L0 = m3(m3(rz(m.q0[2]), ry(m.q0[1])), rx(m.q0[0]));
+  const e = eulerZYX(m3(m3(m3(tr3(m.Rp), matPhi(phi)), m.Rp), L0));
+  return [0, 1, 2].map((i) => ecart(e[i] - m.q0[i]) * DEG);
 }
 
 // ---------------------------------------------------------------- membres
@@ -100,7 +144,7 @@ function lireModele(racine) {
         const r = [Mp[0] * c[0] + Mp[1] * c[1] + Mp[2] * c[2], Mp[4] * c[0] + Mp[5] * c[1] + Mp[6] * c[2], Mp[8] * c[0] + Mp[9] * c[1] + Mp[10] * c[2]], lr = Math.hypot(...r);
         const tete = /head|neck|jaw|beak|snout|horn|ear/.test(nom);
         const cote = /right/.test(nom) ? 1 : /left/.test(nom) ? -1 : 0;
-        membres.push({ nom, r0: r.map((v) => v / lr), piv: [Mp[3], Mp[7], Mp[11]], L: Math.max(0.15, 2 * l), k: tete ? 45 : 50, c: tete ? 6 : 6, lim: tete ? 0.7 : /tail/.test(nom) ? 1.2 : /arm/.test(nom) ? 2.4 : 1.1, lache: /arm/.test(nom) ? [0, 0, 0.5 * cote] : [0, 0, 0] });
+        membres.push({ nom, Rp: [M[0], M[1], M[2], M[4], M[5], M[6], M[8], M[9], M[10]], q0: [q[3], q[4], q[5]], r0: r.map((v) => v / lr), piv: [Mp[3], Mp[7], Mp[11]], L: Math.max(0.15, 2 * l), k: tete ? 45 : 50, c: tete ? 6 : 6, lim: tete ? 0.7 : /tail/.test(nom) ? 1.2 : /arm/.test(nom) ? 2.4 : 1.1, lache: /arm/.test(nom) ? [0, 0, 0.5 * cote] : [0, 0, 0] });
       }
     }
     if (nom) vus.add(nom);
@@ -215,8 +259,18 @@ export function simulerPantin(trace, souffles, modele, nTicks) {
 
 // ---------------------------------------------------------------- application aux poses du film
 // parImage[i][k] : poses ; vivants[k] : traces (acteurs-vivants.js) ; tm[i] : temps du monde de l'image ; modeles : table des creatures
-export function appliquerPantins(scene, parImage, { replay, vivants, tm, modeles = null }) {
+// personnages (facultatif) : les Personnage / Creature du rendu (film/video.js) ; creatures : table des creatures (modeles, animations)
+export function appliquerPantins(scene, parImage, { replay, vivants, tm, modeles = null, creatures = null, personnages = null }) {
   if (!replay?.souffles?.length) return;
+  modeles ??= creatures?.modeles ?? null;
+  // hauteur monde du point le plus bas du corps dessine dans la pose p de l'acteur k
+  const basDe = (k, p) => {
+    const P = personnages?.[k];
+    if (P?.basMaillage) return P.basMaillage(p);
+    const c = scene.acteurs[k].creature;
+    if (!c) return (JOUEUR_GEO ??= new Personnage({ rgba: new Uint8Array(64 * 64 * 4) })).basMaillage(p);
+    return modeles ? basCreature(c, creatures ?? { modeles }, p) : null;
+  };
   const parId = new Map();
   for (const s of replay.souffles) { const l = parId.get(s.i) ?? []; l.push(s); parId.set(s.i, l); }
   const R = replay.ralenti;
@@ -241,30 +295,26 @@ export function appliquerPantins(scene, parImage, { replay, vivants, tm, modeles
       // mort pendant le vol : le corps est deja projete, la bascule de la mort du film (anim.js) est remplacee par le couchage du pantin
       if (p.roulis && p._dyMort !== undefined) { p.roulis = 0; p.dy = (p.dy ?? 0) - p._dyMort; }
       p.ragdoll = { R: RQ, centre: modele.centre };
-      // sol : le point le plus bas de la boite tournee touche le sol pres du sol, ne passe jamais dessous en l'air
-      const th = (180 - (p.lacet ?? 0)) * RAD, ct = Math.cos(th), st = Math.sin(th);
-      const [mn, mx] = modele.boite;
-      let bas = Infinity;
-      for (const x of [mn[0], mx[0]]) for (const y of [mn[1], mx[1]]) for (const z of [mn[2], mx[2]]) {
-        const w = [x * ct + z * st, y - modele.centre, -x * st + z * ct];
-        bas = Math.min(bas, app(RQ, w)[1] + modele.centre);
-      }
-      const solRel = (p.sol ?? p.y) - p.y, haut = Math.max(0, p.y - (p.sol ?? p.y));
-      const proche = Math.max(0, Math.min(1, 1 - haut / 0.8));
-      const corr = proche * (solRel - bas) + (1 - proche) * Math.max(0, solRel - bas);
-      p.dy = (p.dy ?? 0) + corr + dyB;
       // membres
       modele.membres.forEach((m, n) => {
         const phi = A.membres[n].map((v, ii) => (v + (B.membres[n][ii] - v) * f) * poids);
+        // rotation exacte : phi (repere du modele) composee avec la pose du membre, rendue dans les angles du rendu
         if (!c) {
-          if (m.nom === 'tete') { const t = p.tete ?? [0, 0]; p.tete = [t[0] + phi[1] * DEG, t[1] + phi[0] * DEG, (t[2] ?? 0) - phi[2] * DEG]; return; }
-          const lat = m.nom.endsWith('D') ? 1 : -1, v = p[m.nom] ?? [0, 0];
-          p[m.nom] = [v[0] - phi[0] * DEG, (v[1] ?? 0) + lat * phi[2] * DEG, ...(v.length > 2 ? [v[2]] : [])];
+          if (m.nom === 'tete') { p.tete = poseTeteJoueur(p.tete, phi); return; }
+          p[m.nom] = poseMembreJoueur(m.nom, p[m.nom], phi);
         } else if (p.creature) {
-          const pa = (p.creature.parties ??= {}), x = (pa[m.nom] ??= [0, 0, 0]);
-          x[0] += phi[0] * DEG; x[1] += phi[1] * DEG; x[2] += phi[2] * DEG;
+          const pa = (p.creature.parties ??= {}), x = (pa[m.nom] ??= [0, 0, 0]), d = m.Rp ? ecartPartie(m, phi) : phi.map((v) => v * DEG);
+          x[0] += d[0]; x[1] += d[1]; x[2] += d[2];
         }
       });
+      // sol : le point le plus bas du corps DESSINE (le vrai maillage : corps tourne, membres pendants, bebe, echelle ; Personnage.basMaillage,
+      // Creature.basMaillage) touche le sol pres du sol (couche, en train de se relever : les pieds restent poses) et ne passe jamais dessous en l'air
+      const bas = basDe(k, p);
+      if (Number.isFinite(bas)) {
+        const haut = Math.max(0, p.y - (p.sol ?? p.y)), proche = Math.max(0, Math.min(1, 1 - haut / 0.8)), ecart = (p.sol ?? p.y) - bas;
+        p.dy = (p.dy ?? 0) + proche * ecart + (1 - proche) * Math.max(0, ecart);
+      }
+      p.dy = (p.dy ?? 0) + dyB;
     }
   });
 }

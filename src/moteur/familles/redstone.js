@@ -121,7 +121,10 @@ export function installer(mc, regles) {
       if (analogue >= 0) r = analogue;
       else if (r < 15 && monde.conducteur(tx, ty, tz)) {
         const [ux, uy, uz] = rel(tx, ty, tz, f), a2 = monde.sortieAnalogique(ux, uy, uz, oppose[f]);
-        if (a2 >= 0) r = a2;
+        // ComparatorBlock.getItemFrame : un cadre accroche dans cette cellule, tourne vers le comparateur (rotation % 8 + 1, 0 vide)
+        const ev = monde.evenement('cadre.signal', { pos: [ux, uy, uz], direction: f, valeur: null });
+        const j = Math.max(ev.valeur ?? -Infinity, a2 >= 0 ? a2 : -Infinity);
+        if (j !== -Infinity) r = j;
       }
     }
     return r;
@@ -161,6 +164,12 @@ export function installer(mc, regles) {
     return undefined;
   });
   mc.bloc(DIODE).sur('pose', (ev, monde) => { if (monde.regle('redstone.actif', true)) diodeNotifieDevant(monde, ev.pos[0], ev.pos[1], ev.pos[2], dirDe(monde, ...ev.pos), ev.bloc); });
+  // DiodeBlock.setPlacedBy : pose par un acteur, deja alimente -> tick dans 1 tick (le jeu ; sans cela il attendrait un changement voisin)
+  mc.monde.sur('pose.parActeur', (ev, monde) => {
+    if (!/^(repeater|comparator)$/.test(ev.bloc) || !monde.regle('redstone.actif', true)) return;
+    const [x, y, z] = ev.pos;
+    if (doitAllumer(monde, x, y, z)) monde.planifier(x, y, z, 1);
+  });
   mc.bloc(DIODE).sur('retire', (ev, monde) => {
     const [x, y, z] = ev.pos;
     if (ev.nouveau.startsWith('minecraft:' + ev.bloc)) return;                 // meme bloc : pas retire
@@ -306,6 +315,7 @@ export function installer(mc, regles) {
   // ---------------------------------------------------------------- detecteur de lumiere du jour (utilise `ciel.heure` de la scene)
   const detecteurs = new Set();
   mc.bloc('DaylightDetectorBlock').sur('pose', (ev, monde) => { detecteurs.add(ev.pos.join(',')); majDetecteur(monde, ...ev.pos); });
+  mc.monde.sur('redstone.detecteurJour', (ev) => { detecteurs.add(ev.pos.join(',')); });   // detecteurs de la zone (amorcage, moteur/redstone.js)
   mc.bloc('DaylightDetectorBlock').sur('retire', (ev) => { if (!ev.nouveau.startsWith('minecraft:daylight_detector')) detecteurs.delete(ev.pos.join(',')); });
   mc.bloc('DaylightDetectorBlock').sur('utilise', (ev, monde) => {
     const [x, y, z] = ev.pos;
@@ -316,7 +326,9 @@ export function installer(mc, regles) {
   function majDetecteur(monde, x, y, z) {
     const h = monde.heure();
     const g = Math.max(0, Math.min(1, Math.cos(((h - 12) / 24) * 2 * Math.PI) * 2 + 0.5));
-    const sombre = Math.floor((1 - g) * 11);                                    // skyDarken
+    // Level.updateSkyBrightness : skyDarken = (1 - f x (1 - pluie x 5/16) x (1 - orage x 5/16)) x 11 (la pluie et l'orage assombrissent)
+    const met = monde.niveauxMeteo ? monde.niveauxMeteo() : { pluie: 0, orage: 0 };
+    const sombre = Math.floor((1 - g * (1 - (met.pluie ?? 0) * 5 / 16) * (1 - (met.orage ?? 0) * 5 / 16)) * 11);
     let cible = Math.max(0, monde.lumiere(x, y, z).ciel - sombre);
     if (monde.prop(x, y, z, 'inverted') === 'true') cible = 15 - cible;
     else if (cible > 0) {

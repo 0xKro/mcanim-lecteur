@@ -13,6 +13,7 @@ export const FLEXION_MAX = 150;
 // Orientation du corps entier : bascule et roulis en degres (voir perso/modele.js, inclinaison), hauteur : decalage vertical en blocs.
 export const BASCULE_MAX = 180, HAUTEUR_MAX = 10;
 // Articulations libres : angles a 3 valeurs (epaule, hanche, tete, tronc), cibles de mains et de pieds ; plafond absurde +-360 (limites.js, cibles.js).
+import { lireBannieres } from './bannieres-champ.js';
 import { lireCreature, VERBES_CREATURES } from '../creatures/scene.js';   // champs des creatures (type, variante, monture...)
 import { PLAFOND } from './limites.js';
 import { lireCibles, MEMBRES_CIBLES } from './cibles.js';
@@ -196,9 +197,13 @@ export function validerScene(s) {
     if (a.faim !== undefined) { if (!estNombre(a.faim) || a.faim < 0 || a.faim > 20) err(`${ch}.faim`, 'nombre entre 0 et 20 attendu (niveau de faim de depart : 20 = 10 cuisses)'); o.faim = a.faim; }
     if (a.sac !== undefined) {   // inventaire de depart d'un acteur a intentions : { "coal": 8 } (prend / depose / jette en tiennent le compte)
       if (!estObjet(a.sac) || Object.keys(a.sac).length > 36) err(`${ch}.sac`, 'objet { "objet": nombre } attendu (36 objets au plus), par exemple {"coal": 8, "oak_log": 4}');
-      for (const [k, v] of Object.entries(a.sac)) if (!/^[a-z0-9_]{1,60}$/.test(k) || !Number.isInteger(v) || v < 0 || v > 3456) err(`${ch}.sac.${k}`, 'identifiant d objet du jeu et nombre entier de 0 a 3456 attendus');
+      for (const [k, v] of Object.entries(a.sac)) if (!/^[a-z0-9_]{1,60}(\[[a-z0-9_=,]{1,200}\])?$/.test(k) || !Number.isInteger(v) || v < 0 || v > 3456) err(`${ch}.sac.${k}`, 'identifiant d objet du jeu (composants permis : diamond_sword[sharpness=5], potion[potion=healing]) et nombre entier de 0 a 3456 attendus');
       o.sac = a.sac;
     }
+    // inventaire et objets (docs/SIMULATION.md partie 26) : mode de jeu (piles finies ou creatif), niveaux d'experience, saturation, main gauche
+    if (a.mode !== undefined) { if (!['survie', 'creatif'].includes(a.mode)) err(`${ch}.mode`, '"survie" (piles finies, usure, faim) ou "creatif" (rien ne se consomme ni ne s use) attendu'); o.mode = a.mode; }
+    if (a.niveaux !== undefined) { if (!Number.isInteger(a.niveaux) || a.niveaux < 0 || a.niveaux > 1000) err(`${ch}.niveaux`, 'niveaux d experience de depart : entier de 0 a 1000'); o.niveaux = a.niveaux; }
+    if (a.saturation !== undefined) { if (!estNombre(a.saturation) || a.saturation < 0 || a.saturation > 20) err(`${ch}.saturation`, 'saturation de depart de 0 a 20 (jeu : 5)'); o.saturation = a.saturation; }
     // Protection contre les explosions : somme des niveaux des pieces d'armure (0 a 16 ; 0,15 de recul en moins et 2 points de protection par niveau)
     if (a.protectionExplosion !== undefined) { if (!Number.isInteger(a.protectionExplosion) || a.protectionExplosion < 0 || a.protectionExplosion > 16) err(`${ch}.protectionExplosion`, 'entier de 0 a 16 attendu (somme des niveaux de Protection contre les explosions des pieces d armure : 4 pieces niveau IV = 16)'); o.protectionExplosion = a.protectionExplosion; }
     for (const k of ['invulnerable', 'ramasse']) if (a[k] !== undefined) { if (typeof a[k] !== 'boolean') err(`${ch}.${k}`, 'true ou false attendu'); o[k] = a[k]; }
@@ -291,10 +296,11 @@ export function validerScene(s) {
     gel: s.gel !== undefined ? lireGel(s.gel, s.duree) : [],
     textures: s.textures !== undefined ? lireTextures(s.textures) : {},
     shader: s.shader !== undefined ? lireRefShader(s.shader) : null,   // chemin du fichier shader.json (docs/FORMAT-SHADER.md)
-    monde: s.monde !== undefined ? lireMonde(s.monde, s.duree) : (acteurs.some((a) => a.actes || a.creature?.ia) || s.decor !== undefined || (estObjet(s.ciel) && s.ciel.meteo !== undefined) ? lireMonde({}, s.duree) : null),   // simulation du jeu (docs/SIMULATION.md) ; absent = rendu d'avant, exactement ; un decor cree `monde: {}` (lumiere de blocs, sols et portes du monde vivant)
+    monde: s.monde !== undefined ? lireMonde(s.monde, s.duree, s.ciel) : (acteurs.some((a) => a.actes || a.creature?.ia) || s.decor !== undefined || (estObjet(s.ciel) && s.ciel.meteo !== undefined) ? lireMonde({}, s.duree) : null),   // simulation du jeu (docs/SIMULATION.md) ; absent = rendu d'avant, exactement ; un decor cree `monde: {}` (lumiere de blocs, sols et portes du monde vivant)
     ...(s.decor !== undefined ? { decor: lireListeDecor(s.decor) } : {}),   // decors (docs/FORMAT-DECOR.md) : fichiers .decor.json ou objets en ligne, appliques dans l'ordre
     packShader: s.packShader !== undefined ? lireRefPackShader(s.packShader) : null,   // vrai pack de shaders (.zip) : rendu OpenGL logiciel, docs/SHADERS-REELS.md
     jeu: jeuDeScene(s, !!(montage.plans || montage.textes.length || montage.incrustations.length)),
+    ...(s.bannieres !== undefined ? { bannieres: lireBannieres(s.bannieres, err) } : {}),   // motifs des bannieres (film/bannieres.js)
     ...(s.zonesSures !== undefined ? { zonesSures: lireZonesSures({ err }, s.zonesSures) } : {}), ...(montage.plans ? { plans: montage.plans } : {}), ...(montage.textes.length ? { textes: montage.textes } : {}), ...(montage.incrustations.length ? { incrustations: montage.incrustations } : {}),   // montage (facultatif)
   };
   // formes courtes acceptees (camera.pos [x,y,z], regarde [x,y,z]...) : une note par forme, montree avec les notes du film
@@ -303,13 +309,15 @@ export function validerScene(s) {
 }
 
 // ---------------------------------------------------------------- monde (simulation)
-export const MONDE_CLES = ['graine', 'regles', 'mods', 'blocs', 'cmd', 'lumiere', 'moteur', 'contenus', 'fontaine'];
+export const MONDE_CLES = ['graine', 'regles', 'mods', 'blocs', 'cmd', 'lumiere', 'moteur', 'contenus', 'fontaine', 'dimension', 'pupitres', 'balises', 'cadres'];   // pupitres, balises, cadres : docs/SIMULATION.md partie 27
+export const DIMENSIONS = ['overworld', 'end'];   // monde.dimension : ciel, lumiere et camera du monde de l'End (nos zones sont de l'Overworld)
 export const MAX_BLOCS_MONDE = 2000, MAX_MODS = 8;
 const MOTEUR_ECRITURE = 1;   // version du moteur de simulation (moteur/simulation.js : MOTEUR)
 
 // Champ `monde` : graine (entier), regles (surcharges de parametres), mods (fichiers .js), blocs (poses datees), lumiere (lumiere de blocs).
 // Le contenu des regles et des blocs est controle plus loin (moteur/index.js), quand les donnees du jeu sont chargees.
-function lireMonde(m, duree) {
+function lireMonde(m, duree, ciel = null) {
+  if (m && m.dimension === 'end' && estObjet(ciel) && ciel.meteo !== undefined) err('ciel.meteo', "le monde de l'End n'a pas de meteo (Level.canHaveWeather : ni pluie, ni orage) : retire ciel.meteo ou monde.dimension");
   if (!estObjet(m)) err('monde', 'un objet est attendu, par exemple {"blocs": [[1, 10, 70, 5, "minecraft:torch"]]}');
   for (const k of Object.keys(m)) if (!MONDE_CLES.includes(k)) err(`monde.${k}`, `champ inconnu (permis : ${MONDE_CLES.join(', ')})`);
   const o = { graine: 1, regles: undefined, mods: [], blocs: [], lumiere: true };
@@ -317,6 +325,7 @@ function lireMonde(m, duree) {
   if (m.graine !== undefined) { if (!Number.isInteger(m.graine) || m.graine < 0 || m.graine > 2147483647) err('monde.graine', 'entier entre 0 et 2147483647 attendu'); o.graine = m.graine; }
   if (m.lumiere !== undefined) { if (typeof m.lumiere !== 'boolean') err('monde.lumiere', "true ou false attendu (false : lumiere du rendu d'avant, sans lumiere de blocs)"); o.lumiere = m.lumiere; }
   if (m.fontaine !== undefined && m.fontaine !== null) { if (!Array.isArray(m.fontaine) || m.fontaine.length !== 3 || !m.fontaine.every(estNombre)) err('monde.fontaine', 'point [x, y, z] attendu : la fontaine de l End, centre des cercles du dragon'); o.fontaine = m.fontaine; }
+  if (m.dimension !== undefined && m.dimension !== null) { if (!DIMENSIONS.includes(m.dimension)) err('monde.dimension', `une de : ${DIMENSIONS.join(', ')} ("end" : ciel noir et etoile de l'End, lumiere de l'End, pas de soleil ni de pluie)`); o.dimension = m.dimension; }
   if (m.regles !== undefined) { if (!estObjet(m.regles)) err('monde.regles', 'un objet est attendu, par exemple {"monde": {"ticksAleatoires": 0}} (mcanim regles --liste)'); o.regles = m.regles; }
   if (m.mods !== undefined) {
     if (!Array.isArray(m.mods)) err('monde.mods', 'liste de fichiers .js attendue, par exemple ["tnt-ville.js"]');
@@ -347,17 +356,44 @@ function lireMonde(m, duree) {
       return k.slice();
     });
   }
+  // pupitres [[x, y, z, "written_book", pages, page?]], balises [[x, y, z, "speed", "regeneration"?]], cadres [[x, y, z, "face", "objet"|null, rotation?, "lueur"?]]
+  const listeM = (cle, n0, n1, f) => {
+    if (m[cle] === undefined) return;
+    if (!Array.isArray(m[cle]) || m[cle].length > 500) err(`monde.${cle}`, 'liste attendue (500 lignes au plus)');
+    o[cle] = m[cle].map((k, i) => {
+      const c = `monde.${cle}[${i}]`;
+      if (!Array.isArray(k) || k.length < n0 || k.length > n1) err(c, `${n0} a ${n1} valeurs attendues`);
+      for (let j = 0; j <= 2; j++) if (!Number.isInteger(k[j]) || Math.abs(k[j]) > 30000000) err(`${c}[${j}]`, 'entier attendu (coordonnee de bloc)');
+      f(k, c);
+      return k.slice();
+    });
+  };
+  const nomOk = (v) => typeof v === 'string' && /^(minecraft:)?[a-z0-9_]+$/.test(v);
+  listeM('pupitres', 5, 6, (k, c) => {
+    if (!/^(minecraft:)?(writable_book|written_book)$/.test(k[3])) err(`${c}[3]`, '"writable_book" ou "written_book" attendu (#lectern_books)');
+    if (!Number.isInteger(k[4]) || k[4] < 1 || k[4] > 100) err(`${c}[4]`, 'nombre de pages de 1 a 100 attendu');
+    if (k[5] !== undefined && (!Number.isInteger(k[5]) || k[5] < 0 || k[5] >= k[4])) err(`${c}[5]`, 'page de 0 a pages - 1 attendue');
+  });
+  const POUVOIRS = ['speed', 'haste', 'resistance', 'jump_boost', 'strength', 'regeneration'];
+  listeM('balises', 4, 5, (k, c) => { for (const j of [3, 4]) if (k[j] !== undefined && k[j] !== null && !POUVOIRS.includes(String(k[j]).replace(/^minecraft:/, ''))) err(`${c}[${j}]`, `pouvoir de balise attendu (${POUVOIRS.join(', ')})`); });
+  listeM('cadres', 4, 7, (k, c) => {
+    if (!['up', 'down', 'north', 'south', 'east', 'west'].includes(k[3])) err(`${c}[3]`, 'direction du cadre attendue (up, down, north, south, east, west : il regarde par la)');
+    if (k[4] !== undefined && k[4] !== null && !nomOk(k[4])) err(`${c}[4]`, "nom d'objet ou null attendu");
+    if (k[5] !== undefined && (!Number.isInteger(k[5]) || k[5] < 0 || k[5] > 7)) err(`${c}[5]`, 'rotation de 0 a 7 attendue');
+    if (k[6] !== undefined && k[6] !== 'lueur' && k[6] !== null) err(`${c}[6]`, '"lueur" (cadre lumineux) ou null attendu');
+  });
   if (m.cmd !== undefined) {   // commandes datees : [t, "alimente", x, y, z, vrai|faux] (signal direct sur un bloc : porte en fer, cloche, bloc musical)
     if (!Array.isArray(m.cmd) || m.cmd.length > MAX_BLOCS_MONDE) err('monde.cmd', 'liste [[t, "alimente", x, y, z, true], ...] attendue');
     o.cmd = m.cmd.map((k, i) => {
       const c = `monde.cmd[${i}]`;
       const attendu = k && k[1] === 'allume' ? 5 : 6;
-      if (!Array.isArray(k) || k.length !== attendu || !['alimente', 'allume', 'explose', 'frappe'].includes(k[1])) err(c, 'forme attendue : [t, "alimente", x, y, z, true|false], [t, "allume", x, y, z] (TNT), [t, "explose", x, y, z, puissance] ou [t, "frappe", x, y, z, force] (bloc cible)');
+      if (!Array.isArray(k) || k.length !== attendu || !['alimente', 'allume', 'explose', 'frappe', 'page'].includes(k[1])) err(c, 'forme attendue : [t, "alimente", x, y, z, true|false], [t, "allume", x, y, z] (TNT), [t, "explose", x, y, z, puissance], [t, "frappe", x, y, z, force] (bloc cible) ou [t, "page", x, y, z, page] (pupitre)');
       if (!estNombre(k[0]) || k[0] < 0 || k[0] > duree) err(`${c}[0]`, `temps entre 0 et ${duree} secondes attendu`);
       for (let j = 2; j <= 4; j++) if (!Number.isInteger(k[j]) || Math.abs(k[j]) > 30000000) err(`${c}[${j}]`, 'entier attendu (coordonnee de bloc)');
       if (k[1] === 'alimente' && typeof k[5] !== 'boolean') err(`${c}[5]`, 'true ou false attendu');
       if (k[1] === 'explose' && !(estNombre(k[5]) && k[5] >= 0 && k[5] <= 64)) err(`${c}[5]`, 'puissance de 0 a 64 attendue');
       if (k[1] === 'frappe' && !(Number.isInteger(k[5]) && k[5] >= 1 && k[5] <= 15)) err(`${c}[5]`, 'force de 1 a 15 attendue (le bloc cible donne 15 au centre de la face)');
+      if (k[1] === 'page' && !(Number.isInteger(k[5]) && k[5] >= 0 && k[5] <= 99)) err(`${c}[5]`, 'page de 0 a 99 attendue');
       return k.slice();
     });
   }

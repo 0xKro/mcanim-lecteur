@@ -12,6 +12,7 @@ import { Aleatoire } from '../moteur/aleatoire.js';
 import { deplacerBoite } from '../moteur/collision.js';
 import { creerMeteoRendu } from './meteo-rendu.js';   // pluie, neige, foudre
 import { creerEntites } from './entites-monde.js';   // TNT amorce, blocs qui tombent (vrai modele), objets au sol
+import { creerMachinesRendu } from './machines-rendu.js';   // faisceau de balise, cadres, livre du pupitre (partie 27)
 import { Creature, mul, T, S, RX, RY } from '../creatures/rendu.js';   // fantome du gardien ancien (ElderGuardianParticle)
 import { etatInitial } from '../creatures/anim.js';
 
@@ -32,6 +33,23 @@ function facesBoite(b, u, v, TW, TH) {
     F('est', [[x1, y1, z1], [x1, y1, z0], [x1, y0, z0], [x1, y0, z1]], u + d + w, v + d, u + 2 * d + w, v + d + h),
     F('haut', [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]], u + d, v, u + d + w, v + d),
     F('bas', [[x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0]], u + d + w, v, u + d + 2 * w, v + d),
+  ];
+}
+
+// Boite d'un modele de bloc a entite dessine SANS retournement (ChestRenderer : pas de scale(-1, -1, 1) comme les entites) : les faces et
+// les uv du ModelPart.Cube de Java tels que entity-models.json du jeu 26.3 les donne (chest#main : y = 0 prend la case "down" (u+d, v), les
+// cotes ont y = 0 en haut de leur case, le nord est la case (u+d, v+d)). Coins rendus dans l'ordre de Constructeur (sens horaire vu de dehors).
+export function facesCubeJava(b, u, v, TW, TH) {
+  const [x0, y0, z0, x1, y1, z1] = b, w = x1 - x0, h = y1 - y0, d = z1 - z0;
+  const f4 = u, f5 = u + d, f6 = u + d + w, f7 = u + d + w + w, f8 = u + d + w + d, f9 = u + d + w + d + w, f10 = v, f11 = v + d, f12 = v + d + h;
+  const F = (nom, pts) => { const r = pts.slice().reverse(); return { nom, coins: r.map((p) => [p[0], p[1], p[2]]), uv: r.map((p) => [p[3] / TW, p[4] / TH]) }; };
+  return [
+    F('bas', [[x1, y0, z1, f6, f10], [x0, y0, z1, f5, f10], [x0, y0, z0, f5, f11], [x1, y0, z0, f6, f11]]),
+    F('haut', [[x1, y1, z0, f7, f11], [x0, y1, z0, f6, f11], [x0, y1, z1, f6, f10], [x1, y1, z1, f7, f10]]),
+    F('ouest', [[x0, y0, z0, f5, f11], [x0, y0, z1, f4, f11], [x0, y1, z1, f4, f12], [x0, y1, z0, f5, f12]]),
+    F('nord', [[x1, y0, z0, f6, f11], [x0, y0, z0, f5, f11], [x0, y1, z0, f5, f12], [x1, y1, z0, f6, f12]]),
+    F('est', [[x1, y0, z1, f8, f11], [x1, y0, z0, f6, f11], [x1, y1, z0, f6, f12], [x1, y1, z1, f8, f12]]),
+    F('sud', [[x0, y0, z1, f9, f11], [x1, y0, z1, f8, f11], [x1, y1, z1, f8, f12], [x0, y1, z1, f9, f12]]),
   ];
 }
 
@@ -145,12 +163,19 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain, creatu
     if (!tx) return null;
     const lissage = 1 - Math.pow(1 - o, 3), alpha = lissage * Math.PI / 2;
     const gauche = I.props.type === 'left', droit = I.props.type === 'right';
-    const xa = droit ? 0 : 1, xb = gauche ? 16 : 15;                      // corps : 14 de large, ou 15 pour une moitie de coffre double (au ras de l'autre)
+    // corps : 14 de large ; moitie de coffre double : 15, au ras de l'autre moitie (entity-models.json du jeu 26.3 : double_chest_left#main
+    // bas 0..15, serrure 0..1 ; double_chest_right#main bas 1..16, serrure 15..16 ; l'autre moitie de `left` est a sa gauche vue de face)
+    const xa = gauche ? 0 : 1, xb = droit ? 16 : 15;
     const yaw = VERS_Y[I.props.facing] ?? 0;
     const C = new Constructeur();
     const lum0 = lum(I.x + 0.5, I.y + 0.5, I.z + 0.5);
+    const sans = gauche ? 'ouest' : droit ? 'est' : null;   // coffre double : la face contre l'autre moitie n'existe pas (5 faces par piece dans le modele)
     const piece = (boite, u, v, pivotLid) => {
-      for (const f of facesBoite(boite, u, v, tx.largeur, tx.hauteur)) {
+      // uv : depliage du Cube de Java en coordonnees LOCALES de la piece (le couvercle et la serrure sont definis autour du pivot (0, 9, 1))
+      const loc = pivotLid ? [boite[0], boite[1] - 9, boite[2] - 1, boite[3], boite[4] - 9, boite[5] - 1] : boite;
+      for (const f0 of facesCubeJava(loc, u, v, tx.largeur, tx.hauteur)) {
+        if (f0.nom === sans) continue;
+        const f = pivotLid ? { ...f0, coins: f0.coins.map((p) => [p[0], p[1] + 9, p[2] + 1]) } : f0;
         const coins = f.coins.map((p) => {
           let q = p;
           if (pivotLid) q = rotX(q, alpha, [0, 9, 1]);
@@ -160,10 +185,13 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain, creatu
         C.quad(coins, f.uv, OMBRE[f.nom] * lum0);
       }
     };
-    piece([xa, 0, 1, xb, 10, 15], 0, 19, false);                          // socle
-    piece([xa, 9, 1, xb, 14, 15], 0, 0, true);                            // couvercle
-    const sx = gauche ? [15, 16] : droit ? [0, 1] : [7, 9];
-    piece([sx[0], 8, 15, sx[1], 12, 16], 0, 0, true);                     // serrure (suit le couvercle)
+    // ChestModel du jeu 26.3 (entity-models.json : chest#main, double_chest_left#main, double_chest_right#main) : boites et origines UV de
+    // chaque piece (origines uv 0,19 / 0,0 / 0,0 pour les trois formes, textures _left et _right)
+    const uvG = 0;
+    piece([xa, 0, 1, xb, 10, 15], uvG, 19, false);                        // socle
+    piece([xa, 9, 1, xb, 14, 15], uvG, 0, true);                          // couvercle (pivot y 9, z 1)
+    const sx = gauche ? [0, 1] : droit ? [15, 16] : [7, 9];
+    piece([sx[0], 7, 15, sx[1], 11, 16], 0, 0, true);        // serrure : y -2..2 autour du pivot du couvercle (7..11), suit le couvercle
     return C.maillage(tx, 'decoupe', { genre: 'bloc', bloc: 'minecraft:' + I.nom });   // genre : pour le chemin GPU (programme et blockEntityId)
   };
 
@@ -241,7 +269,8 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain, creatu
 
   // ---------------------------------------------------------------- particules (Particle.tick du jeu)
   const particules = creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes });
-  const entites = creerEntites({ rs, replay, kit, texOf, lum, notes });   // TNT amorce, blocs qui tombent, objets au sol
+  const entites = creerEntites({ rs, replay, kit, texOf, lum, notes, creatures: creaturesDonnees });
+  const machines = creerMachinesRendu({ rs, replay, kit, texOf, lum, creatures: creaturesDonnees, notes });   // balise, cadres, livre du pupitre (partie 27) ; null sans eux   // TNT amorce, blocs qui tombent, objets au sol
   const meteoR = creerMeteoRendu({ rs, replay, scene, donnees, terrain, texOf, lum });   // pluie, neige, foudre (null sans meteo ni foudre)
   // malediction du gardien ancien (ElderGuardianParticle) : 30 ticks, le modele du gardien ancien dans le repere de la camera (voir
   // matriceFantome), opacite 0,05 + 0,5 x sin(f x pi)
@@ -295,6 +324,7 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain, creatu
         const m = maillageFissure(x, y, z, Math.min(9, e), t0); if (m) out.push(m);
       }
       out.push(...entites.maillages(u, camera));
+      if (machines) out.push(...machines.maillages(u, camera));
       out.push(...particules.maillages(u, camera));
       if (fantomes.length && camera) out.push(...fantomeAncien(u, camera));
       if (meteoR) out.push(...meteoR.maillages(tm, camera));
@@ -302,6 +332,15 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain, creatu
     },
   };
 }
+
+// ---------------------------------------------------------------- etincelles des feux d'artifice (FireworkParticles.SparkParticle, Horizon particles.rs `spark`)
+// gravite 0,1, frottement 0,91, taille 0,1 x (r x 0,5 + 0,5) x 2 x 0,75, 48 a 59 ticks, pleine lumiere, images spark_7..spark_0 (firework.json du jeu)
+function etincelle(alea, tick, x, y, z, v, couleur, fondu, trainee, scintille) {
+  return { type: 'anim', pref: 'particle/spark_', n: 8, inverse: true, jeu: true, etincelle: true, debut: tick, x, y, z, xd: v[0], yd: v[1], zd: v[2], age: 0, duree: 48 + alea.entierBorne(12), taille: 0.1 * (alea.flottant() * 0.5 + 0.5) * 2 * 0.75, gravite: 0.1, friction: 0.91, sol: false, uo: 0, vo: 0, couleur, fondu, trainee, scintille, alpha: 0.99, plein: true, alea };
+}
+// formes de FireworkParticles.Starter (etoile, tete de creeper)
+const ETOILE = [[0.0, 1.0], [0.3455, 0.309], [0.9511, 0.309], [0.3795918367346939, -0.12653061224489795], [0.6122448979591837, -0.8040816326530612], [0.0, -0.35918367346938773]];
+const CREEPER = [[0.0, 0.2], [0.2, 0.2], [0.2, 0.6], [0.6, 0.6], [0.6, 0.2], [0.2, 0.2], [0.2, 0.0], [0.4, 0.0], [0.4, -0.6], [0.2, -0.6], [0.2, -0.4], [0.0, -0.4]];
 
 // ---------------------------------------------------------------- particules
 function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes }) {
@@ -311,6 +350,12 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
   const texPart = (nom) => {   // 'block/dirt' -> texture rgba ; 'particle/note' ...
     if (!textures.has(nom)) textures.set(nom, texOf(nom + '.png'));
     return textures.get(nom);
+  };
+  const alphas = new Map();
+  const texAlpha = (nom, a) => {   // copie de la texture, alpha x a (etincelles et eclair des feux d'artifice : rendu translucide du jeu)
+    const cle = nom + '@' + a;
+    if (!alphas.has(cle)) { const t = texPart(nom); if (!t) alphas.set(cle, null); else { const rgba = new Uint8Array(t.rgba); for (let i = 3; i < rgba.length; i += 4) rgba[i] = Math.round(rgba[i] * Math.min(1, a)); alphas.set(cle, { largeur: t.largeur, hauteur: t.hauteur, rgba }); } }
+    return alphas.get(cle);
   };
   const texDeBloc = (chaine) => {
     let nom = null;
@@ -323,7 +368,7 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
   };
   // particules vivantes : tableaux par particule
   let etat = null;
-  const reset = () => { etat = { tick: -1, liste: [], prochain: 0 }; };
+  const reset = () => { etat = { tick: -1, liste: [], prochain: 0, nouvelles: [] }; };
   reset();
   const jeter = (nom, msg) => { if (!notes.includes(msg)) notes.push(msg); void nom; };
 
@@ -337,6 +382,9 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
       const e = donnees ? donnees.etatId(chaine) : -1;
       const boites = e >= 0 && donnees.boites(e).length ? donnees.boites(e) : [[0, 0, 0, 1, 1, 1]];
       const cx = Math.floor(x), cy = Math.floor(y), cz = Math.floor(z);
+      // TerrainParticle : 0,6 x la couleur du bloc (BlockColors, indice 0 : herbe et feuillage du biome, eau...), sauf le bloc d'herbe (texture de terre)
+      const tb = /^minecraft:grass_block(\[|$)/.test(chaine) ? null : rs.teinteBloc?.(chaine, cx, cz) ?? null;
+      const gris = tb ? [0.6 * tb[0], 0.6 * tb[1], 0.6 * tb[2]] : [0.6, 0.6, 0.6];
       for (const b of boites) {
         const nx = Math.max(2, Math.ceil(Math.min(1, b[3] - b[0]) / 0.25)), ny = Math.max(2, Math.ceil(Math.min(1, b[4] - b[1]) / 0.25)), nz = Math.max(2, Math.ceil(Math.min(1, b[5] - b[2]) / 0.25));
         for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) for (let k = 0; k < nz; k++) {
@@ -348,7 +396,7 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
           xd = xd / e2 * dd * 0.4; yd = yd / e2 * dd * 0.4 + 0.1; zd = zd / e2 * dd * 0.4;
           const duree = Math.floor(4 / (alea.flottant() * 0.9 + 0.1));
           const taille = 0.1 * (alea.flottant() * 0.5 + 0.5) * 2 / 2;
-          out.push({ type: 'bloc', tex, debut: tick, x: px, y: py, z: pz, xd, yd, zd, age: 0, duree, taille, uo: alea.flottant() * 3, vo: alea.flottant() * 3, gravite: 1, friction: 0.98, sol: false, couleur: [0.6, 0.6, 0.6] });
+          out.push({ type: 'bloc', tex, debut: tick, x: px, y: py, z: pz, xd, yd, zd, age: 0, duree, taille, uo: alea.flottant() * 3, vo: alea.flottant() * 3, gravite: 1, friction: 0.98, sol: false, couleur: gris.slice() });
         }
       }
       void N;
@@ -369,6 +417,20 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
         else if (nom === 'large_smoke') out.push({ ...base, type: 'anim', pref: 'particle/big_smoke_', n: 12, xd: (r1 - 0.5) * 0.02, yd: 0.03 + r2 * 0.02, zd: (r3 - 0.5) * 0.02, duree: Math.floor(8 / (r2 * 0.8 + 0.2)) + 6, taille: 0.25 + r1 * 0.15, gravite: -0.1, friction: 0.96, couleur: [0.5, 0.5, 0.5] });
         else out.push({ ...base, type: 'tex', tex: 'particle/lava', xd: (r1 - 0.5) * 0.1, yd: 0.15 + r2 * 0.15, zd: (r3 - 0.5) * 0.1, duree: Math.floor(16 / (r2 * 0.8 + 0.2)), taille: 0.07 + r1 * 0.05, gravite: 0.75, friction: 0.999, couleur: [1, 1, 1], plein: true });
       }
+    } else if (nom === 'electric_spark') {   // GlowParticle (ElectricSpark) : couleur (1 ; 0,9 ; 1), vitesse x 0,25, 2 ou 3 ticks, sans collisions, pleine lumiere
+      const r1 = alea.flottant();
+      out.push({ type: 'tex', tex: 'particle/glow', debut: tick, x, y, z, xd: P[idx * 9 + 5] * 0.25, yd: P[idx * 9 + 6] * 0.25, zd: P[idx * 9 + 7] * 0.25, age: 0, duree: 2 + alea.entierBorne(2), taille: 0.1 * (r1 * 0.5 + 0.5) * 2 * 0.75 / 2, gravite: 0, friction: 0.96, sol: false, uo: 0, vo: 0, couleur: [1, 0.9, 1], plein: true, fixe: false });
+    } else if (nom === 'bubble_column_up' || nom === 'current_down' || nom === 'bubble_pop') {
+      // colonnes de bulles (Horizon horizon-client-render particles.rs) : BubbleColumnUp : taille x (0,2..0,8), vitesse x 0,2 + (r x 2 - 1) x 0,02,
+      // gravite -0,125, frottement 0,85, 40 / (r x 0,8 + 0,2) ticks, disparait hors de l'eau ; CurrentDown : 30..89 ticks, -0,05 en y, spirale ;
+      // BubblePop : 4 ticks, gravite 0,008, images bubble_pop_0..4
+      for (let i = 0; i < Math.max(1, N); i++) {
+        const r1 = alea.flottant(), r2 = alea.flottant(), r3 = alea.flottant(), r4 = alea.flottant(), r5 = alea.flottant();
+        const base = { debut: tick, x, y, z, age: 0, sol: false, uo: 0, vo: 0, couleur: [1, 1, 1], plein: true };
+        if (nom === 'bubble_column_up') out.push({ ...base, type: 'tex', tex: 'particle/bubble', xd: P[idx * 9 + 5] * 0.2 + (r2 * 2 - 1) * 0.02, yd: P[idx * 9 + 6] * 0.2 + (r3 * 2 - 1) * 0.02, zd: P[idx * 9 + 7] * 0.2 + (r4 * 2 - 1) * 0.02, duree: Math.floor(40 / (r5 * 0.8 + 0.2)), taille: 0.1 * (r1 * 0.6 + 0.2), gravite: -0.125, friction: 0.85, dansEau: true });
+        else if (nom === 'current_down') out.push({ ...base, type: 'tex', tex: 'particle/bubble', xd: 0, yd: -0.05, zd: 0, duree: Math.floor(r1 * 60) + 30, taille: 0.1 * (r2 * 0.6 + 0.2), gravite: 0.002, friction: 1, courant: true, angle: 0 });
+        else out.push({ ...base, type: 'anim', pref: 'particle/bubble_pop_', n: 5, xd: P[idx * 9 + 5], yd: P[idx * 9 + 6], zd: P[idx * 9 + 7], duree: 4, taille: 0.1 * (r1 * 0.5 + 0.5) * 2 / 2, gravite: 0.008 / 0.04, friction: 1 });
+      }
     } else if (nom === 'crit') {   // CritParticle : petites etoiles qui retombent vite (friction 0,7, gravite 0,5)
       const r1 = alea.flottant(), r2 = alea.flottant(), r3 = alea.flottant();
       out.push({ type: 'tex', tex: 'particle/critical_hit', debut: tick, x, y, z, xd: P[idx * 9 + 5] * 0.1 + (r1 - r2) * 0.05, yd: P[idx * 9 + 6] * 0.1 + (r2 - r3) * 0.05, zd: P[idx * 9 + 7] * 0.1 + (r3 - r1) * 0.05, age: 0, duree: Math.floor(6 / (r1 * 0.8 + 0.6)), taille: 0.09 + r2 * 0.05, gravite: 0.5, friction: 0.7, sol: false, uo: 0, vo: 0, couleur: [1, 1, 1], plein: true });
@@ -380,6 +442,27 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
       const col = [[1, t2, 0.4], [q, 1, 0.4], [0.4, 1, t2], [0.4, q, 1], [t2, 0.4, 1], [1, 0.4, q]][k];
       const r1 = alea.flottant();
       out.push({ type: 'anim', pref: 'particle/effect_', n: 8, debut: tick, x, y, z, xd: P[idx * 9 + 5], yd: P[idx * 9 + 6], zd: P[idx * 9 + 7], age: 0, duree: Math.floor(40 / (r1 * 0.8 + 0.2)), taille: 0.12 + r1 * 0.06, gravite: -0.02, friction: 0.9, sol: false, uo: 0, vo: 0, couleur: col, plein: true });
+    } else if (nom.startsWith('eclat_potion|')) {
+      // LevelEventHandler.potionSplashParticles (2002 / 2007 ; Horizon game/level_particles.rs et particles.rs SpellParticle, MIT) : 8 miettes de la
+      // potion jetee (gaussien x 0,15, 0..0,2, gaussien x 0,15 ; une couche du modele au hasard : le flacon ou le liquide) ; 100 particules
+      // d'effet : direction au hasard (Particle : bruit +-0,4, vitesse (r + r + 1) x 0,15 x 0,4, +0,1 en y), y de l'evenement 0,01..0,51 x 0,2,
+      // puissance d = 0..4 (x d a l'horizontale, (vy - 0,1) x d + 0,1), couleur x 0,75..1, taille 0,1..0,2 x 0,75, 8 / (r x 0,8 + 0,2) ticks,
+      // frottement 0,96, gravite -0,1 (elles montent), images effect_0..7 (instant_effect_ pour 2007)
+      const [, rgb, inst] = nom.split('|'), c = rgb.split(',').map((v) => Number(v) / 255);
+      for (let i = 0; i < 8; i++) {
+        const tex = alea.flottant() < 0.5 ? 'item/splash_potion' : 'item/potion_overlay';
+        if (!texPart(tex)) continue;
+        out.push({ type: 'bloc', tex, debut: tick, x, y, z, xd: alea.gaussien() * 0.15, yd: alea.reel() * 0.2, zd: alea.gaussien() * 0.15, age: 0, duree: Math.floor(4 / (alea.flottant() * 0.9 + 0.1)), taille: 0.1 * (alea.flottant() * 0.5 + 0.5), uo: alea.flottant() * 3, vo: alea.flottant() * 3, gravite: 1, friction: 0.98, sol: false, couleur: tex === 'item/potion_overlay' ? c : [1, 1, 1], plein: true });
+      }
+      const pref = inst === '1' ? 'particle/instant_effect_' : 'particle/effect_';
+      for (let i = 0; i < 100; i++) {
+        const d = alea.reel() * 4, ang = alea.reel() * Math.PI * 2, vy = 0.01 + alea.reel() * 0.5, k = 0.75 + alea.flottant() * 0.25;
+        let xd = (0.5 - alea.reel()) + (alea.flottant() * 2 - 1) * 0.4, yd = vy + (alea.flottant() * 2 - 1) * 0.4, zd = (0.5 - alea.reel()) + (alea.flottant() * 2 - 1) * 0.4;
+        const sp = (alea.flottant() + alea.flottant() + 1) * 0.15, L = Math.hypot(xd, yd, zd) || 1;
+        xd = xd / L * sp * 0.4; yd = yd / L * sp * 0.4 + 0.1; zd = zd / L * sp * 0.4;
+        yd *= 0.2; xd *= d; yd = (yd - 0.1) * d + 0.1; zd *= d;
+        out.push({ type: 'anim', pref, n: 8, debut: tick, x: x + Math.cos(ang) * d * 0.1, y: y + 0.3, z: z + Math.sin(ang) * d * 0.1, xd, yd, zd, age: 0, duree: Math.floor(8 / (alea.flottant() * 0.8 + 0.2)), taille: 0.1 * (alea.flottant() * 0.5 + 0.5) * 2 * 0.75, gravite: -0.1, friction: 0.96, sol: false, uo: 0, vo: 0, couleur: [c[0] * k, c[1] * k, c[2] * k], plein: true });
+      }
     } else if (nom === 'happy_villager') {   // HappyVillagerParticle : des etincelles vertes qui montent (farine d'os)
       const r1 = alea.flottant(), r2 = alea.flottant();
       out.push({ type: 'anim', pref: 'particle/glitter_', n: 8, debut: tick, x, y, z, xd: (r1 - 0.5) * 0.02, yd: 0.02 + r2 * 0.03, zd: (r2 - 0.5) * 0.02, age: 0, duree: 14 + Math.floor(r1 * 12), taille: 0.1 + r2 * 0.05, gravite: 0, friction: 0.95, sol: false, uo: 0, vo: 0, couleur: [0.35, 1, 0.35], plein: true });
@@ -410,6 +493,68 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
     } else if (nom.startsWith('entity_effect|')) {   // particule d'effet d'une couleur donnee (wither : 0,7 0,7 0,9 pendant la charge, 0,7 0,7 0,5 en armure)
       const col = nom.slice(14).split(',').map(Number), r1 = alea.flottant();
       out.push({ type: 'anim', pref: 'particle/effect_', n: 8, debut: tick, x, y, z, xd: (r1 - 0.5) * 0.02, yd: 0.02, zd: (alea.flottant() - 0.5) * 0.02, age: 0, duree: Math.floor(16 / (r1 * 0.8 + 0.2)), taille: 0.12 + r1 * 0.06, gravite: -0.02, friction: 0.9, sol: false, uo: 0, vo: 0, couleur: col, plein: true });
+    } else if (nom.startsWith('miettes|')) {   // miettes du bloc sous un breeze (Breeze.emitGroundParticles : TerrainParticle a l'arret, N d'un coup)
+      const chaine = nom.slice(8), tex = texDeBloc(chaine);
+      if (!tex) return out;
+      const tb = /^minecraft:grass_block(\[|$)/.test(chaine) ? null : rs.teinteBloc?.(chaine, Math.floor(x), Math.floor(z)) ?? null;   // TerrainParticle : teinte du bloc
+      const gris = tb ? [0.6 * tb[0], 0.6 * tb[1], 0.6 * tb[2]] : [0.6, 0.6, 0.6];
+      for (let i = 0; i < Math.max(1, N); i++) {
+        let xd = (alea.flottant() * 2 - 1) * 0.4, yd = (alea.flottant() * 2 - 1) * 0.4, zd = (alea.flottant() * 2 - 1) * 0.4;
+        const dd = (alea.flottant() + alea.flottant() + 1) * 0.15, e2 = Math.sqrt(xd * xd + yd * yd + zd * zd) || 1;
+        xd = xd / e2 * dd * 0.4; yd = yd / e2 * dd * 0.4 + 0.1; zd = zd / e2 * dd * 0.4;
+        out.push({ type: 'bloc', tex, debut: tick, x, y, z, xd, yd, zd, age: 0, duree: Math.floor(4 / (alea.flottant() * 0.9 + 0.1)), taille: 0.1 * (alea.flottant() * 0.5 + 0.5) * 2 / 2, uo: alea.flottant() * 3, vo: alea.flottant() * 3, gravite: 1, friction: 0.98, sol: false, couleur: gris.slice() });
+      }
+    } else if (nom === 'firework') {   // trainee d'une fusee (FireworkRocketEntity.tick, client) : une etincelle par tick, gaussien x 0,05 sur x et z, -vy/2
+      out.push(etincelle(alea, tick, x, y, z, [alea.gaussien() * 0.05, P[idx * 9 + 6], alea.gaussien() * 0.05], [1, 1, 1], null, false, false));
+    } else if (nom.startsWith('feu_artifice|')) {   // ClientLevel.createFireworks -> FireworkParticles.Starter (Horizon particles.rs tick_starters)
+      const ex = JSON.parse(nom.slice(13)), v = [P[idx * 9 + 5], P[idx * 9 + 6], P[idx * 9 + 7]];
+      if (!ex.length) {   // sans explosion : 2 a 4 bouffees
+        for (let i = 0; i < alea.entierBorne(3) + 2; i++) out.push({ type: 'anim', pref: 'particle/generic_', n: 8, debut: tick, x, y, z, xd: alea.gaussien() * 0.05, yd: 0.005, zd: alea.gaussien() * 0.05, age: 0, duree: 6 + alea.entierBorne(4), taille: 0.3, gravite: 0, friction: 0.9, sol: false, uo: 0, vo: 0, couleur: [1, 1, 1], plein: true });
+        return out;
+      }
+      ex.forEach(([forme, couleurs0, fondu, trainee, scintille], i) => {
+        const couleurs = couleurs0.length ? couleurs0 : [0x1E1B1B];
+        const rgb = (c) => [((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255];
+        const attente = i * 2;   // une explosion tous les 2 ticks
+        const etinc = (vv) => {
+          const c = couleurs[alea.entierBorne(couleurs.length)], f = fondu.length ? rgb(fondu[alea.entierBorne(fondu.length)]) : null;
+          const q = etincelle(alea, tick, x, y, z, vv, rgb(c), f, !!trainee, !!scintille); q.attente = attente; out.push(q);
+        };
+        if (forme === 0 || forme === 1) {   // boule : 0,25 et 2 pas ; grosse : 0,5 et 4 pas
+          const vit = forme === 0 ? 0.25 : 0.5, n = forme === 0 ? 2 : 4;
+          for (let yy = -n; yy <= n; yy++) for (let xx = -n; xx <= n; xx++) for (let zz = -n; zz <= n; zz++) {
+            const d = () => (alea.reel() - alea.reel()) * 0.5;
+            const xa = xx + d(), ya = yy + d(), za = zz + d(), L = Math.sqrt(xa * xa + ya * ya + za * za) / vit + alea.gaussien() * 0.05;
+            etinc([xa / L, ya / L, za / L]);
+            if (yy !== -n && yy !== n && xx !== -n && xx !== n) zz += n * 2 - 1;
+          }
+        } else if (forme === 2 || forme === 3) {   // etoile, tete de creeper (plate)
+          const C = forme === 2 ? ETOILE : CREEPER, vit = 0.5, plat = forme === 3;
+          etinc([C[0][0] * vit, C[0][1] * vit, 0]);
+          const base = Math.fround(alea.flottant() * Math.fround(Math.PI)), mod = plat ? 0.034 : 0.34;
+          for (let st = 0; st < 3; st++) {
+            const ang = base + Math.fround(st * Math.fround(Math.PI)) * mod;
+            let [ox, oy] = C[0];
+            for (const [tx, ty] of C.slice(1)) {
+              for (let sub = 0.25; sub <= 1.0; sub += 0.25) {
+                let xa = (ox + (tx - ox) * sub) * vit; const ya = (oy + (ty - oy) * sub) * vit, za = xa * Math.sin(ang); xa *= Math.cos(ang);
+                for (const fl of [-1, 1]) etinc([xa * fl, ya, za * fl]);
+              }
+              ox = tx; oy = ty;
+            }
+          }
+        } else {   // gerbe (burst) : 70 etincelles, la moitie de la vitesse de la fusee + un ecart
+          const bx = alea.gaussien() * 0.05, bz = alea.gaussien() * 0.05;
+          for (let k = 0; k < 70; k++) etinc([v[0] * 0.5 + alea.gaussien() * 0.15 + bx, v[1] * 0.5 + alea.reel() * 0.5, v[2] * 0.5 + alea.gaussien() * 0.15 + bz]);
+        }
+        // l'eclair (FireworkParticles.OverlayParticle) : 4 ticks, la premiere couleur, taille 7,1 x sin((age - 1) x pi / 4), alpha 0,6 - (age - 1) / 8
+        out.push({ type: 'flash', tex: 'particle/flash', debut: tick, attente, x, y, z, xd: 0, yd: 0, zd: 0, age: 0, duree: 4, taille: 0, gravite: 0, friction: 1, sol: false, uo: 0, vo: 0, couleur: rgb(couleurs[0]), plein: true, fixe: true });
+      });
+    } else if (nom === 'gust_emitter_large' || nom === 'gust_emitter_small') {
+      // GustSeedParticle : (echelle, duree, delai) = (3, 7, 0) ou (1, 3, 2) ; tous les delai + 1 ticks, 3 rafales (GustParticle : 12 a 15 ticks,
+      // taille 1, pleine lumiere, images gust_0..11, immobiles) a (r - r) x echelle du centre
+      const [ech, duree, delai] = nom === 'gust_emitter_large' ? [3, 7, 0] : [1, 3, 2];
+      for (let ag = 0; ag <= duree; ag++) if (ag % (delai + 1) === 0) for (let k = 0; k < 3; k++) out.push({ type: 'anim', pref: 'particle/gust_', n: 12, jeu: true, debut: tick, attente: ag, x: x + (alea.reel() - alea.reel()) * ech, y: y + (alea.reel() - alea.reel()) * ech, z: z + (alea.reel() - alea.reel()) * ech, xd: 0, yd: 0, zd: 0, age: 0, duree: 12 + alea.entierBorne(4), taille: 1, gravite: 0, friction: 1, sol: false, uo: 0, vo: 0, couleur: [1, 1, 1], plein: true, fixe: true });
     } else if (nom === 'explosion' || nom === 'explosion_emitter') {
       // HugeExplosionParticle (Horizon horizon-client-render particles.rs, MIT) : 16 images explosion_0..15 (silhouettes blanches du jeu
       // 26.3) teintees d'un gris tire 0,4 + 0,6 x hasard, 6 a 9 ticks, demi-cote 2 x (1 - f / 2), pleine lumiere, immobile.
@@ -442,10 +587,23 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
     for (const p of E.liste) {
       if (p.attente > 0) { p.attente--; continue; }   // boule d'un emetteur pas encore nee (HugeExplosionSeedParticle : une salve par tick)
       if (p.age++ >= p.duree) { p.mort = true; continue; }
+      if (p.fixe) continue;   // eclair, rafales : immobiles
+      if (p.etincelle) {   // SparkParticle.tick : seconde moitie, l'alpha baisse et la couleur va vers le fondu ; trainee : une etincelle fille tous les 2 ticks
+        const L = p.duree, a = p.age;   // apres super.tick : l'age compte deja ce tick
+        if (a > Math.floor(L / 2)) { p.alpha = 1 - (a - Math.floor(L / 2)) / L; if (p.fondu) for (let i = 0; i < 3; i++) p.couleur[i] += (p.fondu[i] - p.couleur[i]) * 0.2; }
+        if (p.trainee && a < Math.floor(L / 2) && (a + L) % 2 === 0) { const f = etincelle(p.alea, p.debut, p.x, p.y, p.z, [0, 0, 0], p.couleur.slice(), p.fondu, false, p.scintille); f.age = Math.floor(f.duree / 2); f.alpha = p.alpha; E.nouvelles.push(f); }
+      }
       if (p.trajet) {   // vibration : position interpolee de la source a l'ecouteur (VibrationParticle), vitesse = le pas suivant
         const g = (q) => { const k = Math.min(1, q / p.duree); return p.trajet.de.map((c, i) => c + (p.trajet.vers[i] - c) * k); };
         const [a0, a1] = [g(p.age), g(p.age + 1)];
         p.x = a0[0]; p.y = a0[1]; p.z = a0[2]; p.xd = a1[0] - a0[0]; p.yd = a1[1] - a0[1]; p.zd = a1[2] - a0[2];
+        continue;
+      }
+      const horsEau = () => { if (!lecteur || !donnees) return false; const e = lecteur.etatEn(Math.floor(p.x), Math.floor(p.y), Math.floor(p.z)); const f = e >= 0 ? donnees.fluide(e) : 0; return f !== 1 && f !== 2; };
+      if (p.courant) {   // WaterCurrentDownParticle : spirale (angle + 0,08 par tick), sans collisions, finit hors de l'eau
+        p.xd = (p.xd + 0.6 * Math.cos(p.angle)) * 0.07; p.zd = (p.zd + 0.6 * Math.sin(p.angle)) * 0.07;
+        p.x += p.xd; p.y += p.yd; p.z += p.zd; p.angle += 0.08;
+        if (horsEau()) p.mort = true;
         continue;
       }
       p.yd -= 0.04 * p.gravite;
@@ -457,8 +615,10 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
       if (p.type === 'note' && dy === 0 && p.yd !== 0) { p.xd *= 1.1; p.zd *= 1.1; }
       p.xd *= p.friction; p.yd *= p.friction; p.zd *= p.friction;
       if (p.sol) { p.xd *= 0.7; p.zd *= 0.7; }
+      if (p.dansEau && horsEau()) p.mort = true;   // BubbleColumnUpParticle : disparait hors de l'eau
     }
     E.liste = E.liste.filter((p) => !p.mort);
+    if (E.nouvelles?.length) { E.liste.push(...E.nouvelles); E.nouvelles = []; }
   };
 
   return {
@@ -479,9 +639,14 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
       const h = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]];
       const parTex = new Map(), frac = u - tick;
       for (const p of etat.liste) { if (p.attente > 0) continue;
-        const im = p.type === 'anim' ? Math.min(p.n - 1, Math.floor(p.age / p.duree * p.n)) : 0;   // SpriteSet.get(age, duree)
-        const tp = p.type === 'anim' ? p.pref + (p.inverse ? p.n - 1 - im : im) : p.tex; if (!parTex.has(tp)) parTex.set(tp, new Constructeur()); const C = parTex.get(tp);   // inverse : poof et smoke vont de generic_7 a generic_0
-        const x = p.x + p.xd * frac, y = p.y + p.yd * frac, z = p.z + p.zd * frac, s = p.taille, L = p.plein ? 1 : lum(x, y, z);
+        if (p.etincelle && p.scintille && p.age >= p.duree / 3 && Math.floor((p.age + p.duree) / 3) % 2 !== 0) continue;   // SparkParticle : clignote apres un tiers de sa vie
+        let alpha = p.alpha ?? 1, s = p.taille;
+        if (p.type === 'flash') { const ag = p.age + frac - 1; s = 7.1 * Math.sin(ag * 0.25 * Math.PI); alpha = 0.6 - ag * 0.25 * 0.5; if (s <= 0 || alpha <= 0) continue; }
+        const im = p.type === 'anim' ? (p.jeu ? Math.min(p.n - 1, Math.floor(p.age * (p.n - 1) / p.duree)) : Math.min(p.n - 1, Math.floor(p.age / p.duree * p.n))) : 0;   // SpriteSet.get(age, duree)
+        const tp0 = p.type === 'anim' ? p.pref + (p.inverse ? p.n - 1 - im : im) : p.tex, qa = p.etincelle || p.type === 'flash' ? Math.max(1, Math.round(alpha * 16)) : 0;
+        const tp = qa ? tp0 + '@' + qa : tp0;   // translucide (etincelles, eclair) : texture a l'alpha reduit (16 paliers), dessinee en melange
+        if (!parTex.has(tp)) parTex.set(tp, new Constructeur()); const C = parTex.get(tp);   // inverse : poof et smoke vont de generic_7 a generic_0
+        const x = p.x + p.xd * frac, y = p.y + p.yd * frac, z = p.z + p.zd * frac, L = p.plein ? 1 : lum(x, y, z);
         const ux = r[0] * s, uy = r[1] * s, uz = r[2] * s, vx = h[0] * s, vy = h[1] * s, vz = h[2] * s;
         const coins = [[x - ux + vx, y - uy + vy, z - uz + vz], [x + ux + vx, y + uy + vy, z + uz + vz], [x + ux - vx, y + uy - vy, z + uz - vz], [x - ux - vx, y - uy - vy, z - uz - vz]];
         let uv;
@@ -491,7 +656,13 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
         for (let i = 0; i < 4; i++) { C.col[k + i * 3] = p.couleur[0] * L; C.col[k + i * 3 + 1] = p.couleur[1] * L; C.col[k + i * 3 + 2] = p.couleur[2] * L; }
       }
       const out = [];
-      for (const [tex, C] of parTex) { const t = texPart(tex); if (t && !C.vide()) out.push(C.maillage(t, 'decoupe', { deuxFaces: true, genre: 'particule' })); }
+      for (const [tex, C] of parTex) {
+        if (C.vide()) continue;
+        const k = tex.indexOf('@');
+        if (k < 0) { const t = texPart(tex); if (t) out.push(C.maillage(t, 'decoupe', { deuxFaces: true, genre: 'particule' })); continue; }
+        const t = texAlpha(tex.slice(0, k), Number(tex.slice(k + 1)) / 16);
+        if (t) out.push(C.maillage(t, 'melange', { deuxFaces: true, genre: 'particule' }));
+      }
       return out;
     },
   };

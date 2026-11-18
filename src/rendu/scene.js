@@ -6,20 +6,27 @@ import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { lireZone } from './zone.js';
 import { BibliothequeTextures } from './textures.js';
-import { BibliothequeModeles } from './modeles.js';
-import { CouleursBiomes } from './teinte.js';
+import { BibliothequeModeles, analyserEtat } from './modeles.js';
+import { CouleursBiomes, sourcesTeinte } from './teinte.js';
 import { mailler, courbeLumiere } from './maillage.js';
 import { trouverChemins, trouverClairieres, trouverEau, evaluerSegment, verifierChemin } from './chemins.js';
 import { Rasteriseur, MODE_OPAQUE, MODE_DECOUPE, MODE_MELANGE } from './raster.js';
 import { PostTraitement, imageActive, aFlou } from './post.js';
 import { MoteurShader } from '../shader/moteur.js';
-import { CielVanille, ticksDepuisHeure, construireCiel, tableLumiere, etatAvecMeteo } from './ciel-vanille.js';
+import { CielVanille, ticksDepuisHeure, construireCiel, cielEnd, eclairEnd, tableLumiere, etatAvecMeteo } from './ciel-vanille.js';
 import { analyser, calculerBloom, calculerRayons, composer, creerTampons } from '../shader/post.js';
 
 const ICI = path.dirname(fileURLToPath(import.meta.url));
 const DIST_INTERNE = 32;   // distance horizontale (blocs) au-dela de laquelle les faces internes des feuilles ne sont plus dessinees
 const BRUME_MIN = 32, BRUME_MARGE = 4;   // brouillard automatique : fin minimale, marge avant le bord de la zone (blocs)
 const MODES = { opaque: MODE_OPAQUE, decoupe: MODE_DECOUPE, melange: MODE_MELANGE };
+
+// Brume de pluie du jeu (AtmosphericFogEnvironment) : debut - 160 x m, fin = max(min(fin, 96), fin - 256 x m), m = rainFogMultiplier (0..1) ;
+// les distances du jeu valent pour sa distance de vue par defaut (12 troncons : brume a 192 blocs) et sont ramenees a la portee de notre brume.
+export function brumeDePluie(debut, fin, m) {
+  const k = fin / 192;
+  return [debut - 160 * k * m, Math.max(Math.min(fin, 96 * k), fin - 256 * k * m)];
+}
 
 // Accepte le dossier du kit (<cache>/26.3) ou la racine du cache (<cache>).
 export function dossierKit(kitDir) {
@@ -55,6 +62,7 @@ export async function chargerScene({ zonePath, zone, kitDir, travailleurs, optio
   }
   const tex = new BibliothequeTextures(kit);
   const modeles = new BibliothequeModeles(kit, tex);
+  if (options.monde?.perso?.blocs?.length) modeles.definirPerso(options.monde.perso.blocs, options.monde.perso.baseDir);   // blocs definis par les mods de la scene (rendu/modeles.js)
   if (options.monde) modeles.coffresDynamiques = true;   // scene avec monde : les coffres sont dessines par film/effets-monde.js (couvercle anime), pas par la boite de remplacement
   const couleurs = new CouleursBiomes(kit);
   const tLecture = performance.now();
@@ -117,8 +125,12 @@ class Scene {
 
   // ---- lumiere du jeu (scenes avec monde)
   tableLumiere(heure, gamma, facteurCiel = 1) {
-    const g = gamma ?? this.options.gamma ?? 0.5, cle = heure + '|' + g + (facteurCiel !== 1 ? '|' + facteurCiel : '');
-    if (this._lmCle !== cle) { this._lm = tableLumiere(ticksDepuisHeure(heure), g, { facteurCiel }); this._lmCle = cle; }
+    const g = gamma ?? this.options.gamma ?? 0.5, v = this.lumiereVue, dim = this.dimension ?? 'overworld';
+    // lumiereVue (film/lumiere-vue.js) : vision nocturne et assombrissement des boss de celui qui regarde ; dimension : monde de l'End
+    // End : l'eclair du ciel eclaire le monde (sky_light_factor += intensite, / 3 sous la brume du dragon)
+    const fl = dim === 'end' ? eclairEnd((this.tempsMonde ?? 0) * 20).intensite / (v?.brumeDragon ? 3 : 1) : 0;
+    const cle = heure + '|' + g + (facteurCiel !== 1 ? '|' + facteurCiel : '') + (v ? `|${v.visionNuit}|${v.boss}` : '') + (dim !== 'overworld' ? `|${dim}|${fl}` : '');
+    if (this._lmCle !== cle) { this._lm = tableLumiere(ticksDepuisHeure(heure), g, { facteurCiel, nightVision: v?.visionNuit ?? 0, boss: v?.boss ?? 0, dimension: dim, eclairEnd: fl }); this._lmCle = cle; }
     return this._lm;
   }
 
@@ -278,7 +290,7 @@ class Scene {
       if (!masqueId) { masqueId = this.prochainMasque++; this.masqueIds.set(mk.valeurs, masqueId); this._masquesNouveaux.push({ id: masqueId, data: Uint8Array.from(mk.valeurs) }); }
     }
     const kM = Math.max(0, Math.min(256, Math.round((m.forceMasque ?? 1) * 256))), kE = Math.max(0, Math.min(256, Math.round((m.lueur ?? 0) * 256)));
-    return { positions: pos, uvs, couleurs: col, indices: ind, sections: [{ debut: 0, nb: ind.length, bbox: [...mn, ...mx] }], texId: tex, mode, deuxFaces: !!m.deuxFaces, partage: true, masqueId, kM, kE, exempt: !!m.exempt, nuage: !!m.nuage, additif: !!m.additif };
+    return { positions: pos, uvs, couleurs: col, indices: ind, sections: [{ debut: 0, nb: ind.length, bbox: [...mn, ...mx] }], texId: tex, mode, deuxFaces: !!m.deuxFaces, partage: true, masqueId, kM, kE, exempt: !!m.exempt, nuage: !!m.nuage, additif: !!m.additif, ajout: m.ajout ?? null };
   }
 
   // ---- shader (voir src/shader et docs/FORMAT-SHADER.md) : null ou un fichier lu par lireShader ; vide = rendu d'avant, au pixel pres
@@ -338,6 +350,7 @@ class Scene {
     if (profondeur) { if (!this._prof || this._prof.length !== largeur * hauteur) this._prof = new Float32Array(new SharedArrayBuffer(largeur * hauteur * 4)); profBuf = this._prof; }
     this.profondeurDerniere = profondeur ? { donnees: profBuf, W: largeur, H: hauteur, ssaa } : null;
     this.textures.mettreAJour(temps);
+    this.tempsMonde = temps;   // secondes du monde : eclairs du ciel de l'End (table de lumiere)
     this._nouvelles = []; this._masquesNouveaux = [];
     const meshes = [...this.persistants.values(), ...maillagesDynamiques];
     let dyn = meshes.map((m) => this._preparer(m));
@@ -354,10 +367,10 @@ class Scene {
     // shader : lumiere, brume, ombres, eau, balancement, modifications du ciel, passes d'image (rien du tout sans fichier de shader)
     let cielV = null, nuage = null;
     if (vanilleOn) {
-      cielV = construireCiel(this.cielV, etV, cam, this.moteur ? this.moteur.modsCiel(heure) : null, temps * 20);
+      cielV = this.dimension === 'end' ? cielEnd(this.cielV, temps * 20) : construireCiel(this.cielV, etV, cam, this.moteur ? this.moteur.modsCiel(heure) : null, temps * 20);
       nuage = cielV.nuage;
       ciel = cielV.couleurs;
-      if (meteo && meteo.pluie > 0) for (const a of cielV.vanille.astres) if (a.mult) a.mult = a.mult.map((v) => v * (1 - 0.9 * meteo.pluie));   // le soleil et la lune s'effacent sous la pluie
+      if (meteo && meteo.pluie > 0) for (const a of cielV.vanille.astres) a.alpha = Math.max(0, 1 - meteo.pluie);   // SkyRenderer : le soleil et la lune sont dessines avec l'alpha 1 - pluie (les etoiles x (1 - pluie) : etatAvecMeteo)
     }
     let res = null;
     if (this.moteur) {
@@ -386,6 +399,13 @@ class Scene {
     const cb = brume?.couleur, h = params.cielHorizon;
     params.brumeCiel = !cb || (Math.abs(cb[0] - h[0]) < 1 && Math.abs(cb[1] - h[1]) < 1 && Math.abs(cb[2] - h[2]) < 1);
     params.brume = params.brumeCiel ? h : cb;
+    // brume de pluie (AtmosphericFogEnvironment : debut - 160 x m, fin max(min(fin, 96), fin - 256 x m), m = rainFogMultiplier calcule par
+    // l'appelant : film/video.js) ; rien sans pluie
+    if (meteo && meteo.brumePluie > 0 && !sousEau && !brume) {
+      // les distances du jeu (160, 96, 256 blocs) valent pour sa distance de vue par defaut (12 troncons : brume jusqu'a 192 blocs) ; notre brume
+      // finit a la portee de la zone : memes proportions (k = fin / 192)
+      [params.brumeDebut, params.brumeFin] = brumeDePluie(params.brumeDebut, params.brumeFin, meteo.brumePluie);
+    }
     if (params.brumeFin <= params.brumeDebut) params.brumeFin = params.brumeDebut + 8;
     params.loin = loin ?? params.brumeFin + 1;
     if (nuage) { params.nuageDebut = 220; params.nuageFin = 576; }   // les nuages ont leur propre brume (loin de la zone) : ils ne suivent pas le bord de zone
@@ -518,6 +538,40 @@ class Scene {
 
   // Luminosite 0..1 (apres la courbe du jeu) a multiplier dans les couleurs des maillages dynamiques.
   // Avec un monde (lightmap) : luminance de la table de lumiere du jeu aux niveaux (ciel, bloc) du point, a l'heure du dernier rendu ; sinon courbe du ciel seule.
+  // Couleur du bloc pour l'indice de teinte 0 (BlockColors.getColor) a la colonne (x, z) : herbe, feuillage, eau du biome (melangees comme
+  // le maillage) ou couleur fixe ; null pour un bloc sans teinte. Sert aux particules de casse (TerrainParticle : 0,6 x cette couleur).
+  teinteBloc(chaine, x, z) {
+    const { nom, props } = analyserEtat(chaine);
+    const s = sourcesTeinte(nom, props);
+    if (!s || s[0] === null || s[0] === undefined) return null;
+    let v = s[0];
+    if (typeof v === 'string') {
+      if (!this.couleurs) return null;
+      this._tabTeintes ??= this.couleurs.tableaux(this.zone, 2);
+      const Z = this.zone, i = Math.min(Z.sz - 1, Math.max(0, Math.floor(z) - Z.z0)) * Z.sx + Math.min(Z.sx - 1, Math.max(0, Math.floor(x) - Z.x0));
+      v = this._tabTeintes[v]?.[i];
+      if (v === undefined) return null;
+    }
+    return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255];
+  }  // Niveaux de lumiere du ciel et des blocs (0..15) de la cellule du point, ou null sans table de lumiere (scene sans monde)
+  niveauxEn(x, y, z) {
+    if (!this.maillage.lightmap || !this._lm) return null;
+    const { lum, blk, PX, PZ } = this.maillage.interne, B = this.boite();
+    const lx = Math.floor(x) - B.x0, ly = Math.floor(y) - B.y0, lz = Math.floor(z) - B.z0;
+    if (lx < -1 || ly < -1 || lz < -1 || lx > B.sx || ly > B.sy || lz > B.sz) return null;
+    const i = ((ly + 1) * PZ + (lz + 1)) * PX + (lx + 1);
+    return { ciel: lum[i], bloc: blk[i] };
+  }
+  // Luminance de la table de lumiere du jeu pour des niveaux donnes (niveaux fractionnaires : interpoles comme LightTexture) ; particules
+  // emissives (flammes, portail) : film/ambiance-blocs.js
+  luminositeNiveaux(ciel, bloc) {
+    if (!this._lm) return null;
+    const c = Math.max(0, Math.min(15, ciel)), b = Math.max(0, Math.min(15, bloc));
+    const c0 = Math.floor(c), b0 = Math.floor(b), c1 = Math.min(15, c0 + 1), b1 = Math.min(15, b0 + 1), fc = c - c0, fb = b - b0;
+    const L = (s, k) => 0.299 * this._lm.R[s * 16 + k] + 0.587 * this._lm.G[s * 16 + k] + 0.114 * this._lm.B[s * 16 + k];
+    const v = (L(c0, b0) * (1 - fb) + L(c0, b1) * fb) * (1 - fc) + (L(c1, b0) * (1 - fb) + L(c1, b1) * fb) * fc;
+    return Math.min(1, v);
+  }
   luminositeEn(x, y, z) {
     if (this.maillage.lightmap && this._lm) {
       const { lum, blk, PX, PZ } = this.maillage.interne, B = this.boite();

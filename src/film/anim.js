@@ -9,12 +9,13 @@ import { planifierCameraSuivi, planifierCameraLibre } from './camera.js';
 import { compensationAppui, descenteBascule, decalageYeux } from '../perso/modele.js';
 import { simulerActeur, creerSol, lisser01 } from './physique.js';
 import { reactionsA } from './reactions.js';
-import { creerVivant } from './acteurs-vivants.js';   // acteurs commandes par la simulation (champ `actes`) : leur trace dans le replay
+import { creerVivant, rotationVol, rotationVrille } from './acteurs-vivants.js';   // acteurs commandes par la simulation (champ `actes`) : leur trace dans le replay
 import { appliquerPantins } from './ragdoll.js';   // pantin des explosions (regle explosion.ragdoll)
 import { creerFige } from './fige.js';   // acteur fige seul : horloges propres
 import { sujetsDuPlan, masquageSujets, noteSujetCache, SEUIL_CACHE } from './sujet-visible.js';   // le sujet du plan est-il cache par un bloc ? (correction + note)
 import { notesObstruction } from './obstruction.js';   // camera : herbe, feuilles ou acteur colles a l'objectif (note, sans correction)
-import { valeurObjet } from './objets-scene.js';   // objets tenus et armure : pistes de changements d'un coup
+import { valeurObjet, pileObjet } from './objets-scene.js';
+import { aReflet, galonDe } from '../objets/reflet.js';   // objets tenus et armure : pistes de changements d'un coup
 import { appliquerCibles, aCibles } from './cibles.js';   // articulations libres : cibles des mains et des pieds (cinematique inverse)
 import { carteTemps } from '../montage/temps.js';   // montage : ralenti, accelere, arret du temps du monde par plan (facultatif)
 import { ajouterJeu, gesteAvecCoude, marcheAutoPossible, avancerMarche, poseMarche } from '../montage/jeu.js';   // montage : vie des acteurs au repos et gestes sur mots cles (facultatif)
@@ -135,7 +136,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
 
   // Pied du joueur : plus haut sol sous les 4 coins et le centre (comme la boite du jeu), dalles et escaliers a leur vraie hauteur.
   const solSous = (x, z, yr) => { const m = solFin.sous(x, z, yr); return m ? m.y : null; };
-  const vivants = acteurs.map((a) => ((a.actes || a.creature?.ia) && monde?.replay ? creerVivant(monde.replay, a._trace ?? a.nom) : null));   // _trace : acteur ne ou change en cours de route (film/naissances.js)   // trace des acteurs a intentions
+  const vivants = acteurs.map((a) => ((a.actes || a.creature?.ia || (monde?.replay?.vehiculesSim ?? []).includes(a.nom)) && monde?.replay ? creerVivant(monde.replay, a._trace ?? a.nom) : null));   // vehiculesSim : wagonnets, bateaux et leurs cavaliers simules (partie 27)   // _trace : acteur ne ou change en cours de route (film/naissances.js)   // trace des acteurs a intentions
 
   // Etat de chaque acteur, avance image par image.
   const etat = acteurs.map((a) => {
@@ -220,7 +221,18 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
         brasD: membre(a, 'brasD', T('brasD'), H('brasD'), fB), brasG: membre(a, 'brasG', T('brasG'), H('brasG'), fB), jambeD: membre(a, 'jambeD', T('jambeD'), H('jambeD'), fJ), jambeG: membre(a, 'jambeG', T('jambeG'), H('jambeG'), fJ),
       };
       if (R) { pose.brasD[0] += R.bras; pose.brasG[0] += R.bras; pose.jambeD[0] += R.jambe; pose.jambeG[0] += R.jambe; }
-      if (vs) { if (!a.creature) V.membres(vs, pose); if (vs.objet && !a.objetD) pose.objetD = vs.objet; }   // une creature a sa propre marche (film/creatures.js)   // balancement du jeu, coup du bras, objet tenu
+      if (vs) { if (!a.creature) V.membres(vs, pose); if (vs.objet && !a.objetD) { pose.objetD = vs.objet; if (vs.reflet) pose.refletD = true; } }   // une creature a sa propre marche (film/creatures.js)   // balancement du jeu, coup du bras, objet tenu
+      if (vs?.plane && !a.creature) {   // vol plane aux elytres : corps couche dans le sens du vol (AvatarRenderer.setupRotations), tete a -45 degres (HumanoidModel)
+        pose.ragdoll = { R: rotationVol(lacet, vs.lacetTete, vs.tangage, vs.ticksVol, vs.vitesse), centre: 0 };
+        if (!a.tete) pose.tete[1] = -45;
+        pose.plane = true;
+      }
+      if (vs?.usage === 7 && !a.creature) {   // Impulsion : pose SPIN_ATTACK (corps couche selon le regard, tourne de 75 degres par tick)
+        pose.ragdoll = { R: rotationVrille(lacet, vs.tangage, tmA * 20), centre: 0 };   // age + partialTick
+        pose.vrille = true;
+      }
+      if (V) pose.ailes = V.ailes(tmA);   // angles des elytres (dessinees si le plastron est "elytra" ; creatures : WingsLayer, creatures/rendu.js)
+      if (vs?.plane && a.creature) pose.volCreature = { vitesse: vs.vitesse, ticks: vs.ticksVol };   // creature en vol plane : HumanoidModel (tete a -45, membres freines)
       // articulations libres (additif) : torsion des membres, roulis de la tete, haut du corps entier ; rien n'est ajoute sans elles
       for (const [nom, f] of [['brasD', fB], ['brasG', fB], ['jambeD', fJ], ['jambeG', fJ]]) {
         const tors = (a[nom] ? (evaluer(a[nom], T(nom))[2] ?? 0) : 0) + sommeBoucles(a, nom, t, 3, H(nom))[2] * f;
@@ -235,11 +247,22 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
       if (st.eau && !imposee) pose.eau = true;
       if (vs) {   // sante : rougeur des degats (10 ticks), mort = le corps tombe sur le cote en 20 ticks (LivingEntityRenderer : sqrt(t / 20 x 1,6) x 90 degres) puis disparait
         if (vs.eau) pose.eau = true;
-        if (vs.blessure > 0 || vs.mort > 0) pose.teinte = [1, 0.6, 0.6];
+        if (vs.blessure > 0 || vs.mort > 0) pose.rouge = true;   // surcouche rouge du jeu (OverlayTexture : melange, pas une multiplication), perso/modele.js
         else if (vs.lueur) pose.teinte = [1.5, 1.5, 1.1];                       // effet Lueur : le corps luit (le contour du jeu n'est pas dessine)
         if (vs.invisible) { pose.y -= 1000; pose.absent = true; }               // effet Invisibilite
         if (vs.mortT >= 0) {
           if (vs.mortT >= 20) { pose.y -= 1000; pose.absent = true; } else { const rot = Math.min(1, Math.sqrt(Math.max(0, vs.mortT) / 20 * 1.6)) * 90; pose.roulis = rot; pose._dyMort = descenteBascule(0, rot); pose.dy = (pose.dy ?? 0) + pose._dyMort; }
+        }
+      }
+      // vehicule simule (wagonnet, bateau : moteur/vehicules.js) : la pose du rendu du jeu (wagonnet pose sur sa voie, lacet et tangage du rail,
+      // secousse des coups, meche du TNT, balancement d'une colonne de bulles) ; creatures/rendu.js la lit dans pose.vehiculeJeu
+      if (vs && V.vehicule && a.creature) {
+        const ve = V.vehicule(tmA);
+        if (ve) {
+          pose.x += ve.dx; pose.y += ve.dy; pose.z += ve.dz; e.y = pose.y;
+          pose.lacet = a.creature.type.includes('minecart') ? ve.yaw - 90 : ve.yaw;
+          const d = Math.abs(ve.degats), sg = Math.sign(ve.degats) || 1, h = ve.secousse, dd = Math.max(0, d - (vs.blessure ? 0 : 0));
+          pose.vehiculeJeu = { tangage: ve.pitch, secousse: h > 0 ? Math.sin(h) * h * dd / 10 * sg : 0, meche: ve.meche, bulle: ve.bulle };
         }
       }
       if (a._absentAvant !== undefined || a._absentApres !== undefined) {   // entite nee (ou changee) en cours de route : rien hors de sa fenetre de ticks
@@ -293,8 +316,9 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
       if (a.horsImage) pose.horsImage = evaluer(a.horsImage, T('horsImage'))[0] >= 0.5;
       if (a.lueur) pose.lueur = evaluer(a.lueur, T('lueur'))[0];
       // objets tenus et armure (champs facultatifs : rien n'est ajoute sans eux)
-      for (const [champ, piste] of [['objetD', a.objetD], ['objetG', a.objetG]]) { const id = piste ? valeurObjet(piste, T(champ)) : null; if (id) pose[champ] = id; }
-      if (a.armure) { let arm = null; for (const [e, piste] of Object.entries(a.armure)) { const id = valeurObjet(piste, T('armure')); if (id) (arm ??= {})[e] = id; } if (arm) pose.armure = arm; }
+      for (const [champ, piste] of [['objetD', a.objetD], ['objetG', a.objetG]]) { const id = piste ? valeurObjet(piste, T(champ)) : null; if (id) { pose[champ] = id; if (aReflet(pileObjet(piste, T(champ)), monde?.replay?.refletsForces)) pose['reflet' + champ.slice(-1)] = true; } }   // enchante : reflet (objets/reflet.js)
+      if (a.armure) { let arm = null; for (const [e, piste] of Object.entries(a.armure)) { const id = valeurObjet(piste, T('armure')); if (id) { (arm ??= {})[e] = id; const pl = pileObjet(piste, T('armure')); if (aReflet(pl)) (pose.refletArmure ??= {})[e] = true; const gl = galonDe(pl); if (gl) (pose.galonArmure ??= {})[e] = gl; } } if (arm) pose.armure = arm; }
+      if (vs?.armures) { const arm = { ...(pose.armure ?? {}) }; pose.refletArmure = { ...(pose.refletArmure ?? {}) }; for (const [e, p] of Object.entries(vs.armures)) { if (p) { arm[e] = p.replace(/\[[^\]]*\]/, ''); pose.refletArmure[e] = aReflet(p); const gl = galonDe(p); if (gl) (pose.galonArmure ??= {})[e] = gl; else if (pose.galonArmure) delete pose.galonArmure[e]; } else { delete arm[e]; delete pose.refletArmure[e]; if (pose.galonArmure) delete pose.galonArmure[e]; } } pose.armure = arm; }   // armure changee par la simulation (cassee, enchantee)
       // montage : vie au repos (respiration, regard) et gestes sur mots cles, ajoutes a la pose (rien sans `jeu` ni `gestes`)
       if (a.gestes?.length || a.parole?.length || a.ecoute?.length || (scene.jeu && a.jeu?.actif && !a.creature)) ajouterJeu(pose, { t, a, vie: !!scene.jeu && a.jeu.actif, marche: Math.hypot(dx, dz) / DT > 0.5 || !auSol || !!st.eau, posDe: posDeImage, lacet });
       if (FG && etU.fige) pose.figee = true;   // cet acteur est fige : pas de bruits de pas (pas.js, sons.js)
@@ -305,9 +329,11 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
   // creatures et montures (film/creatures.js) : etat d'animation du jeu, cavaliers sur leur siege ; rien sans elles
   if (acteurs.some((a) => a.creature || a.monture)) notes.push(...appliquerCreatures(scene, parImage, { DT, terrain, types: extra.creatures?.types, replay: monde?.replay ?? null }));
   // pantin des explosions (film/ragdoll.js) : seulement si le replay a des souffles (regle explosion.ragdoll) ; rien sinon
-  if (monde?.replay?.souffles?.length) appliquerPantins(scene, parImage, { replay: monde.replay, vivants, tm: infosImage.map((x) => x.tm), modeles: extra.creatures?.modeles ?? null });
+  if (monde?.replay?.souffles?.length) appliquerPantins(scene, parImage, { replay: monde.replay, vivants, tm: infosImage.map((x) => x.tm), modeles: extra.creatures?.modeles ?? null, creatures: extra.creatures ?? null, personnages: extra.personnages ?? null });   // personnages : le vrai maillage pour poser le corps sur le sol
 
-  if (terrain.fin) terrain.fin();   // monde vivant : la camera planifie dans le monde de la fin de la scene (murs poses, trous faits)
+  if (terrain.fin) terrain.fin();   // monde vivant : par defaut le monde de la fin de la scene (murs poses, trous faits)...
+  // ... mais la camera planifie chaque image dans le monde de SON instant (un mur pose plus tard ne repousse pas la camera avant sa pose)
+  const instantDe = (i0) => (terrain.vivant && terrain.regler ? (j) => terrain.regler(infosImage[i0 + j]?.tm ?? 0) : null);
 
   // ---- passe 2 : camera (on connait tout le film : planification sur tout le plan, voir camera.js)
   // Un seul plan (sans `plans`) : toute la scene avec la camera de la scene, comme avant. Avec `plans` : un plan de camera par segment, qui REPREND
@@ -315,6 +341,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
   // de camera d'un plan sont relatifs a son debut.
   const yeux = (p) => {
     if (p.oeil !== undefined) return [p.x, p.y + p.oeil, p.z];   // creature : ses yeux (statistiques du type)
+    if (p.plane) return [p.x, p.y + 0.4, p.z];                    // vol plane aux elytres : yeux de la pose FALL_FLYING (0,4), la camera suit le corps couche
     if (!p.bascule && !p.roulis && !p.hauteur && !p.troncComplet) return [p.x, p.y + 1.62 - 0.35 * p.accroupi, p.z];   // corps droit : la formule d'avant, au bit pres
     const [ox, oy, oz] = decalageYeux(p);
     return [p.x + ox, p.y + oy, p.z + oz];
@@ -341,12 +368,12 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
   const controlerSujet = (seg, corrigeable) => {
     if (!terrain.solide) return false;
     const { i0, i1 } = seg, sj = sujetsDuPlan(seg.c);
-    const mesurer = () => masquageSujets({ pos, yeux: yeuxDe, i0, i1, noms: sj.noms, solide, bloc: terrain.bloc ? (x, y, z) => terrain.bloc(x, y, z) : null, ecran: sj.explicite ? null : { cam: camDe, aspect, tous: acteurs.map((a) => a.nom) } });
+    const mesurer = () => masquageSujets({ pos, yeux: yeuxDe, i0, i1, noms: sj.noms, solide, instant: instantDe(0), bloc: terrain.bloc ? (x, y, z) => terrain.bloc(x, y, z) : null, ecran: sj.explicite ? null : { cam: camDe, aspect, tous: acteurs.map((a) => a.nom) } });
     let r = mesurer();
     if (sj.explicite && corrigeable && r[0]?.part > SEUIL_CACHE) {
       const avant = pos.slice(i0, i1).map((q) => q.slice());
       const cibles = []; for (let i = i0; i < i1; i++) cibles.push(yeuxDe(i, r[0].nom));
-      const essai = planifierCameraSuivi({ cibles, voulues: avant, solide, dt: DT });
+      const essai = planifierCameraSuivi({ cibles, voulues: avant, solide, dt: DT, instant: instantDe(i0) });
       for (let j = 0; j < i1 - i0; j++) pos[i0 + j] = essai.pos[j];
       const r2 = mesurer();
       if (r2[0].part < r[0].part - 0.02) { r = r2; cumuler(essai.stat); for (let j = 0; j < i1 - i0; j++) if (essai.corrigee[j]) corrigee[i0 + j] = true; }
@@ -376,7 +403,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
         cibles.push(yeux(A));
         return [A.x - fz * droite - fx * arriere, ysLisse[j] + haut, A.z + fx * droite - fz * arriere];
       });
-      const plan = planifierCameraSuivi({ cibles, voulues, solide, dt: DT });
+      const plan = planifierCameraSuivi({ cibles, voulues, solide, dt: DT, instant: instantDe(i0) });
       for (let j = 0; j < i1 - i0; j++) { pos[i0 + j] = plan.pos[j]; cible[i0 + j] = cibles[j]; corrigee[i0 + j] = plan.corrigee[j]; }
       cumuler(plan.stat);
       for (let i = i0; i < i1; i++) fovPar[i] = evaluer(c.fov, i * DT - dec)[0];
@@ -389,7 +416,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
         voulues.push(Array.from(evaluer(c.pos, t)));
         cibles.push(c.regarde ? yeux(parImage[i][parNom.get(c.regarde)]) : Array.from(evaluer(c.cible, t)));
       }
-      const plan = planifierCameraLibre({ positions: voulues, cibles, solide, dt: DT });
+      const plan = planifierCameraLibre({ positions: voulues, cibles, solide, dt: DT, instant: instantDe(i0) });
       for (let j = 0; j < i1 - i0; j++) { pos[i0 + j] = plan.pos[j]; cible[i0 + j] = cibles[j]; corrigee[i0 + j] = plan.corrigee[j]; }
       cumuler(plan.stat);
       for (let i = i0; i < i1; i++) fovPar[i] = evaluer(c.fov, i * DT - dec)[0];
@@ -398,6 +425,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
     for (let i = i0; i < i1; i++) fovPar[i] = evaluer(c.fov, i * DT - dec)[0];
   }
 
+  if (terrain.vivant && terrain.fin) terrain.fin();   // apres la camera planifiee instant par instant : le monde de la fin (notes d'obstruction)
   // ---- images finales : orientation de la camera vers la cible
   const images = [];
   let corrections = 0, lacetCam = 0, tangageCam = 0;

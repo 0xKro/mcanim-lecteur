@@ -132,7 +132,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
     if (e.type === 1 && e.geo.length === 0 && !e.aleatoire) kind[i] = 0;
     if (i >= 2) {
       if (e.type === 1) genre[i] = e.feuilles ? ETI_FEUILLES : PLANTES.test(e.nom) ? ETI_PLANTE : 0;
-      teintesPal[i] = e.type === 1 ? sourcesTeinte(e.nom, e.props) : null;
+      teintesPal[i] = e.type === 1 ? (e.teintePerso ?? sourcesTeinte(e.nom, e.props)) : null;   // teintePerso : bloc de mod (mc.definirBloc, teinte)
     }
   }
   const majPalette = () => { for (; NP < palette.length; NP++) preparerEntree(NP); };

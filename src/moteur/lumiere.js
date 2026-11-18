@@ -31,13 +31,13 @@ export class Lumiere {
   static bas(L, o) { if (o >= 15) return 0; return L === 15 ? 15 - o : Math.max(0, L - Math.max(1, o)); }
 
   _initCiel() {
-    const m = this.m, { PX, PY, PZ, pal, tOpac, tOcc, ciel } = m, OY = m.OY;
+    const m = this.m, { PX, PY, PZ, pal, tOpac, ciel } = m, OY = m.OY;
     for (let z = 0; z < PZ; z++) for (let x = 0; x < PX; x++) {
       let L = 15;
       for (let y = PY - 1; y >= 0; y--) {
         const i = (y * PZ + z) * PX + x;
         // une face pleine (dalle, escalier) de la cellule du dessus (bas) ou de celle-ci (haut) arrete la lumiere qui descend
-        if (y < PY - 1 && ((tOcc[pal[i + OY]] & 1) !== 0 || (tOcc[pal[i]] & 2) !== 0)) L = 0;
+        if (y < PY - 1 && m.occulte(pal[i + OY], pal[i], 0)) L = 0;
         else L = Lumiere.bas(L, tOpac[pal[i]]);
         ciel[i] = L;
       }
@@ -62,8 +62,8 @@ export class Lumiere {
     const m = this.m, pal = m.pal;
     const pt = pal[to], o = m.tOpac[pt];
     if (o >= 15) return 0;
-    const occ = sansDe ? 0 : m.tOcc[pal[from]] & (1 << f), occ2 = m.tOcc[pt] & (1 << FACE_OPPOSEE[f]);
-    if (occ !== 0 || occ2 !== 0) return 0;
+    // LightEngine.shapeOccludes : faces de la forme d'occlusion (pleines, ou partielles dont l'union couvre la face : monde.occulte)
+    if (sansDe ? (m.tOcc[pt] & (1 << FACE_OPPOSEE[f])) !== 0 : m.occulte(pal[from], pt, f)) return 0;
     if (ciel && f === 0 && lv === 15) return 15 - o;
     const nl = lv - (o > 1 ? o : 1);
     return nl > 0 ? nl : 0;

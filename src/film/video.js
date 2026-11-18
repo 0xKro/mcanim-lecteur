@@ -2,9 +2,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { poseApercu } from '../incrust/apercu-joueur.js';   // joueur de l'ecran d'inventaire (partie 26)
 import { spawn } from 'node:child_process';
 import { chargerScene } from '../rendu/scene.js';
-import { encoderPNG } from '../rendu/png.js';
+import { encoderPNG, decoderPNG } from '../rendu/png.js';
 import { animer } from './anim.js';
 import { terrainDepuis } from './physique.js';
 import { descripteursActeurs, gabaritCreature } from './actes.js';   // acteurs a intentions (champ `actes`) pour la simulation
@@ -62,6 +63,24 @@ export async function preparerPersonnages(scene, { kitDir, surcharges = {}, base
   return { personnages, parRef, infos };
 }
 
+// Entites definies par les mods (mc.definirEntite, moteur/perso.js) : l'acteur qui porte "mod" recoit l'echelle et la texture de la scene
+// (meme disposition que la texture du type copie). Le moteur a deja verifie que l'identifiant existe et que le type correspond.
+function appliquerEntitesScene(scene, defs, baseDir) {
+  const parId = new Map(defs.map((d) => [d.id, d]));
+  for (const a of scene.acteurs) {
+    const def = a.mod && a.creature ? parId.get(a.mod) : null;
+    if (!def) continue;
+    let texture = null;
+    if (def.texture) {
+      const f = path.resolve(baseDir, def.texture);
+      if (path.relative(path.resolve(baseDir), f).startsWith('..') || !fs.existsSync(f)) throw new Error(`mc.definirEntite('${def.id}').texture : fichier introuvable : ${def.texture} (chemin relatif au fichier de scene)`);
+      const im = decoderPNG(fs.readFileSync(f));
+      texture = { largeur: im.largeur, hauteur: im.hauteur, rgba: im.rgba };
+    }
+    a.creature = { ...a.creature, perso: { id: def.id, echelle: def.echelle, texture } };
+  }
+}
+
 // armure d'une creature : la premiere valeur de chaque emplacement (les creatures gardent leur armure toute la scene)
 function armureFixe(a) {
   if (!a.armure) return null;
@@ -70,9 +89,25 @@ function armureFixe(a) {
   return o;
 }
 
+// Etat d'un joueur simule au temps du monde tm (secondes) : la derniere ligne de replay.etats (moteur/inventaire.js ecrireEtat) ; null s'il n'y en a pas
+export function etatJoueurDe(replay) {
+  const parActeur = new Map();
+  for (const l of replay.etats) { if (!parActeur.has(l[1])) parActeur.set(l[1], []); parActeur.get(l[1]).push(l); }
+  return (nom, tm) => {
+    const L = parActeur.get(replay.acteurs.indexOf(nom));
+    if (!L) return null;
+    const k = tm * 20 * (replay.ralenti || 1);
+    let l = null;
+    for (const x of L) { if (x[0] <= k) l = x; else break; }
+    if (!l) return null;
+    return { vie: l[2], vieMax: l[3], faim: l[4], saturation: l[5], absorption: l[6], niveau: l[7], progres: l[8], armure: l[9], air: l[10], objet: l[11], poison: l[12], faimEffet: l[13], nombre: l[14], barre: l[15],
+      cases: String(l[16] ?? '').split(';').filter(Boolean).map((s) => { const i = s.lastIndexOf('*'); return [s.slice(0, i), Number(s.slice(i + 1))]; }) };   // cases 1 a 8 de la barre
+  };
+}
+
 // Simulation du jeu d'une scene avec un champ `monde` : { zone, donnees, replay, rapport, notes, secondes }. Gratuit (pas de jeton) : meme calcul pour
 // `mcanim simuler`, `apercu` et `rendre` (graine fixee : memes blocs a chaque fois).
-export async function simulerScene({ scene, zonePath, baseDir, env = process.env }) {
+export async function simulerScene({ scene, zonePath, baseDir, env = process.env, kitDir = null }) {
   const t0 = performance.now();
   const { lireZone } = await import('../rendu/zone.js');
   const { simuler } = await import('../moteur/index.js');
@@ -83,13 +118,33 @@ export async function simulerScene({ scene, zonePath, baseDir, env = process.env
   let notesDecor = [];
   if (scene.decor) { const r0 = await (await import('../decor/index.js')).zoneAvecDecor({ zone, scene, baseDir, donnees }); zone = r0.zone; notesDecor = r0.notes; }
   const hp = scene.ciel?.heure;   // l'heure du jour de la scene : lue par le detecteur de lumiere du jour
-  const heure = hp ? (t) => evaluer(hp, t)[0] : undefined;
   const typesC = scene.acteurs.some((a) => a.creature && (a.actes || a.creature.ia)) ? (await (await import('../creatures/donnees.js')).donneesCreatures({ env })).types : null;   // creatures a intentions : leur gabarit
-  const creatures = typesC ? { gabarit: (c) => gabaritCreature(c, typesC), stats: (t) => { const st = statsDe({ type: t }, typesC); return st ? { v: st.v, pv: st.pv } : null; } } : null;   // entites nees en cours de route
-  const r = simuler({ zone, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene, typesC), baseDir, duree: scene.duree, options: { heure, meteo: scene.ciel?.meteo ?? null, creatures } });
-  ajouterNaissances(scene, r.replay);   // bebes, conversions, golems : des acteurs de plus dans la scene (film/naissances.js)
+  void simuler; void gabaritCreature; void statsDe;
+  // les mods de la scene tournent dans un processus fils a permissions (moteur/isolement.js) ; l'heure du jour et les creatures nees en cours
+  // de route (fonctions) y sont refaites depuis la piste et la table des types (moteur/contexte.js) ; sans mods : dans ce processus, comme avant
+  const { simulerIsole } = await import('../moteur/isolement.js');
+  const r = await simulerIsole({ zone, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene, typesC), baseDir, duree: scene.duree, options: { meteo: scene.ciel?.meteo ?? null, kitDir }, contexte: { heurePiste: hp ?? null, typesC } });
+  if (r.replay.perso) {   // fichiers des blocs et entites de mods : seulement ceux que l'empreinte couvre (cites tels quels dans le code des mods)
+    const { fichiersDeMods } = await import('./empreinte-fichiers.js');
+    const couverts = new Set(fichiersDeMods(scene.monde?.mods, baseDir));
+    for (const d of [...(r.replay.perso.blocs ?? []), ...(r.replay.perso.entites ?? [])]) for (const f of [d.modele, d.texture, ...Object.values(d.textures ?? {})].filter(Boolean)) {
+      if (!couverts.has(f)) throw new Error(`mod : "${f}" (${d.id}) doit etre ecrit tel quel entre guillemets dans le mod et exister a cote de la scene (l'empreinte couvre ce fichier)`);
+    }
+  }
+  ajouterNaissances(scene, r.replay);
+  // montures prises et quittees dans le monde (wagonnet qui ramasse une creature, rail declencheur, colonne de bulles, clic) : la piste `monture`
+  // du film devient celle du moteur pour ces acteurs (moteur/vehicules.js, replay.montures)
+  for (const m of r.replay.montures ?? []) {
+    const a = scene.acteurs.find((x) => x.nom === m.cavalier);
+    if (!a) continue;
+    if (!a._montureMoteur) { a._montureMoteur = true; a.monture = []; }
+    a.monture.push({ t: m.tick / 20 / (r.replay.ralenti || 1), v: m.vehicule });
+  }   // bebes, conversions, golems : des acteurs de plus dans la scene (film/naissances.js)
   const ob = obscuriteDe(r.replay); if (ob) scene._obscurite = ob;   // Obscurite du warden : l'image s'assombrit (film/look.js)
-  return { zone, donnees, replay: r.replay, rapport: r.rapport, notes: [...notesDecor, ...r.replay.avertissements.map((a) => 'monde : ' + a)], secondes: (performance.now() - t0) / 1000 };
+  if (r.replay.refletsForces) scene._refletsForces = r.replay.refletsForces;   // objets qui brillent sans enchantement (icones du montage)
+  if (r.replay.etats?.length) scene._etatJoueur = etatJoueurDe(r.replay);   // HUD du montage relie a la simulation (champ joueur : incrust/elements.js)
+  if (r.replay.ecrans?.length) scene._ecranJoueur = (nom, tm) => { const k = tm * 20 * (r.replay.ralenti || 1); let e = null; for (const x of r.replay.ecrans) if (x.acteur === nom && k >= x.debut && k < x.fin) e = x; return e && { ...e, age: k - e.debut }; };   // age : ticks depuis l'ouverture (livre de la table d'enchantement)   // incrustation poste
+  return { zone, donnees: r.donnees, replay: r.replay, rapport: r.rapport, notes: [...notesDecor, ...r.replay.avertissements.map((a) => 'monde : ' + a)], secondes: (performance.now() - t0) / 1000 };
 }
 
 // Prepare tout ce qui sert a dessiner des images de la scene : kit (avec les textures de la scene), terrain, personnages, animation.
@@ -98,8 +153,9 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
   const kit = Object.keys(scene.textures ?? {}).length ? appliquerTextures(kitDir, scene.textures, baseDir, { env }) : kitDir;
   // scene avec un champ `monde` : la simulation tourne AVANT le premier rendu (elle produit le replay des changements de blocs) ; le moteur
   // n'est charge que dans ce cas (une scene sans `monde` ne change pas d'un bit et ne paie rien)
-  const sim = scene.monde ? await simulerScene({ scene, zonePath, baseDir, env }) : null;
-  const rs = await chargerScene({ zonePath, zone: sim?.zone, kitDir: kit, travailleurs, options: sim ? { monde: { donnees: sim.donnees, replay: sim.replay, lumiere: scene.monde.lumiere } } : {} });
+  const sim = scene.monde ? await simulerScene({ scene, zonePath, baseDir, env, kitDir }) : null;
+  const rs = await chargerScene({ zonePath, zone: sim?.zone, kitDir: kit, travailleurs, options: sim ? { monde: { donnees: sim.donnees, replay: sim.replay, lumiere: scene.monde.lumiere, perso: sim.replay.perso?.blocs?.length ? { blocs: sim.replay.perso.blocs, baseDir } : null } } : {} });
+  if (sim?.replay.perso?.entites?.length) appliquerEntitesScene(scene, sim.replay.perso.entites, baseDir);   // entites de mods : echelle et texture au rendu
   try {
     // shader (facultatif) : lu et controle ici ; sans fichier, ou avec {}, le rendu est celui d'avant au pixel pres
     const fs0 = fichierShader(scene, baseDir, shader);
@@ -107,19 +163,34 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
     rs.definirShader(sh);
     const notes = sh ? [...sh.notes] : [];
     if (sim) notes.push(...sim.notes);
-    const creatures = scene.acteurs.some((a) => a.creature) ? await (await import('../creatures/donnees.js')).donneesCreatures({ env }) : null;   // table des creatures (relais), seulement si la scene en a
+    const creatures = scene.acteurs.some((a) => a.creature) || scene.monde ? await (await import('../creatures/donnees.js')).donneesCreatures({ env }) : null;   // monde : aussi le modele de la charge de vent   // table des creatures (relais), seulement si la scene en a
     const { personnages, parRef, infos } = await preparerPersonnages(scene, { kitDir: kit, surcharges, baseDir, creatures });
     // scene avec simulation : le terrain est le monde VIVANT (blocs poses, portes ouvertes, collisions des boites du jeu), instant par instant
     const terrain = sim ? (await import('./terrain-vivant.js')).creerTerrainVivant({ rs, replay: sim.replay, donnees: sim.donnees }) : terrainDepuis(rs);
-    const anim = animer(scene, terrain, sim ? { replay: sim.replay } : null, creatures ? { creatures } : {});
+    const anim = animer(scene, terrain, sim ? { replay: sim.replay } : null, { ...(creatures ? { creatures } : {}), personnages });   // personnages : le pantin pose le vrai maillage sur le sol
     const etiquettes = scene.acteurs.some((a) => a.etiquette) ? await (await import('../creatures/etiquette.js')).preparerEtiquettes(scene, kit) : null;   // noms au-dessus des tetes
     const comp = await creerComposition({ scene, kit, baseDir, rs, anim });   // null sans plans, textes, incrustations ni effets de camera
     if (comp) notes.push(...comp.notes);
     const lumiere = personnages.map(() => null);
     // effets visibles du monde simule (coffres, cloches, fissures, particules) : maillages dynamiques lus dans le replay
     const effets = sim ? (await import('./effets-monde.js')).creerEffetsMonde({ rs, scene, sim, kit, donnees: sim.donnees, terrain, creatures }) : null;
+    const lumVue = sim ? (await import('./lumiere-vue.js')).creerLumiereVue({ scene, anim, replay: sim.replay }) : null;   // null sans vision nocturne ni wither
+    const vueFx = sim ? await import('./vue-effets.js') : null, vueEffets = vueFx ? vueFx.creerVueEffets({ scene, replay: sim.replay }) : null;   // Cecite, Nausee (partie 26)
+    if (scene.monde?.dimension) rs.dimension = scene.monde.dimension;   // monde de l'End : lumiere et ciel de l'End (rendu/scene.js, ciel-vanille.js)
     if (effets) notes.push(...effets.notes);
+    // particules d'ambiance des blocs (ClientLevel.animateTick : flammes des torches, fumee, poudre de redstone, portail, feuilles qui tombent...) :
+    // toutes les scenes, comme le jeu (film/ambiance-blocs.js) ; les tables du jeu sont celles de la simulation, ou chargees pour une scene sans monde
+    let ambiance = null;
+    try {
+      const dJeu = sim ? sim.donnees : await (await import('../moteur/chargeur.js')).donneesDuJeu({ env });
+      ambiance = (await import('./ambiance-blocs.js')).creerAmbianceScene({ rs, scene, kit, terrain: sim ? terrain : null, donnees: dJeu, replay: sim?.replay ?? null });
+    } catch (e) { notes.push('particules d\'ambiance des blocs : non dessinees (' + e.message + ')'); }
+    // bannieres (BannerRenderer : poteau, drapeau qui ondule, couleur et motifs du champ `bannieres`) : film/bannieres.js ; rien sans banniere
+    const modB = await import('./bannieres.js');
+    const instB = modB.instancesBannieres(rs.zone, sim?.replay ?? null);
+    const bannieres = instB ? modB.creerBannieres({ kit, scene, instances: instB, lum: (x, y, z) => (typeof rs.luminositeEn === 'function' ? rs.luminositeEn(x, y, z) : 1) }) : null;
     // une image : personnages (skin du moment, lumiere du lieu), ciel, lumiere globale, puis post-traitement `image`
+    const brumePluie = { m: 0, tm: null };   // AtmosphericFogEnvironment.rainFogMultiplier, d'une image a la suivante
     const dessiner = async (i, { largeur, hauteur, ssaa = 1, copie = true }) => {
       const im = anim.images[i];
       const carteBrute = comp ? comp.carteA(i) : null;   // carte plein cadre (montage) : fond uni, avec ou sans acteurs
@@ -136,7 +207,19 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
       // meteo (ciel.meteo, coup de foudre) : niveaux de pluie et d'orage a cet instant du monde, eclair, facteur de lumiere du ciel du jeu ; null sans meteo
       const metNiv = effets?.meteo ? effets.meteo.niveaux(im.tm) : null, eclair = effets?.meteo ? effets.meteo.eclair(sim.replay.tickDe(im.tm)) : false;
       const meteoP = metNiv && (metNiv.pluie > 0 || metNiv.orage > 0 || eclair) ? { ...metNiv, eclair, facteurCiel: eclair ? 1 : facteurCielMeteo(metNiv) } : null;
+      // brume de pluie (AtmosphericFogEnvironment.updateRainFogState) : cible = pluie x clamp((lumiere du ciel a l'oeil - 8) / 7) x (1, ou 0,5 dans un biome sans
+      // precipitation), approchee de 0,2 x ticks ecoules a chaque image ; reglee d'un coup a la premiere image ou en revenant en arriere
+      if (meteoP) {
+        const c = im.camera, n = rs.niveauxEn?.(c.x, c.y, c.z), b = sim.donnees.biome?.(rs.zone.biome(Math.floor(c.x), Math.floor(c.z)));
+        const cible = meteoP.pluie * Math.min(1, Math.max(0, ((n ? n.ciel : 15) - 8) / 7)) * (b && !b[1] ? 0.5 : 1);
+        const dt = brumePluie.tm === null ? -1 : (im.tm - brumePluie.tm) * 20 * sim.replay.ralenti;
+        brumePluie.m = dt < 0 || dt > 40 ? cible : brumePluie.m + (cible - brumePluie.m) * Math.min(1, dt * 0.2);
+        brumePluie.tm = im.tm; meteoP.brumePluie = brumePluie.m;
+      } else { brumePluie.m = 0; brumePluie.tm = im.tm; }
+      if (lumVue) rs.lumiereVue = lumVue(i);
+      rs.tempsMonde = im.tm;   // vision nocturne, barre du wither (film/lumiere-vue.js) : dans la table de lumiere
       if (cielM && rs.maillage.lightmap) rs.tableLumiere(cielM.heure ?? 12, cielM.gamma, meteoP ? meteoP.facteurCiel : 1);   // la lumiere des acteurs suit la meme table que le terrain
+      const heureJour = (sim ? cielM : cielEn(scene, im.t))?.heure ?? 12;
       const imC = carte ? comp.imageCarte(carte, im) : null;   // carte avec acteurs : ils sont sur l'etage, la camera les regarde de face
       const maillages = (carte ? imC.ks : im.acteurs.map((_, k) => k)).map((k) => {
         const p = (carte ? imC : im).acteurs[k];
@@ -147,14 +230,18 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
           lumiere[k] = l;
         }
         const perso = p.skin ? parRef[k].get(p.skin) : personnages[k];
-        const m = perso.maillage({ ...p, age: im.tm * 20, camera: im.camera }, l);
+        const m = perso.maillage({ ...p, age: im.tm * 20, camera: im.camera, heure: heureJour }, l);   // heure : horloge tenue (objets/etat-objet.js)
+        if (scene._ecranJoueur && !carte && scene.acteurs[k]?.nom) (scene._apercus ??= new Map()).set(scene.acteurs[k].nom, () => ({ m: perso.maillage(poseApercu({ ...p, age: im.tm * 20, heure: heureJour }), 1, true), accroupi: !!p.accroupi }));   // joueur de l'ecran d'inventaire (incrust/apercu-joueur.js)
         const et = !carte && etiquettes && scene.acteurs[k].etiquette && !p.absent ? maillageEtiquette(etiquettes, scene.acteurs[k].etiquette, p, p.hautBoite ?? 1.8, im.camera) : null;
         return et ? [m, et].flat() : m;
       }).flat();   // une creature donne un maillage par couche ; etiquette de nom en plus
       if (effets && !carte) maillages.push(...effets.maillages(im.tm, im.camera));
+      if (bannieres && !carte) maillages.push(...bannieres.maillages(Math.max(0, (im.tm ?? im.t) * 20 * (sim ? sim.replay.ralenti : 1))));
+      if (ambiance && !carte) maillages.push(...ambiance.maillages(Math.max(0, (im.tm ?? im.t) * 20 * (sim ? sim.replay.ralenti : 1)), im.camera, meteoP));
       const ciel = sim ? cielM : cielEn(scene, im.t);
       const veutProf = comp ? comp.veutProfondeur(i) : false;
       const fond = carte ? carte.fond : null;   // carte : ciel et brume de la couleur du fond, terrain hors de portee
+      const vx = vueEffets ? vueEffets(im.tm) : null;
       const rgbaRendu = await rs.rendre({
         camera: carte ? imC.camera : im.camera, largeur, hauteur, temps: im.tm, maillagesDynamiques: maillages, ssaa, copie, ...(veutProf ? { profondeur: true } : {}),
         image: imageEn(scene, im.t), heure: ciel?.heure, jour: ciel?.jour, cielFixe: ciel?.fixe, lumiere: meteoP && !rs.maillage.lightmap && ciel?.lumiere ? ciel.lumiere.map((v) => v * meteoP.facteurCiel) : ciel?.lumiere, gamma: ciel?.gamma, meteo: meteoP,
@@ -163,7 +250,9 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
         brume: ciel?.fixe ? ciel.brume : (ciel?.brume?.debut !== undefined ? { debut: ciel.brume.debut } : undefined),
         // carte : ciel, brume et lumiere imposes (fond uni, acteurs eclaires normalement)
         ...(fond ? { ciel: { zenith: fond, horizon: fond, bas: fond }, soleil: false, cielFixe: true, brume: { debut: 30, fin: 50, couleur: fond }, lumiere: [1, 1, 1] } : {}),
+        ...(vx && !fond && vx.brume ? { ciel: vx.ciel, soleil: false, cielFixe: true, brume: vx.brume } : {}),   // Cecite : brume noire a 5 blocs
       });
+      if (vx?.nausee && !fond) vueFx.deformerNausee(rgbaRendu, largeur, hauteur, (carte ? imC.camera : im.camera).fov ?? 70, vx.nausee);   // Nausee : image deformee
       if (comp && carteBrute && !carte) { melangerCouleur(rgbaRendu, carteBrute.fond, uFond); comp.finaliser(i, rgbaRendu, largeur, hauteur, null, { el: carteBrute, im }); }
       else if (comp) comp.finaliser(i, rgbaRendu, largeur, hauteur, veutProf ? rs.profondeurDerniere : null, carte ? { el: carte, im: imC } : null);
       return rgbaRendu;
@@ -291,7 +380,7 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
     };
   } finally {
     await film.fermer();
-    if (tmpAudio) fs.rmSync(tmpAudio, { force: true });
+    if (tmpAudio) { try { fs.rmSync(tmpAudio, { force: true }); } catch { /* Windows : fichier encore tenu par ffmpeg apres une erreur */ } }
   }
 }
 

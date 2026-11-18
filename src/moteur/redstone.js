@@ -307,7 +307,7 @@ export class Redstone {
   amorcer() {
     const sim = this.sim, d = this.d, m = sim.monde;
     if (!sim.regles.valeur('redstone.amorcage', true)) return;
-    const noms = new Set(['redstone_wire', 'redstone_torch', 'redstone_wall_torch', 'repeater', 'comparator', 'observer', 'redstone_lamp', 'redstone_block', 'piston', 'sticky_piston', 'target']);
+    const noms = new Set(['redstone_wire', 'redstone_torch', 'redstone_wall_torch', 'repeater', 'comparator', 'observer', 'redstone_lamp', 'redstone_block', 'piston', 'sticky_piston', 'target', 'daylight_detector']);   // detecteur : un bloc a entite qui tourne toujours (DaylightDetectorBlockEntity), enregistre ici
     const marque = new Uint8Array(m.palette.length + 1);
     let n = 0;
     for (let p = 2; p < m.palette.length; p++) {
@@ -320,7 +320,10 @@ export class Redstone {
     let faits = 0;
     for (let y = m.y0; y < m.y0 + m.sy; y++) for (let z = m.z0; z < m.z0 + m.sz; z++) for (let x = m.x0; x < m.x0 + m.sx; x++) {
       const p = m.indiceEn(x, y, z);
-      if (p < marque.length && marque[p]) { sim._majVoisins(x, y, z, d.blocDe(m.tEtat[p])); faits++; }
+      if (p < marque.length && marque[p]) {
+        if (d.nomBloc(m.tEtat[p]) === 'daylight_detector') { sim.api.evenement('redstone.detecteurJour', { pos: [x, y, z] }); continue; }
+        sim._majVoisins(x, y, z, d.blocDe(m.tEtat[p])); faits++;
+      }
     }
     sim.stats.amorces = faits;
   }

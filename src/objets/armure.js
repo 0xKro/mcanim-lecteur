@@ -12,7 +12,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import * as M from '../perso/modele.js';
-import { lireJson, texture } from './fichiers.js';
+import { lireJson, texture, recolorer } from './fichiers.js';
+import { TEINTURES, couleurTeinture } from '../creatures/especes.js';
 
 // part (ip) : 0 tete, 1 corps, 2 brasD, 3 brasG, 4 jambeD, 5 jambeG (perso/modele.js). j : index de membre articule (0 brasD, 1 brasG, 2 jambeD, 3 jambeG).
 const BRAS = { orig: [-3, -2, -2], taille: [4, 12, 4], uv: [40, 16] };
@@ -51,11 +52,53 @@ export function geometrie(emplacement, bitsFlexion) {
   return g;
 }
 
+// ---------------------------------------------------------------- elytres (WingsLayer + ElytraModel)
+// Geometrie relevee dans entity-models.json du jeu 26.3 (`minecraft:elytra#main`, lecture seule ; test/elytres.test.js la compare au fichier
+// quand il est sur le poste) : aile gauche texOffs(22, 0), boite (-10, 0, 0) de 10 x 20 x 2 gonflee de 1, pivot (5, 0, 0), repos
+// (pi/12, 0, -pi/12) ; aile droite : la gauche en miroir (pivot -5). Texture entity/equipment/wings/elytra (64 x 32, equipment/elytra.json).
+// Les deux ailes sont dans le repere du MODELE (pas du tronc) : WingsLayer les decale de 0,125 bloc vers l'arriere ; accroupi : y = 3.
+export const AILE = { orig: [-10, 0, 0], taille: [10, 20, 2], uv: [22, 0], g: 1.0, pivot: 5 };
+let geomAiles = null;
+// partie 0 : aile gauche, 1 : aile droite (indices a recaler sur les matrices ajoutees)
+export function geometrieAiles() {
+  if (geomAiles) return geomAiles;
+  const R = new M.Reservoir();
+  for (const cote of [0, 1]) {
+    const v0 = R.part.length, i0 = R.idx.length, p = AILE;
+    const min = p.orig.map((c) => c - p.g), max = p.orig.map((c, i) => c + p.taille[i] + p.g);
+    for (const f of M.facesBoite(p.uv, p.taille, min, max)) M.ajouterFace(R, cote, f, min, max);
+    if (cote === 1) {   // mirror() : la gauche retournee en x
+      for (let v = v0; v < R.part.length; v++) { R.local[v * 3] = -R.local[v * 3]; R.norm[v * 3] = -R.norm[v * 3]; }
+      for (let k = i0; k < R.idx.length; k += 3) { const t = R.idx[k + 1]; R.idx[k + 1] = R.idx[k + 2]; R.idx[k + 2] = t; }
+    }
+  }
+  geomAiles = { local: Float32Array.from(R.local), normales: Float32Array.from(R.norm), partie: Uint8Array.from(R.part), uvs: Float32Array.from(R.uv), indices: Uint32Array.from(R.idx) };
+  return geomAiles;
+}
+// Matrices des deux ailes (repere du modele : R, t en blocs) pour les angles [xRot, yRot, zRot] (ModelPart : Rz . Ry . Rx)
+export function matricesAiles(ang, accroupi = false) {
+  const y = accroupi ? 3 : 0;
+  return [1, -1].map((s) => ({ R: M.rotZYX(ang[0], s * ang[1], s * ang[2]), t: [s * AILE.pivot / 16, y / 16, 0.125] }));
+}
+export const estElytresArmure = (texte) => nomMateriau(texte) === 'elytra';
+
 // ---------------------------------------------------------------- materiaux et textures
 // "diamond", "golden" (ou "gold"), "turtle", "minecraft:iron_helmet", "diamond_boots"... -> nom de l'equipement du kit (equipment/<nom>.json).
 const ALIAS = { golden: 'gold', turtle: 'turtle_scute' };
+// Cuir teint (composant dyed_color) : "leather_chestplate#3A6FD8" (couleur) ou "leather_chestplate#red" (une teinture : DyedItemColor.applyDyes
+// d'une seule teinture sur un cuir neuf donne la couleur diffuse de la teinture, DyeColor.textureDiffuseColor). Rend 0xRRGGBB ou null.
+export function couleurArmure(texte) {
+  const m = /#([0-9a-fA-F]{6}|[a-z_]+)\s*$/.exec(String(texte ?? ''));
+  if (!m) return null;
+  if (/^[0-9a-fA-F]{6}$/.test(m[1])) return parseInt(m[1], 16);
+  const i = TEINTURES.indexOf(m[1]);
+  if (i < 0) return null;
+  const c = couleurTeinture(i);
+  return (Math.round(c[0] * 255) << 16) | (Math.round(c[1] * 255) << 8) | Math.round(c[2] * 255);
+}
+export const couleurArmureValide = (texte) => !/#/.test(String(texte ?? '')) || couleurArmure(texte) !== null;
 export function nomMateriau(texte) {
-  let n = String(texte ?? '').trim().toLowerCase().replace(/^minecraft:/, '');
+  let n = String(texte ?? '').trim().toLowerCase().replace(/^minecraft:/, '').replace(/#.*$/, '');
   n = n.replace(/_(helmet|chestplate|leggings|boots)$/, '');
   if (!/^[a-z0-9_]{1,30}$/.test(n)) return null;
   return ALIAS[n] ?? n;
@@ -66,6 +109,23 @@ export function materiauxDuKit(kit) {
   let l = [];
   try { l = fs.readdirSync(path.join(kit, 'assets', 'minecraft', 'equipment')).filter((f) => f.endsWith('.json')).map((f) => f.slice(0, -5)); } catch { /* groupe absent */ }
   return l.filter((n) => lireJson(kit, `equipment/${n}.json`)?.layers?.humanoid).sort();
+}
+
+// Galon d'armure (composant minecraft:trim ; docs/SIMULATION.md partie 29) : texture du motif (trims/entity/<couche>/<asset_id du
+// trim_pattern>) recoloree de la palette cle (le `base_palette` de son .mcmeta : palettes/trim_base) vers la palette du materiau (palette_id du
+// trim_material, ou celle de `trim_overrides` de l'equipement quand le galon est du meme materiau : or sur or -> gold_darker). Rend la
+// texture (meme taille que la couche d'armure) ou null. Tout est lu dans le kit (EquipmentLayerRenderer, TrimTextureKey).
+const lireData = (kit, rel) => { try { return JSON.parse(fs.readFileSync(path.join(kit, 'data', 'minecraft', ...rel.split('/')), 'utf8')); } catch { return null; } };
+const court = (s) => String(s ?? '').replace(/^minecraft:/, '');
+export function textureGalon(kit, materiau, emplacement, motif, garniture) {
+  if (!motif || !garniture) return null;
+  const pat = lireData(kit, `trim_pattern/${motif}.json`), mat = lireData(kit, `trim_material/${garniture}.json`);
+  const asset = court(pat?.asset_id ?? motif);
+  let palette = court(mat?.palette_id ?? `trim/${garniture}`);
+  for (const o of lireJson(kit, `equipment/${materiau}.json`)?.trim_overrides ?? []) if (court(o?.when?.material) === garniture && o.palette) palette = court(o.palette);
+  const nom = `trims/entity/${PIECES[emplacement].couche}/${asset}`;
+  const base = lireJson(kit, `textures/${nom}.png.mcmeta`)?.palette?.base_palette ?? 'trim_base';
+  return recolorer(texture(kit, nom), texture(kit, 'palettes/' + court(base)), texture(kit, 'palettes/' + palette));
 }
 
 // Couches de texture d'un materiau pour un emplacement : [{ nom ('entity/equipment/humanoid/iron'), teinte (ARGB ou null) }] ou null (inconnu).

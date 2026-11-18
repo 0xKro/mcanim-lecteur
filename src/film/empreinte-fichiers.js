@@ -44,6 +44,25 @@ function fichiersIncrustations(liste) {
   return sortie;
 }
 
+// Fichiers de la scene cites par les mods (modeles et textures de mc.definirBloc / mc.definirEntite, moteur/perso.js) : chaque texte
+// entre guillemets du code des mods qui nomme un .png ou un .json present a cote de la scene. Ils entrent dans l'empreinte (role
+// `mod-fichier`) ; au rendu, un fichier utilise par une definition qui n'est PAS dans cette liste (chemin fabrique par le code) est refuse.
+export function fichiersDeMods(mods, baseDir) {
+  const vus = new Set();
+  for (const m of Array.isArray(mods) ? mods : []) {
+    if (typeof m !== 'string') continue;
+    let src = '';
+    try { src = fs.readFileSync(path.resolve(baseDir, m), 'utf8'); } catch { continue; }
+    for (const x of src.matchAll(/['"`]([A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:png|json))['"`]/g)) {
+      const rel = x[1];
+      if (rel.includes('..')) continue;
+      const f = path.resolve(baseDir, rel);
+      if (fs.existsSync(f) && fs.statSync(f).isFile()) vus.add(rel);
+    }
+  }
+  return [...vus].sort();
+}
+
 // Lignes VIRTUELLES (rien a lire sur le disque) : ce qui change l'image sans etre dans le fichier de scene. Une scene avec `monde` depend des
 // tables de donnees du jeu (moteur/donnees-empreinte.json : SHA-256 du fichier) et de la version du moteur ; un changement de donnees
 // invalide donc les jetons deja emis (comme un mod modifie).
@@ -120,6 +139,7 @@ export function empreinteComplete(brut, { scene = null, baseDir = process.cwd(),
     if (!fs.existsSync(f)) throw new Error(`${role} : fichier introuvable : ${chemin} (chemin relatif au fichier de scene)`);
     return { role, chemin, sha: sha256Chemin(f, { normaliser: normalise.has(role) }) };
   });
+  for (const chemin of fichiersDeMods(brut?.monde?.mods, baseDir)) lignes.push({ role: 'mod-fichier', chemin, sha: sha256Chemin(path.resolve(baseDir, chemin)) });
   lignes.push(...lignesVirtuelles(brut));
   lignes.push(...lignesOptions(opt, cwd));
   const cle = (l) => l.role + '\u0000' + l.chemin;

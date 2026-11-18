@@ -9,12 +9,38 @@
 import { pousserActeurs } from './poussee.js';
 import { deplacerBoite, coupe, rayonBloc, distanceCellule, boitesLocales, solSous } from './collision.js';
 import { chercherChemin, stationPourCellule, blocsOuvrables } from './navigation.js';
+import { blocSous, vitesseApresContact, reductionChute } from './rebond.js';   // rebond des lits et du slime, chute amortie (Entity.restituteMovementAfterCollisions)
 import { progressionParTick, ticksPourCasser, etapeFissure } from './cassage.js';
 import { dirDeLacet, VEC, OPPOSE, JEU, FR, decale, parseEtat, court } from './familles/_aide.js';
 import { evenement } from './registre.js';
 import { installerUtilisation, BIT, FATIGUE } from './utilisation.js';
+import { installerEffets } from './effets.js';
+import { installerInventaire, composants } from './inventaire.js';
+import { installerObjets } from './objets-actes.js';
 import { IA, BUTIN, coupJoueur } from './ia.js';   // creatures `ia: true` (buts du jeu, cibles, combat) ; coup d'epee du joueur (verbe frappe)
 import { ESPECES } from '../creatures/especes.js';   // dimensions des bebes (entites nees pendant la simulation)
+import { armureDe, degatsApresArmure } from './explosion.js';
+import { mouvementPlane, degatsMur } from './mth.js';   // vol plane aux elytres (LivingEntity.updateFallFlyingMovement, handleFallFlyingCollisions)
+import { estVehiculeSimule, creerVehicule, tickVehicule, ecrireVehicule, blesserVehicule, placerCavalier, monter, descendre, pousserWagonnets, colonnesBulles, pousseeBulle, interagirVehicule } from './vehicules.js';   // wagonnets et bateaux, cavaliers, colonnes de bulles (docs/SIMULATION.md partie 27)
+import { surGrimpable } from './poussee.js';            // LivingEntity.onClimbable (echelles, lianes : la fin du vol plane, la montee)
+// Elytres : objet du plastron qui a le composant `glider` du jeu (items.json 26.3 : "minecraft:elytra", max_damage 432)
+export const ELYTRES_USURE_MAX = 432;
+export const estElytres = (id) => /^(minecraft:)?elytra$/.test(String(id ?? '').trim().toLowerCase());
+export const HAUTEUR_PLANE = 0.6, OEIL_PLANE = 0.4;   // Pose.FALL_FLYING : boite 0,6 x 0,6, yeux a 0,4 (Avatar.POSES du jeu)
+// Sources du moteur dont le type de degats du jeu est dans #minecraft:bypasses_armor (damage-tags.json du jeu 26.3 : on_fire, cramming, drown,
+// generic, wither, dragon_breath, fall, ender_pearl, magic, indirect_magic, sonic_boom...) : l'armure n'y fait rien. Les autres (coups, fleches,
+// boules de feu, lave, foudre, explosions, se dessecher) passent par CombatRules.getDamageAfterAbsorb ; Protection contre les explosions pour
+// les explosions seulement (champ protectionExplosion).
+const SANS_ARMURE = new Set(['feu', 'eau', 'noyade', 'cramming', 'generique', 'fletrissement', 'poison', 'magie', 'perle', 'souffle_dragon', 'sonic_boom', 'chute', 'piqure', 'mur']);   // mur : fly_into_wall (#bypasses_armor)
+function apresArmure(a, q, source) {
+  // creatures : armure naturelle (explosion.js) ; joueurs : armure du jeu, Brise-armure, Resistance, enchantements, absorption (inventaire.js)
+  if (a.typeCreature && !a.armure) {
+    if (SANS_ARMURE.has(source)) return q;
+    const arm = armureDe(a), prot = /^(explosion|fusee)/.test(source) ? a.protectionExplosion ?? 0 : 0;   // #is_explosion : explosions et fusees
+    return arm.points > 0 || prot > 0 ? degatsApresArmure(q, arm, prot) : q;
+  }
+  return a.degatsApresProtections(q, source, { contourneArmure: SANS_ARMURE.has(source), attaquant: a.attaquantCourant ?? null });
+}
 
 export const LARGEUR = 0.6, HAUTEUR = 1.8, HAUTEUR_ACCROUPI = 1.5, OEIL = 1.62, OEIL_ACCROUPI = 1.27;
 export const GRAVITE = 0.08, TRAINEE = 0.98, SAUT = 0.42, PAS = 0.6, FRICTION_AIR = 0.91;
@@ -25,7 +51,7 @@ const norm180 = (a) => { a = (a + 180) % 360; if (a < 0) a += 360; return a - 18
 const FACE_3D = ['down', 'up', 'north', 'south', 'west', 'east'];
 // #minecraft:can_breathe_under_water (les morts-vivants, les creatures de l'eau)
 const RESPIRE_SOUS_EAU = new Set(['zombie', 'husk', 'drowned', 'zombie_villager', 'skeleton', 'stray', 'bogged', 'parched', 'wither_skeleton', 'zombified_piglin', 'zoglin', 'phantom', 'wither', 'skeleton_horse', 'zombie_horse', 'axolotl', 'frog', 'turtle', 'guardian', 'elder_guardian', 'dolphin', 'squid', 'glow_squid', 'cod', 'salmon', 'tropical_fish', 'pufferfish', 'tadpole', 'nautilus', 'zombie_nautilus']);
-export const DRAPEAUX = { ACCROUPI: 1, AU_SOL: 2, COURSE: 4, BALANCE: 8, SAUTE: 16, EAU: 32 };
+export const DRAPEAUX = { ACCROUPI: 1, AU_SOL: 2, COURSE: 4, BALANCE: 8, SAUTE: 16, EAU: 32, PLANE: 1 << 23 };   // bits 6..22 : pose d'utilisation et effets (utilisation.js)
 
 // nombre de ticks du film -> tick du monde (ralenti)
 export const tickDe = (t, ralenti) => Math.floor(t * 20 * ralenti + 1e-9);
@@ -51,17 +77,32 @@ export class Acteur {
     this.vieMax = d.vie ?? d.ia?.vie ?? 20; this.vie = this.vieMax; this.invulnerable = !!d.invulnerable; this.ramasse = d.ramasse === true; this.sac = new Map();
     this.hurtTime = 0; this.invulTemps = 0; this.derniereBlessure = 0; this.mort = -1; this.distanceChute = 0; this.air = 300; this.dansEau = false; this.dansLave = false;
     this.initUtilisation(d);
+    this.absorption = 0; this.feuJoueur = 0;
     // creature (champ `type`) : sa boite, ses yeux et sa vitesse (film/actes.js, gabarit) ; joueur sinon
     const gb = d.gabarit ?? null;
     this.L = gb?.l ?? LARGEUR; this.H = gb?.h ?? HAUTEUR; this.O = gb?.oeil ?? OEIL; this.kVit = gb?.vitesse ?? 1;
     this.typeCreature = d.typeCreature ?? null; this.dernierCoup = -1e9;
     // armure portee ({ tete: "iron", ... }) et niveaux de Protection contre les explosions : comptes par les explosions (moteur/explosion.js)
     this.armure = d.armure ?? null; this.protectionExplosion = d.protectionExplosion ?? 0;
+    // elytres (plastron "elytra") : vol plane du jeu (docs/SIMULATION.md partie 25) ; usure : 1 point toutes les 20 ticks de vol (432 au plus)
+    this.elytres = estElytres(d.armure?.torse); this.usureElytres = d.usureElytres ?? 0;
+    this.planeur = false; this.finPlane = false; this.posePlane = false; this.ticksVol = 0; this.veutPlaner = false;
     this.ia = d.ia ? new IA(this, d.ia) : null;
+    if (d.ia?.plane && d.typeCreature) this.veutPlaner = true;   // creature apparue en vol plane (drapeau FallFlying du jeu) : elle plane si elle le peut
+    // vehicule (wagonnet, bateau) : sa physique a la place de celle des vivants ; cavaliers : `monture` (nom du vehicule, ou piste [{ t, v }])
+    this.veh = estVehiculeSimule(this.typeCreature) ? creerVehicule(this, this.sim, d.wagon ?? {}) : null;
+    this.monte = null; this.passagers = [];
+    this.montureDepart = d.monture ?? null;
+    // entite definie par un mod (mc.definirEntite, moteur/perso.js) : son identifiant (gestionnaires mc.entite('ville:x')) et ses attributs
+    this.persoDef = d.persoDef ?? null;
+    if (this.persoDef?.attributs?.degats !== undefined && this.ia?.pr) this.ia.pr = { ...this.ia.pr, degats: this.persoDef.attributs.degats };
+    this.initInventaire(d);   // sac fini, mode, niveaux, armure et main en piles canoniques (inventaire.js)
   }
 
-  boite(x = this.x, y = this.y, z = this.z) { const h = this.accroupi ? HAUTEUR_ACCROUPI : this.H, L = this.L; return [x - L / 2, y, z - L / 2, x + L / 2, y + h, z + L / 2]; }
-  oeil() { return [this.x, this.y + (this.accroupi ? OEIL_ACCROUPI : this.O), this.z]; }
+  boite(x = this.x, y = this.y, z = this.z) { const h = this.posePlane ? HAUTEUR_PLANE : this.accroupi ? HAUTEUR_ACCROUPI : this.H, L = this.L; return [x - L / 2, y, z - L / 2, x + L / 2, y + h, z + L / 2]; }
+  oeil() { return [this.x, this.y + (this.posePlane ? OEIL_PLANE : this.accroupi ? OEIL_ACCROUPI : this.O), this.z]; }
+  // Player.canGlide (LivingEntity.canGlide) : en l'air, un planeur au plastron qui ne casse pas au prochain usage (usure < 431)
+  peutPlaner() { return this.elytres && !this.auSol && this.mort < 0 && this.usureElytres < ELYTRES_USURE_MAX - 1 && !this.niveauEffet?.('levitation'); }
   get lec() { return this.g.lec; }
   get regles() { return this.sim.regles; }
   portee() { return this.regles.valeur('joueur.portee', 4.5); }
@@ -88,8 +129,9 @@ export class Acteur {
     // verbes d'etat : ils n'interrompent pas la tache en cours
     if (v === 'regarde') { this.regard = a.cible === null ? null : a.cible.acteur ? { acteur: a.cible.acteur } : { x: a.cible.x, y: a.cible.y, z: a.cible.z }; this.note(a, 'ok', ''); return; }
     if (v === 'saute') { this.saut = true; this.note(a, 'ok', ''); return; }
+    if (v === 'plane') { this.debutPlane(a); return; }
     if (v === 'accroupi') { this.accroupi = !!a.valeur; this.note(a, 'ok', ''); return; }
-    if (v === 'tient') { this.main = { objet: a.objet, efficacite: a.opts?.eff ?? 0 }; this.note(a, 'ok', a.objet ? '' : 'main vide'); return; }
+    if (v === 'tient') { try { this.tenir(a.objet, a.opts?.eff ?? 0); } catch (e) { if (e instanceof EchecActe) { this.note(a, 'echec', e.message); return; } throw e; } this.note(a, 'ok', a.objet ? '' : 'main vide'); return; }
     // taches : la nouvelle interrompt la precedente
     if (this.tache) this.finirTache('interrompu', this.tache.msgInterrompu?.() ?? '');
     const T = { acte: a, debut: this.sim.temps, etat: 'init', n: 0 };
@@ -155,16 +197,26 @@ export class Acteur {
     const cx = Math.max(B[0], Math.min(ex, B[3])), cy = Math.max(B[1], Math.min(ey, B[4])), cz = Math.max(B[2], Math.min(ez, B[5]));
     const d = Math.hypot(ex - cx, ey - cy, ez - cz);
     if (d > 2.6) { const cap = Math.atan2(-(o.x - this.x), o.z - this.z) / RAD; this.entree = { avance: 1, cap, saute: false }; if (this.auSol && this.bute && this.marcheSautable(cap)) this.saut = true; }
-    const depuis = sim.temps - this.dernierCoup, c0 = coupJoueur(this.main.objet, depuis);
+    // {ecrase} (masse) : au sol, il marche vers la cible (il quitte un perchoir) et saute tout pres ; il frappe en retombant de plus de 1,5 bloc
+    if (T.acte.opts.ecrase && this.auSol) { const cap = Math.atan2(-(o.x - this.x), o.z - this.z) / RAD; this.entree = { avance: 1, cap, saute: false }; if (d < 1.6) this.saut = true; return; }
+    const depuis = sim.temps - this.dernierCoup, c0 = this.coupArme(o, depuis, false);
     if (d > 3 || c0.recharge < 1) return;
-    if (T.critique && this.auSol) { this.saut = true; return; }                 // coup critique : sauter, frapper en retombant
+    if ((T.critique || T.acte.opts.ecrase) && this.auSol) { this.saut = true; return; }   // coup critique (ou masse) : sauter, frapper en retombant
     if (T.critique && !(this.vy < 0)) return;
+    if (T.acte.opts.ecrase && !(this.vy < 0 && this.distanceChute > 1.5)) return;
     const crit = !this.auSol && this.vy < 0 && !this.dansEau && !this.course && sim.regles.valeur('combat.critiques', true);
-    const c = coupJoueur(this.main.objet, depuis, { critique: crit });
+    const c = this.coupArme(o, depuis, crit);   // attribut d'attaque du jeu, enchantements, masse (inventaire.js)
     this.dernierCoup = sim.temps; this.balancer();
     const R = sim.regles.valeur('combat.recul', 1);
+    o.attaquantCourant = this;
+    const ea = this.evEntite('attaque', { cible: o.nom, degats: c.degats });   // gestionnaires d'entite : ev.degats modifiable, ev.annuler()
+    if (ea?.annule) return;
+    if (ea) c.degats = Number(ea.degats) || 0;
     const ok = o.frappe(c.degats, 'joueur:' + this.nom, this.x - o.x, this.z - o.z, 0.4 * R);
-    if (ok) { if (this.course) o.recul(0.5 * R, this.x - o.x, this.z - o.z); o.ia?.blesse(this); o.dernierFrappeur = this; }
+    o.attaquantCourant = null;
+    if (ok) { o.ia?.blesse(this); o.dernierFrappeur = this; }
+    this.apresCoup(o, c, ok);   // recul (Recul, course), Aura de feu, Epines, Vent violent, coup ecrasant, usure, epuisement
+    void coupJoueur;
     sim.son(c.critique ? 'entity.player.attack.crit' : c.recharge > 0.9 ? 'entity.player.attack.strong' : 'entity.player.attack.weak', this.x, this.y, this.z, 1, 1);
     if (c.critique) for (let i = 0; i < 6; i++) sim.particule('crit', o.x, o.y + o.H * 0.6, o.z, (sim.hasard.flottant() - 0.5), 0.2, (sim.hasard.flottant() - 0.5), 1);
     (sim.stats.coups ??= []).push(`${(sim.temps / 20).toFixed(2)} ${this.nom} frappe ${o.nom} ${+c.degats.toFixed(1)}${c.critique ? ' critique' : ''}${ok ? '' : ' (sans effet)'}`);
@@ -183,7 +235,9 @@ export class Acteur {
     this.planifierChemin(T, { ouvrePortes: !!a.opts.ouvrePortes, rayon: T.rayon });
   }
   planifierChemin(T, { ouvrePortes, rayon }) {
-    const r = chercherChemin(this.lec, [this.x, this.y, this.z], T.but, { ouvrePortes, rayon: Math.max(0.35, rayon - 0.15), ferOuvrable: this.regles.valeur('portes.fer', false) });
+    // une creature a intentions cherche son chemin a la boite de son type (gabarit l x h), le joueur a 0,6 x 1,8
+    const gabarit = this.typeCreature ? { L: Math.max(0.6, this.L), H: this.H } : null;
+    const r = chercherChemin(this.lec, [this.x, this.y, this.z], T.but, { ouvrePortes, rayon: Math.max(0.35, rayon - 0.15), ferOuvrable: this.regles.valeur('portes.fer', false), gabarit, exact: true, auSol: this.auSol, dansEau: this.dansEau });
     T.portes = r.portes; T.chemin = r.chemin.length > 1 ? r.chemin.slice(1) : []; T.i = 0; T.complet = r.complet;
     if (!r.complet) {
       // pas de chemin : on marche droit vers le but ; le monde dira ce qui bloque (porte fermee, mur...)
@@ -208,6 +262,7 @@ export class Acteur {
     }
     const w = T.chemin[T.i];
     if (!w) { this.finirTache('ok', ''); return; }
+    if (w[3] === 1 || w[3] === -1) { this.tickGrimpe(T, w); return; }   // point d'echelle : monter ou descendre dans la colonne
     const dx = w[0] - this.x, dz = w[2] - this.z, d = Math.hypot(dx, dz);
     const dernier = T.i === T.chemin.length - 1;
     const arret = dernier ? Math.max(0.3, Math.min(T.rayon - 0.2, 0.6)) : 0.35;
@@ -237,6 +292,23 @@ export class Acteur {
       }
     }
     void a;
+  }
+  // Grimper (chemin par une echelle, navigation.js) : l'acteur se tient au centre de la colonne et pousse vers le mur qui porte l'echelle
+  // (facing oppose ; liane : le bloc plein voisin) ; le choc de cote donne la montee du jeu (0,2 par tick, 2,35 blocs/s) ; pour descendre il
+  // lache tout (chute bornee a 0,15 par tick : 3 blocs/s). Le point est atteint quand les pieds passent sa hauteur.
+  tickGrimpe(T, w) {
+    const monte = w[3] === 1, dx = w[0] - this.x, dz = w[2] - this.z;
+    if (monte ? this.y >= w[1] - 0.02 : this.y <= w[1] + 0.02) { if (T.i === T.chemin.length - 1) { this.finirTache('ok', ''); return; } T.i++; this.tick_va(T); return; }   // le point suivant tout de suite (pas de lacher d'un tick)
+    const lec = this.lec, d = this.sim.d, cx = Math.floor(this.x), cz = Math.floor(this.z);
+    let cap = null;
+    for (const yy of [Math.floor(this.y), Math.floor(this.y) + 1]) {
+      const e = lec.etatEn(cx, yy, cz);
+      if (e >= 0 && d.nomBloc(e) === 'ladder') { const f = d.prop(e, 'facing'); cap = { north: 0, south: 180, west: -90, east: 90 }[f]; break; }   // pousse vers le mur : a l'oppose de facing
+    }
+    if (cap === null) for (const [ddx, ddz, c] of [[0, -1, 180], [0, 1, 0], [-1, 0, 90], [1, 0, -90]]) if (boitesLocales(lec, cx + ddx, Math.floor(this.y), cz + ddz).length) { cap = c; break; }
+    void dx; void dz;   // le point d'avant (au sol) est deja le centre de la colonne
+    this.entree.cap = cap ?? this.lacet;
+    this.entree.avance = monte ? 1 : 0;
   }
   // une marche de 1 bloc (au plus) devant : la boite relevee de 1 passe, avec le plafond libre
   marcheSautable(cap) {
@@ -356,6 +428,9 @@ export class Acteur {
     if (!T.fait) {
       if (d > 2.5) { const cap = Math.atan2(-(o.x - this.x), o.z - this.z) / RAD; this.entree = { avance: 1, cap, saute: false }; if (this.auSol && this.bute && this.marcheSautable(cap)) this.saut = true; return; }
       this.balancer(); T.fait = this.sim.temps;
+      const eu = o.evEntite('utilise', { acteur: this.nom, objet: this.main.objet ?? null });   // gestionnaires d'entite : rendre 'fait' (ou annuler) prend le clic
+      if (eu && (eu.annule || eu.resultat === 'fait')) { this.finirTache('ok', 'mod'); return; }
+      if (o.veh) { this.finirTache('ok', interagirVehicule(this, o)); return; }   // vehicule : monter, charger le four (moteur/vehicules.js)
       // objet en main d'abord (Animal.mobInteract : nourriture -> amour ou croissance ; Allay : eclat d'amethyste pendant la danse) ; sinon l'echange
       const parObjet = this.main.objet && o.ia?.nourrir ? o.ia.nourrir(this, this.main.objet) : null;
       if (parObjet) { this.finirTache('ok', parObjet); return; }
@@ -386,7 +461,7 @@ export class Acteur {
       let ev = sim.dernierUtilise;
       if (res === 'fait' && ev && ev.nouvelObjet !== undefined) this.main = { objet: ev.nouvelObjet, efficacite: 0 };   // le bloc prend ou rend l'objet (disque du juke-box)
       if (res !== 'fait' && this.main.objet) {          // le bloc ne reagit pas : l'objet tenu agit (seaux, briquet : evenement du monde `objet.utilise`)
-        const o = sim.utiliserObjet(c[0], c[1], c[2], { acteur: this.nom, face, hit, accroupi: this.accroupi, objet: this.main.objet, lacet: this.lacet });
+        const o = sim.utiliserObjet(c[0], c[1], c[2], { acteur: this.nom, face, hit, accroupi: this.accroupi, objet: this.main.objet, lacet: this.lacet, fusee: a.opts.fusee });
         if (o.fait) { res = 'fait'; ev = null; if (o.nouvelObjet !== undefined) this.main = { objet: o.nouvelObjet, efficacite: 0 }; } else if (o.raison) ev = { raison: o.raison };
       }
       if (res !== 'fait') {
@@ -465,6 +540,7 @@ export class Acteur {
     if (!sim.api.survitEtat(D[0], D[1], D[2], etat)) throw new EchecActe(`${nom} ne tient pas en ${D.join(',')} (appui manquant)`);
     sim.poser(D[0], D[1], D[2], etat, 11);
     for (const [x, y, z, e2] of aussi) sim.poser(x, y, z, e2, 3);
+    sim.api.evenement('pose.parActeur', { pos: D, bloc: nom, acteur: this.nom });   // Block.setPlacedBy (repeteur et comparateur : tick si alimentes)
     sim.vibrations.emettre('block_place', D[0] + 0.5, D[1] + 0.5, D[2] + 0.5, { source: this.nom });   // GameEvent.BLOCK_PLACE
     sim.boss.apresPose(D, this);   // WitherSkullBlock.checkSpawn : sable des ames + 3 cranes de wither squelette
     const s = sim.d.son(idEtat);
@@ -483,10 +559,11 @@ export class Acteur {
   // ---------------------------------------------------------------- casse
   debut_casse(T, a) {
     const c = [a.x, a.y, a.z], sim = this.sim, e = sim.monde.etatEn(...c);
+    if (e >= 0 && sim.d.esAir(e) && sim.api.evenement('cadre.frappe', { pos: c, acteur: this.nom, fait: false }).fait) { this.balancer(); this.finirTache('ok', 'coup sur le cadre'); return; }   // cadre accroche dans la cellule (familles/cadres.js)
     if (e < 0 || sim.d.nomBloc(e) === 'air') throw new EchecActe(`rien a casser en ${c.join(',')} (air)`);
     T.ancien = e;
     const fat = this.effets.size ? FATIGUE[Math.min(4, this.niveauEffet('mining_fatigue'))] * (1 + 0.2 * this.niveauEffet('haste')) : 1;   // fatigue du gardien ancien, celerite
-    const p = progressionParTick(sim.d, e, { outil: this.main.objet, efficacite: this.main.efficacite, auSol: true, multiplicateur: this.regles.valeur('casser.vitesse', 1) * fat });
+    const p = progressionParTick(sim.d, e, { outil: this.main.objet, efficacite: this.main.efficacite, auSol: this.auSol || this.grimpeCasse(), sousEau: this.sousEauSansAffinite(), multiplicateur: this.regles.valeur('casser.vitesse', 1) * fat });   // en l'air /5, sous l'eau /5 sans Affinite aquatique (Player.getDestroySpeed)
     if (p.incassable) throw new EchecActe(`${court(sim.d.nomBloc(e))} est incassable (durete -1)`);
     T.prog = p; T.somme = 0; T.ticksMine = 0;
     this.preparerAction(T, a, c);
@@ -534,7 +611,10 @@ export class Acteur {
     if (ev.annule) { this.finirTache('echec', 'casse annulee par un gestionnaire'); return; }
     this.fissure(T, -1);
     const nomCasse = sim.d.nomBloc(e);
+    const durete = sim.d.durete(e);
     sim.casser(c[0], c[1], c[2], { butin: true, outil: this.main.objet, acteur: this.nom });
+    if (durete !== 0 && this.main.objet) this.userPile('main', Math.max(0, sim.d.outil(this.main.objet)?.d ?? 0));   // Item.mineBlock : damage_per_block du composant tool (pioche 1, epee 2) ; sans composant tool : rien
+    this.epuiser(Math.fround(0.005));   // Block.playerDestroy : 0,005 d'epuisement
     sim.vibrations.emettre('block_destroy', c[0] + 0.5, c[1] + 0.5, c[2] + 0.5, { source: this.nom });   // GameEvent.BLOCK_DESTROY
     if (nomCasse === 'beehive' || nomCasse === 'bee_nest') this.g.rucheCassee(c, this);   // BeehiveBlock.playerDestroy : abeilles relachees en urgence et en colere
     this.cassage = -1; this.delaiCassage = this.regles.valeur('casser.delai', 5);
@@ -543,11 +623,50 @@ export class Acteur {
     this.finirTache('ok', `casse en ${T.ticksMine ?? 0} ticks (${(((T.ticksMine ?? 0)) / 20 / sim.replay.ralenti).toFixed(2)} s)`);
   }
 
+  // ---------------------------------------------------------------- plane : vol plane aux elytres (Player.tryToStartFallFlying)
+  // [t, "plane"] : la touche de saut en l'air (au sol : il saute, puis appuie de nouveau en l'air) ; [t, "plane", x, y, z] : il regarde ce point
+  // (la direction du vol suit le regard) ; [t, "plane", {"tangage": 20, "lacet": -90}] : regard fixe ; {"tangage": ...} seul garde le lacet.
+  debutPlane(a) {
+    if (!this.elytres) { this.note(a, 'echec', 'pas d elytres : "armure": {"torse": "elytra"}'); return; }
+    if (a.cible) this.regard = { x: a.cible.x, y: a.cible.y, z: a.cible.z };
+    else if (a.opts && (a.opts.tangage !== undefined || a.opts.lacet !== undefined)) this.regard = { fixe: [a.opts.lacet ?? this.lacetTete, a.opts.tangage ?? this.tangage] };
+    if (this.planeur) { this.note(a, 'ok', 'deja en vol plane : regard change'); return; }
+    if (this.auSol && !this.typeCreature) this.saut = true;   // premier appui : le saut ; le second (en l'air) ouvre les elytres (une creature : drapeau FallFlying pose)
+    this.veutPlaner = true;
+    this.note(a, 'ok', '');
+  }
+  // Debut du tick : fin decidee au tick d'avant (le drapeau tombe un tick apres l'atterrissage : le saut garde alors la vitesse), essai
+  // d'ouverture (touche saut en l'air, ou `plane`, ou la chute automatique : regle elytres.auto), puis LivingEntity.updateFallFlying
+  // (distance de chute tenue a 1 tant qu'on ne pique pas a plus de 0,5 par tick ; usure tous les 20 ticks ; fin sans planeur ou au sol).
+  tickPlane() {
+    const sim = this.sim, R = sim.regles;
+    if (this.finPlane) { this.finPlane = false; this.planeur = false; }
+    if (!this.elytres) { this.veutPlaner = false; return; }
+    // une creature (Mob) ne s'envole jamais seule : le drapeau FallFlying est pose (verbe `plane`, ou `ia.plane` a l'apparition), puis
+    // LivingEntity.updateFallFlying le garde tant que canGlide (pas au sol, pas en monture, pas de Levitation, un planeur qui ne casse pas)
+    const creature = !!this.typeCreature;
+    const appui = creature ? this.veutPlaner : this.saut || this.veutPlaner || (R.valeur('elytres.auto', true) && !this.auSol && this.vy < 0 && this.distanceChute > R.valeur('elytres.autoChute', 2));
+    if (!this.planeur && appui && (creature ? !this.auSol && !this.monture && !(this.niveauEffet?.('levitation') > 0) && this.usureElytres < ELYTRES_USURE_MAX - 1 : this.peutPlaner() && !this.dansEau && !this.dansLave && !surGrimpable(sim, this))) {
+      this.planeur = true; this.veutPlaner = false; this.saut = false; this.ticksVol = 0;
+      sim.stats.volsPlanes = (sim.stats.volsPlanes || 0) + 1;
+      (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${this.nom} ouvre ses elytres en ${this.x.toFixed(1)},${this.y.toFixed(1)},${this.z.toFixed(1)}`);
+    }
+    if (creature && !this.planeur && this.veutPlaner && this.auSol) this.veutPlaner = false;   // au sol : updateFallFlying retire le drapeau
+    if (!this.planeur) return;
+    if (this.vy > -0.5 && this.distanceChute > 1) this.distanceChute = 1;
+    if (!(this.elytres && !this.auSol && this.mort < 0 && this.usureElytres < ELYTRES_USURE_MAX - 1) || (creature && (this.monture || this.niveauEffet?.('levitation') > 0))) this.finPlane = true;
+    else if ((this.ticksVol + 1) % 10 === 0 && ((this.ticksVol + 1) / 10) % 2 === 0 && R.valeur('elytres.usure', true)) {
+      if (creature && this.ia?.h) this.ia.h.entierBorne(1);   // Mob : Util.getRandom des emplacements qui planent (un seul ici), tire du hasard de la creature
+      this.usureElytres++;
+    }
+  }
+
   // ---------------------------------------------------------------- regard : tete et corps
   _regard() {
     let cible = this.regardTache ?? this.regard;
     let yawV = null, pitV = 0;
     if (cible && cible.acteur) { const o = this.g.parNom.get(cible.acteur); if (o) cible = { x: o.x, y: o.y + 1.62, z: o.z }; else cible = null; }
+    if (cible && cible.fixe) { yawV = cible.fixe[0]; pitV = cible.fixe[1]; cible = null; }
     if (cible) {
       const [ex, ey, ez] = this.oeil(), dx = cible.x - ex, dy = cible.y - ey, dz = cible.z - ez;
       yawV = Math.atan2(-dx, dz) / RAD; pitV = -Math.atan2(dy, Math.hypot(dx, dz)) / RAD;
@@ -560,7 +679,12 @@ export class Acteur {
     this.tangage += Math.max(-30, Math.min(30, (pitV - this.tangage) * 0.5));
     this.tangage = Math.max(-90, Math.min(90, this.tangage));
     const rel = norm180(this.lacetTete - this.lacet);
-    if (this.entree.avance > 0) {
+    if (this.planeur && Math.hypot(this.vx, this.vz) > 0.05) {
+      // LivingEntity.tick : le corps se tourne vers le deplacement (0,3 par tick), la tete reste a 75 degres au plus du corps
+      this.lacet += norm180(Math.atan2(-this.vx, this.vz) / RAD - this.lacet) * 0.3;
+      const r2 = norm180(this.lacetTete - this.lacet);
+      if (Math.abs(r2) > 75) this.lacet += r2 - Math.sign(r2) * 75;
+    } else if (this.entree.avance > 0) {
       const err = norm180(this.entree.cap - this.lacet);
       this.lacet += err * 0.3;                              // 0,3 par tick : le corps suit sa route comme dans le jeu
     } else if (Math.abs(rel) > 50) this.lacet += (rel - Math.sign(rel) * 50) * 0.5;
@@ -619,6 +743,10 @@ export class Acteur {
     // Player.updateSwimming : nage (pose de nage) = course dans l'eau, commencee la tete sous l'eau (le dauphin nage avec un joueur qui nage)
     this.nageant = !this.typeCreature && this.course && enEau && (this.nageant || fl.tete);
     if (this.sim.regles.valeur('vie.actif', true) && !RESPIRE_SOUS_EAU.has(this.typeCreature)) this.respirer(fl.tete);   // #can_breathe_under_water : les morts-vivants ne se noient pas
+    // vol plane (LivingEntity.travel : un fluide d'abord, puis travelFallFlying ; sur une echelle le vol cesse et l'acteur bouge comme en l'air)
+    if (this.planeur && !enFluide) {
+      if (surGrimpable(this.sim, this)) { this.planeur = false; this.finPlane = false; } else { this.physiquePlane(); return; }
+    }
     // sol : bloc sous les pieds (friction)
     let friction = 0.6;
     if (this.auSol) {
@@ -626,11 +754,13 @@ export class Acteur {
       if (e >= 0) friction = d.friction(e) || 0.6;
     }
     // saut (avant le deplacement) ; dans un fluide : pousse vers le haut de 0,04 par tick (Mob.jumpInLiquid), seuil de 0,4 de hauteur pour sauter du fond
+    const sauteCeTick = this.saut;
     if (this.saut) {
       const h = enEau ? fl.hauteurEau : fl.hauteurLave;
       if (enFluide && (!this.auSol || h > 0.4)) this.vy += 0.04;
       else if (this.auSol) {
         this.vy = SAUT + this.bonusSaut();
+        this.epuiser(this.course ? Math.fround(0.2) : Math.fround(0.05));   // Player.jumpFromGround : epuisement 0,05 (0,2 en courant)
         if (this.course) { this.vx += -Math.sin(this.lacet * RAD) * 0.2; this.vz += Math.cos(this.lacet * RAD) * 0.2; }
         this.auSol = false;
       }
@@ -640,11 +770,21 @@ export class Acteur {
     let av = this.entree.avance > 0 ? ENTREE : 0;
     // on avance seulement quand le corps est a peu pres tourne vers la route
     if (av > 0 && Math.abs(norm180(this.entree.cap - this.lacet)) > 50) av = 0;
-    if (this.accroupi) av *= FACTEUR_ACCROUPI;
-    const vit = enFluide ? 0.02 : this.auSol ? (this.course ? VITESSE_COURSE : VITESSE_MARCHE) * this.kVit * this.facteurVitesse() * (0.21600002 / (friction * friction * friction)) : (this.course ? 0.026 : 0.02);
+    if (this.accroupi) av *= Math.min(1, FACTEUR_ACCROUPI + this.bonusAttribut('sneaking_speed'));   // attribut sneaking_speed 0,3 + Furtivite rapide
+    else if (this.posePlane && !this.planeur && !enFluide) av *= FACTEUR_ACCROUPI;   // LocalPlayer.isMovingSlowly : le tick apres un vol plane, encore dans sa pose
+    const vit = enFluide ? (enEau ? this.vitesseNage(VITESSE_MARCHE * this.kVit * this.facteurVitesse()) : 0.02) : this.auSol ? (this.course ? VITESSE_COURSE : VITESSE_MARCHE) * this.kVit * this.facteurVitesse() * (0.21600002 / (friction * friction * friction)) : (this.course ? 0.026 : 0.02);
     if (av > 0) {
       const dx = av * vit, a = this.lacet * RAD;     // entree (0, av) tournee de `lacet`
       this.vx += -Math.sin(a) * dx; this.vz += Math.cos(a) * dx;
+    }
+    // LivingEntity.handleOnClimbable : sur une echelle ou une liane, plus de chute comptee, vitesse bornee a 0,15F de cote et en descente ;
+    // accroupi (isSuppressingSlidingDownLadder, joueur), il ne glisse pas vers le bas (sauf sur un echafaudage)
+    const grimpe = !this.typeCreature && surGrimpable(this.sim, this);
+    if (grimpe && !enFluide) {
+      const B = Math.fround(0.15);
+      this.distanceChute = 0;
+      this.vx = Math.max(-B, Math.min(B, this.vx)); this.vz = Math.max(-B, Math.min(B, this.vz)); this.vy = Math.max(this.vy, -B);
+      if (this.vy < 0 && this.accroupi && d.nomBloc(lec.etatEn(Math.floor(this.x), Math.floor(this.y), Math.floor(this.z))) !== 'scaffolding') this.vy = 0;
     }
     // deplacement avec collisions
     let mx = this.vx, my = this.vy, mz = this.vz;
@@ -654,19 +794,29 @@ export class Acteur {
     this.x += r.dx; this.y += r.dy; this.z += r.dz;
     if (r.bloqueX) this.vx = 0;
     if (r.bloqueZ) this.vz = 0;
-    if (r.bloqueY) this.vy = 0;
+    // contact vertical : remis a 0, sauf rebond du bloc (lit 0,75, slime 1 ; accroupi : non) : Entity.restituteMovementAfterCollisions (rebond.js)
+    if (r.bloqueY) {
+      const nom = r.auSol ? blocSous(lec, this.x, this.y, this.z) : null;
+      this.vy = nom ? vitesseApresContact(my, r.dy, GRAVITE, nom, { vivant: true, accroupi: this.accroupi }) : 0;
+      if (this.vy > 0) { this.rebonds = (this.rebonds ?? 0) + 1; this.premierRebond ??= this.vy; this.sim.stats.rebonds = (this.sim.stats.rebonds || 0) + 1; }
+    }
+    if (this.rebonds === 1) this.hautApresRebond = Math.max(this.hautApresRebond ?? -Infinity, this.y);   // hauteur atteinte apres le premier rebond
     this.auSol = r.auSol;
     this.bute = r.bloqueX || r.bloqueZ;
     // chute : la distance s'accumule en l'air, les degats tombent a l'atterrissage (LivingEntity.checkFallDamage / causeFallDamage) ; un fluide l'annule
     if (enFluide) this.distanceChute = 0;
-    else if (r.auSol) { if (this.distanceChute > 0) this.atterrir(this.distanceChute); this.distanceChute = 0; } else if (r.dy < 0) this.distanceChute -= r.dy;
+    else {   // Entity.checkFallDamage (Horizon fall_damage.rs) : la descente de ce tick d'abord (en flottant), puis l'atterrissage
+      if (r.dy < 0) this.distanceChute -= Math.fround(r.dy);
+      if (r.auSol) { if (this.distanceChute > 0) this.atterrir(this.distanceChute); this.distanceChute = 0; }
+    }
     // blocs touches par la boite (plaques de pression...) a la fin du deplacement
     this.toucherBlocs();
     if (enFluide) {
       // LivingEntity.travel dans l'eau (x 0,8, gravite / 16) ou la lave (x 0,5, gravite / 4) ; hisse sur la berge (0,3) si un pas libre existe
       // Grace du dauphin (Horizon horizon-world/src/living_fluid.rs `travel_in_water`) : ralentissement horizontal 0,96 au lieu de 0,8 dans
       // l'eau (vitesse limite x 5), le vertical reste x 0,8
-      const k = enEau ? 0.8 : 0.5, kh = enEau && this.effets?.size && this.niveauEffet('dolphins_grace') ? 0.96 : k;
+      const k = enEau ? 0.8 : 0.5, kh = enEau ? this.freinEau() : k;   // Agilite aquatique, grace du dauphin (inventaire.js)
+      if (enEau && this.bute && grimpe) this.vy = 0.2;   // LivingEntity.travelInWater : une echelle sous l'eau se grimpe aussi
       this.vx *= kh; this.vy *= k; this.vz *= kh;
       if (enEau) {
         if (this.vy <= 0 && Math.abs(this.vy - 0.005) >= 0.003 && Math.abs(this.vy - GRAVITE / 16) < 0.003) this.vy = -0.003; else this.vy -= GRAVITE / 16;
@@ -678,12 +828,52 @@ export class Acteur {
       if (enLave) this.degats(4, 'lave');
       return;
     }
+    // LivingEntity.handleRelativeFrictionAndCalculateMovement : contre le mur (ou la touche de saut) sur une echelle, la vitesse verticale vaut 0,2
+    if (grimpe && (this.bute || sauteCeTick)) this.vy = 0.2;
     // gravite, trainee, friction
-    const f = this.auSol ? friction * FRICTION_AIR : FRICTION_AIR;
-    this.vy = (this.vy - GRAVITE) * TRAINEE;
+    const f = this.ia?.sansFrottement?.() ? 1 : this.auSol ? friction * FRICTION_AIR : FRICTION_AIR;   // Breeze.shouldDiscardFriction : saut long
+    const lev = this.effets.size ? this.niveauEffet('levitation') : 0;   // LivingEntity.travelInAir : Levitation ; Chute lente (getEffectiveGravity)
+    if (lev > 0) this.vy = (this.vy + (0.05 * lev - this.vy) * 0.2) * TRAINEE;
+    else this.vy = (this.vy - (this.vy <= 0 && this.effets.size && this.niveauEffet('slow_falling') ? 0.01 : GRAVITE)) * TRAINEE;
     this.vx *= f; this.vz *= f;
     if (Math.abs(this.vx) < 0.003) this.vx = 0;
     if (Math.abs(this.vz) < 0.003) this.vz = 0;
+  }
+
+  // LivingEntity.travelFallFlying : vitesse du vol plane (moteur/mth.js, au bit pres du jeu), deplacement avec collisions, puis le choc de cote
+  // (handleFallFlyingCollisions : (vitesse horizontale avant - apres) x 10 - 3 de degats `fly_into_wall`, son de chute petite ou grande)
+  physiquePlane() {
+    const lec = this.lec, sim = this.sim;
+    const g = this.vy <= 0 && this.effets?.size && this.niveauEffet('slow_falling') ? Math.min(GRAVITE, 0.01) : GRAVITE;   // LivingEntity.getEffectiveGravity
+    const avantH = Math.hypot(this.vx, this.vz);
+    [this.vx, this.vy, this.vz] = mouvementPlane([this.vx, this.vy, this.vz], this.tangage, this.lacetTete, g);
+    const my = this.vy;
+    const r = deplacerBoite(lec, this.boite(), [this.vx, this.vy, this.vz], this.auSol, PAS);
+    this.x += r.dx; this.y += r.dy; this.z += r.dz;
+    if (r.bloqueX) this.vx = 0;
+    if (r.bloqueZ) this.vz = 0;
+    if (r.bloqueY) { const nom = r.auSol ? blocSous(lec, this.x, this.y, this.z) : null; this.vy = nom ? vitesseApresContact(my, r.dy, GRAVITE, nom, { vivant: true, accroupi: false }) : 0; }
+    this.auSol = r.auSol; this.bute = r.bloqueX || r.bloqueZ;
+    if (r.dy < 0) this.distanceChute -= Math.fround(r.dy);
+    if (r.auSol) { if (this.distanceChute > 0) this.atterrir(this.distanceChute); this.distanceChute = 0; }
+    this.toucherBlocs();
+    if (this.bute) {
+      const q = degatsMur(avantH, Math.hypot(this.vx, this.vz));
+      if (q > 0) {
+        sim.son(Math.trunc(q) > 4 ? 'entity.player.big_fall' : 'entity.player.small_fall', this.x, this.y, this.z, 1, 1);
+        sim.stats.chocsMur = (sim.stats.chocsMur || 0) + 1;
+        (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${this.nom} heurte un mur en vol plane : ${q.toFixed(2)} de degats`);
+        this.degats(q, 'mur');
+      }
+    }
+  }
+  // Player.updatePlayerPose apres le deplacement : pose du vol plane tant qu'il plane ; debout ensuite si la boite de 1,8 tient (sinon la
+  // boite de 0,6 reste : l'acteur rampe sous le plafond)
+  majPose() {
+    if (this.planeur) { this.posePlane = true; return; }
+    if (!this.posePlane) return;
+    const L = this.L, h = this.accroupi ? HAUTEUR_ACCROUPI : this.H, e = 1e-7;
+    if (!coupe(this.lec, [this.x - L / 2 + e, this.y + e, this.z - L / 2 + e, this.x + L / 2 - e, this.y + h - e, this.z + L / 2 - e])) this.posePlane = false;
   }
 
   // Entity.doWaterSplashEffect : son selon la vitesse, bulles et gouttes
@@ -700,8 +890,18 @@ export class Acteur {
   // ---------------------------------------------------------------- sante (LivingEntity.hurt, actuallyHurt, die, tickDeath)
   // Degats d'une source ('chute', 'explosion', 'lave', 'noyade', 'generique'...). L'evenement du monde `acteur.degats` peut les changer (ev.quantite)
   // ou les annuler (ev.annuler()) ; `invulnerable: true` sur l'acteur ou la regle `vie.actif: false` les coupent. Rend vrai si de la vie a ete perdue.
+  // evenement d'entite (mc.entite('zombie' | 'joueur' | 'ville:zombie_geant').sur(evt)) : null s'il n'y a aucun gestionnaire ; sinon l'evenement
+  // apres les gestionnaires (champs modifies, `annule`, `resultat` : valeur rendue)
+  evEntite(evt, donnees = {}) {
+    const reg = this.sim.reg, cles = (this._clesEntite ??= [this.persoDef?.id, this.typeCreature ?? 'joueur'].filter(Boolean).join('|'));
+    if (!reg.aEntite(evt, cles)) return null;
+    const ev = evenement({ entite: { nom: this.nom, type: this.typeCreature ?? 'joueur', mod: this.persoDef?.id ?? null, pos: [this.x, this.y, this.z], vie: this.vie }, ...donnees });
+    ev.resultat = reg.lancerEntite(evt, cles, ev, this.sim.api);
+    return ev;
+  }
   degats(quantite, source = 'generique') {
     const sim = this.sim;
+    if (this.veh) return this.mort < 0 && !this.invulnerable && blesserVehicule(this, Number(quantite), source);   // VehicleEntity.hurtServer
     if (this.mort >= 0 || this.invulnerable || !sim.regles.valeur('vie.actif', true)) return false;
     if (this.ia?.esquive?.(source)) return false;   // enderman : un projectile le manque (il se teleporte)
     if (this.typeCreature === 'end_crystal') return sim.boss.cristalTouche(this, source);   // EndCrystal.hurtServer : il explose
@@ -710,18 +910,27 @@ export class Acteur {
     const ev = sim.api.evenement('acteur.degats', { acteur: this.nom, quantite, source });
     if (ev.annule) return false;
     let q = Number(ev.quantite);
+    const ed = this.evEntite('degats', { montant: q, type: source, source });   // gestionnaires d'entite : ev.montant modifiable, ev.annuler()
+    if (ed) { if (ed.annule) return false; q = Number(ed.montant); }
     if (!(q > 0)) return false;
+    if (this.immunise(source)) return false;   // Resistance au feu, Marche givree (magma), creatif (inventaire.js / effets.js)
     let nouveau = true;
     if (this.invulTemps > 10) {                 // fenetre d'invulnerabilite de 10 ticks : seul un coup plus fort passe, pour la difference
       if (q <= this.derniereBlessure) return false;
       const reste = q - this.derniereBlessure; this.derniereBlessure = q; q = reste; nouveau = false;
     } else { this.derniereBlessure = q; this.invulTemps = 20; this.hurtTime = 10; }
+    q = apresArmure(this, q, source);   // LivingEntity.actuallyHurt : armure (sauf #bypasses_armor), Resistance, protections d'enchantement, absorption
+    this.epuiser?.(this.epuisementDegats(source));   // DamageSource.getFoodExhaustion (0,1 pour la plupart des types)
     this.vie = Math.max(0, this.vie - q);
     sim.dire(`${this.nom} perd ${q} (${source}) : ${this.vie}/${this.vieMax}`);
     sim.stats.degats = (sim.stats.degats || 0) + q;
     if (this.vie <= 0) this.mourir(source);
     else if (nouveau) sim.son(this.typeCreature ? `entity.${this.typeCreature}.hurt` : 'entity.player.hurt', this.x, this.y, this.z, 1, 1 + (sim.hasard.flottant() - sim.hasard.flottant()) * 0.2);
     if (this.vie > 0) this.ia?.apresDegats?.(source, q);   // enderman (teleportation), chauve-souris (reveil), abeille (colere)
+    if (this.vie > 0 && this.effets.size) this.effetsBlessure();   // Infestation (effets.js)
+    // Epines et autres post_attack de l'armure de la victime contre celui qui frappe (EnchantmentHelper.doPostAttackEffects, enchanted = victim)
+    const att = this.attaquantCourant;
+    if (att && att !== this && sim.objetsJeu && this.armure && !this.epinesEnCours) { this.epinesEnCours = true; try { sim.enchant.apresAttaque(this, att, { type: 'mob_attack', direct: true, directAttaquant: att, arme: null, victimeSeule: true }); } finally { this.epinesEnCours = false; } }
     return true;
   }
   mourir(source) {
@@ -732,8 +941,17 @@ export class Acteur {
     sim.son(this.typeCreature ? `entity.${this.typeCreature}.death` : 'entity.player.death', this.x, this.y, this.z, 1, 1 + (sim.hasard.flottant() - sim.hasard.flottant()) * 0.2);
     sim.stats.morts = (sim.stats.morts || 0) + 1;
     if (this.typeCreature && sim.regles.valeur('butin.actif', true)) {   // butin de la creature (LivingEntity.dropAllDeathLoot) : objets au sol
-      for (const [objet, min, max] of BUTIN[this.typeCreature] ?? []) { const n = min + sim.hasard.entierBorne(max - min + 1); if (n > 0) sim.entites.objet(objet, n, this.x, this.y + this.H / 2, this.z); }
+      // Pillage de l'arme du joueur qui a tue (EnchantedCountIncreaseFunction des tables : + 0 a niveau par objet)
+      const pillage = this.dernierFrappeur && !this.dernierFrappeur.typeCreature ? this.dernierFrappeur.niveauPillage() : 0;
+      const avecMod = sim.reg.aEntite('butin', (this._clesEntite ??= [this.persoDef?.id, this.typeCreature ?? 'joueur'].filter(Boolean).join('|'))), butin = [];
+      for (const [objet, min, max] of BUTIN[this.typeCreature] ?? []) { let n = min + sim.hasard.entierBorne(max - min + 1); if (pillage > 0) n += sim.hasard.entierBorne(pillage + 1); if (n > 0) { if (avecMod) butin.push({ objet, n }); else sim.entites.objet(objet, n, this.x, this.y + this.H / 2, this.z); } }
+      if (avecMod) {   // gestionnaires d'entite (mc.entite(...).sur('butin')) : ev.butin [{ objet, n }] modifiable
+        const eb = this.evEntite('butin', { source, butin });
+        for (const b of Array.isArray(eb.butin) ? eb.butin : []) if (b && typeof b.objet === 'string' && b.n > 0) sim.entites.objet(b.objet.replace(/^minecraft:/, ''), Math.min(64 * 36, Math.floor(b.n)), this.x, this.y + this.H / 2, this.z);
+      }
     }
+    this.evEntite('meurt', { source });
+    if (this.effets.size) this.effetsMort();   // Suintement, Tissage, Charge de vent (effets.js)
     if (this.ia) (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${this.nom} meurt (${source})`);
     sim.dire(`${this.nom} meurt (${source})`);
     (sim.stats.mortsListe ??= []).push(`${this.nom} t=${(sim.temps / 20 / sim.replay.ralenti).toFixed(1).replace('.', ',')} ${source}`);
@@ -742,15 +960,23 @@ export class Acteur {
     sim.api.evenement('acteur.meurt', { acteur: this.nom, source, pos: [this.x, this.y, this.z] });
   }
   // atterrissage apres une chute de `dist` blocs : ceil(dist - 3) points de vie (3 = distance de chute sans degats), x regle `vie.chute`
+  // bloc d'arrivee (Block.fallOn) : lit et champignon d'etagere comptent la chute x 0,5 (fallDistanceReduction), slime : aucun degat (rebond.js)
   atterrir(dist) {
-    const sim = this.sim, R = sim.regles;
-    const q = Math.ceil((dist - R.valeur('vie.chuteSeuil', 3)) * R.valeur('vie.chute', 1));
+    const sim = this.sim, R = sim.regles, nom = blocSous(this.lec, this.x, this.y, this.z);
+    if (nom === 'slime_block') return;
+    dist *= 1 - reductionChute(nom);
+    if (this.typeCreature === 'breeze' && dist > 3) sim.son('entity.breeze.land', this.x, this.y, this.z, 1, 1);   // Breeze.causeFallDamage
+    // impulsion d'une charge de vent (ServerPlayer.onExplosionHit, LivingEntity.causeFallDamage) : la chute ne compte que sous le point de la rafale
+    if (this.impulsion) { dist = Math.min(dist, this.impulsion.y - this.y); if (dist <= 0 || this.impulsion.grace <= 0) this.impulsion = null; }
+    // LivingEntity.calculateFallDamage : floor(distance + 1e-6 - safe_fall_distance (3)) x multiplicateur
+    const q = Math.floor((dist + 1e-6 - R.valeur('vie.chuteSeuil', 3)) * R.valeur('vie.chute', 1));
+    if (q > 0) this.impulsion = null;
     if (q > 0) { sim.son(q > 4 ? 'entity.player.big_fall' : 'entity.player.small_fall', this.x, this.y, this.z, 1, 1); sim.stats.chutes = (sim.stats.chutes || 0) + 1; sim.stats.chuteMax = Math.max(sim.stats.chuteMax || 0, q); this.degats(q, 'chute'); }
   }
   // noyade : 300 ticks d'air, puis 2 de degats par seconde apres -20 (LivingEntity.baseTick)
   respirer(tete) {
     if (tete) {
-      this.air--;
+      if (!this.respireSousEau() && !this.garderAir()) this.air--;   // Respiration aquatique, Force du conduit, Souffle du nautile ; Apnee (oxygen_bonus)
       if (this.air <= -20) { this.air = 0; this.degats(2, 'noyade'); for (let i = 0; i < 8; i++) this.sim.particule('bubble', this.x, this.y + 1.5, this.z, 0, 0.1, 0, 1); }
     } else this.air = Math.min(300, this.air + 4);
   }
@@ -773,16 +999,21 @@ export class Acteur {
       if (e < 0) continue;
       const bl = sim.d.blocDe(e);
       if (!sim.reg.a('entre', bl)) continue;
-      sim.reg.lancerBloc('entre', bl, evenement({ pos: [x, y, z], etat: sim.d.chaine(e), bloc: sim.d.nomBloc(e), entite: { type: 'joueur', nom: this.nom, id: this.id } }), sim.api);
+      sim.reg.lancerBloc('entre', bl, evenement({ pos: [x, y, z], etat: sim.d.chaine(e), bloc: sim.d.nomBloc(e), entite: { type: this.typeCreature ?? 'joueur', nom: this.nom, id: this.id } }), sim.api);
     }
   }
 
   // ---------------------------------------------------------------- un tick
   tick() {
+    if (this.veh) { if (this.mort >= 0) { this.mort = 21; this.ecrire(); return; } tickVehicule(this); this.ecrire(); if (this.mort < 0) ecrireVehicule(this); return; }   // wagonnet, bateau (moteur/vehicules.js)
+    if (this.monte) { this.tickCavalier(); return; }
+    if (this.impulsion?.grace > 0) this.impulsion.grace--;   // LivingEntity : currentImpulseContextResetGraceTime
     const sim = this.sim;
     if (this.hurtTime > 0) this.hurtTime--;
     if (this.invulTemps > 0) this.invulTemps--;
     if (this.mort >= 0) { this.tickMort(); this.ecrire(); if (this.ia && this.mort < 21) this.sim.replay.ia(this.sim.temps, this.id, 0, 0, 0, 0); return; }      // LivingEntity.tickDeath : le corps tombe, 20 ticks, puis un nuage et il disparait
+    if (!this._cree) { this._cree = true; this.evEntite('cree'); }   // gestionnaires d'entite : au premier tick vivant, puis a chaque tick
+    this.evEntite('tick');
     this.regardTache = this.tache && (this.tache.etat === 'vise' || this.tache.etat === 'mine') ? this.regardTache : null;
     if (this.delaiCassage > 0) this.delaiCassage--;
     this.demarrerDues();
@@ -791,9 +1022,15 @@ export class Acteur {
     if (this.feuJoueur > 0) this.brulerJoueur();
     if (this.ia && !this.tache) this.ia.tick();   // IA : seulement quand aucune intention ecrite ne tourne (les actes l'emportent)
     else { this.tickTache(); if (this.ia) this.ia.ecrire(); }
+    this.tickPlane();
     this._regard();
-    const x0 = this.x, z0 = this.z;
+    const x0 = this.x, z0 = this.z, y0 = this.y;
+    if (this.course && !this.peutCourir()) this.course = false;   // FoodData.hasEnoughFood : pas de course a 6 de faim ou moins
     this.physique();
+    this.bulles();   // LivingEntity.aiStep : applyEffectsFromBlocks apres travel (colonnes de bulles)
+    if (!this.typeCreature) { this.epuisementDeplacement(this.x - x0, this.y - y0, this.z - z0); this.tickEquipement(); this.tickVrille(); }   // effets.js, inventaire.js, objets-actes.js (Impulsion)
+    this.ticksVol = this.planeur ? this.ticksVol + 1 : 0;   // LivingEntity.tick : fallFlyTicks compte apres aiStep
+    this.majPose();
     // pas (Entity.moveDist x 0,6, nextStep) : GameEvent.STEP pour les capteurs de sculk et les wardens (ignore accroupi)
     if (this.auSol && !this.vole && sim.vibrations.actif()) {
       this.distPas = (this.distPas ?? 0) + Math.hypot(this.x - x0, this.z - z0) * 0.6;
@@ -802,6 +1039,25 @@ export class Acteur {
     if (this.ramasse && this.mort < 0) sim.entites.ramasser(this);
     this._majBalancement();
     this.ecrire();
+  }
+  // BubbleColumnBlock.entityInside : monte ou descend (plus fort a la surface), la chute est oubliee dedans
+  bulles() {
+    if (this.ia?.vol || this.typeCreature === 'end_crystal') return;
+    for (const c of colonnesBulles(this.sim, this.boite())) if (pousseeBulle(c, this, this.sim)) this.distanceChute = 0;
+  }
+  // Entity.rideTick : le cavalier garde ses intentions (son `va` donne l'entree au vehicule) et son regard ; le vehicule le place sur le siege
+  tickCavalier() {
+    if (this.hurtTime > 0) this.hurtTime--;
+    if (this.invulTemps > 0) this.invulTemps--;
+    if (this.mort >= 0 || this.monte.mort >= 0) { descendre(this); this.ecrire(); return; }
+    this.demarrerDues();
+    this.entree = { avance: 0, cap: this.lacet, saute: false };
+    this.tickEffets();
+    if (this.tache) this.tickTache();
+    this._regard();
+    if (this.accroupi && !this.typeCreature) { this.accroupi = false; descendre(this); return; }   // accroupi : il descend (Player.wantsToStopRiding)
+    this.distanceChute = 0;
+    this._majBalancement();
   }
   // joueur en feu (petite boule de feu du blaze : 5 s) : 1 degat par seconde, flammes ; l'eau l'eteint
   brulerJoueur() {
@@ -825,6 +1081,7 @@ export class Acteur {
   }
   ecrire() {
     const sim = this.sim;
+    if (!this.typeCreature) this.ecrireEtat();   // vie, faim, experience, armure : la barre du montage (inventaire.js)
     // marche : position et amplitude des membres (LivingEntity.updateWalkAnimation)
     const dist = Math.hypot(this.x - this.xPrec, this.z - this.zPrec);
     const f = Math.min(dist * 4, 1);
@@ -834,7 +1091,9 @@ export class Acteur {
     let dr = 0;
     if (this.accroupi) dr |= DRAPEAUX.ACCROUPI; if (this.auSol) dr |= DRAPEAUX.AU_SOL; if (this.course) dr |= DRAPEAUX.COURSE; if (this.balance.actif) dr |= DRAPEAUX.BALANCE; if (this.dansEau) dr |= DRAPEAUX.EAU;
     if (this.usage) dr += this.usage.type * 64 + Math.min(this.usage.ticks, 4095) * 512;       // pose d'utilisation (manger, boire, arc, arbalete) : voir film/acteurs-vivants.js
+    else if (this.vrille > 0) dr += 7 * 64 + (sim.temps % 4096) * 512;                          // Impulsion : pose SPIN_ATTACK (7), l'age en ticks pour la rotation (partie 26)
     if (this.effets.size) { if (this.niveauEffet('invisibility')) dr += BIT.INVISIBLE; if (this.niveauEffet('glowing')) dr += BIT.LUEUR; }
+    if (this.planeur) { dr += DRAPEAUX.PLANE; sim.replay.vol(sim.temps, this.id, this.vx, this.vy, this.vz, this.ticksVol); }   // vol plane : vitesse pour la pose (film/acteurs-vivants.js)
     sim.replay.acteur(sim.temps, this.id, this.x, this.y, this.z, this.lacet, this.lacetTete, this.tangage, dr, this.balancement, this.cassage, this.main.objet ? sim.replay.nom(this.main.objet) : -1, this.membres.phase, this.membres.amplitude, this.hurtTime, this.mort < 0 ? 0 : this.mort + 1);
   }
 }
@@ -859,9 +1118,42 @@ export class Acteurs {
     this.liste = descripteurs.map((d, i) => new Acteur(this, i, d));
     this.parNom = new Map(this.liste.map((a) => [a.nom, a]));
     sim.replay.acteurs = this.liste.map((a) => a.nom);
+    const vs = this.liste.filter((a) => a.veh || a.montureDepart).map((a) => a.nom);   // vehicules simules et leurs cavaliers : le film lit leur trace (film/anim.js)
+    if (vs.length) sim.replay.vehiculesSim = vs;
   }
   // les acteurs nes pendant ce tick (naitre) ne jouent qu'au tick suivant ; leur premier enregistrement est ecrit a la naissance
-  tick() { const n = this.liste.length; for (let i = 0; i < n; i++) this.liste[i].tick(); pousserActeurs(this.sim, this.liste.slice(0, n)); }   // les corps qui se touchent se poussent (moteur/poussee.js)
+  // ServerLevel.tickNonPassenger puis tickPassenger : chaque vehicule, puis ses cavaliers (rideTick) poses sur leur siege (positionRider)
+  tick() {
+    const n = this.liste.length, sim = this.sim;
+    this.montures();
+    for (let i = 0; i < n; i++) {
+      const a = this.liste[i];
+      if (a.monte) continue;
+      a.tick();
+      for (const c of [...a.passagers]) { if (c.monte !== a) continue; c.tick(); if (c.monte === a) placerCavalier(c, a); c.ecrire(); }
+    }
+    pousserActeurs(sim, this.liste.slice(0, n).filter((a) => !a.veh && !a.monte));
+    pousserWagonnets(sim, this.liste.slice(0, n));   // AbstractMinecart.push : les vivants poussent les wagonnets
+  }
+  // montures de la scene (champ `monture` du cavalier : nom, ou piste [{ t, v }]) : chaque cle joue une fois, a son tick
+  montures() {
+    const sim = this.sim;
+    for (const a of this.liste) {
+      const m = a.montureDepart;
+      if (!m) continue;
+      const piste = typeof m === 'string' ? [{ t: 0, v: m }] : m;
+      let voulu = null, k0 = null;
+      for (const k of piste) if (Math.floor(k.t * 20 * (sim.replay.ralenti || 1) + 1e-9) <= sim.temps) { voulu = k.v; k0 = k; }
+      if (!k0 || a._montureVue === k0) continue;
+      a._montureVue = k0;
+      if (!voulu) { descendre(a); continue; }
+      const v = this.parNom.get(voulu);
+      if (!v || v.mort >= 0 || v === a.monte) continue;
+      const places = v.veh?.wagon ? (v.typeCreature === 'minecart' ? 1 : 0) : v.veh?.bateau ? (v.typeCreature === 'chest_boat' ? 1 : 2) : 1;
+      if (v.passagers.length >= places) { sim.avertir(`${a.nom} : ${voulu} est plein ou ne se monte pas`); continue; }
+      monter(a, v);
+    }
+  }   // les corps qui se touchent se poussent (moteur/poussee.js)
 
   // ---------------------------------------------------------------- entites nees pendant la simulation (docs/SIMULATION.md partie 17)
   // o : { type, variante, bebe, x, y, z, lacet, modele (acteur dont le film reprend les reglages), raison, ia (champs d'IA en plus), nom, gabaritParent }
@@ -877,11 +1169,11 @@ export class Acteurs {
     const cr = this.sim.creatures, st = cr?.stats?.(o.type) ?? null;
     const gab = cr?.gabarit ? cr.gabarit(c) : gabaritDe(o.type, c.bebe, o.gabaritParent);
     const gabAdulte = cr?.gabarit ? cr.gabarit({ ...c, bebe: false }) : (o.gabaritParent ?? gab);
-    const d = { nom, x: o.x, y: o.y, z: o.z, lacet: o.lacet ?? 0, objet: o.objet ?? null, vie: o.vie ?? st?.pv, gabarit: gab, typeCreature: o.type, actes: [],
+    const d = { nom, x: o.x, y: o.y, z: o.z, lacet: o.lacet ?? 0, objet: o.objet ?? null, vie: o.vie ?? st?.pv, gabarit: gab, typeCreature: o.type, actes: [], ...(o.armure ? { armure: o.armure } : {}),
       ia: { type: o.type, variante: c.variante, bebe: c.bebe, vitesseAttr: st?.v ?? o.vitesseAttr ?? 0.25, vie: o.vie ?? st?.pv ?? 20, gabaritAdulte: gabAdulte, ...(o.ia ?? {}) } };
     const a = new Acteur(this, this.liste.length, d);
     this.liste.push(a); this.parNom.set(nom, a); sim.replay.acteurs.push(nom);
-    sim.replay.naissances.push({ tick: sim.temps, nom, pos: [o.x, o.y, o.z].map((v) => Math.round(v * 1000) / 1000), type: o.type, variante: c.variante, bebe: c.bebe, modele: o.modele ?? null, raison: o.raison ?? 'apparition', ...(o.ia?.apprivoise ? { apprivoise: true } : {}), ...(o.colle ? { colle: o.colle } : {}), ...(o.objet ? { objet: o.objet } : {}) });
+    sim.replay.naissances.push({ tick: sim.temps, nom, pos: [o.x, o.y, o.z].map((v) => Math.round(v * 1000) / 1000), type: o.type, variante: c.variante, bebe: c.bebe, modele: o.modele ?? null, raison: o.raison ?? 'apparition', ...(o.ia?.apprivoise ? { apprivoise: true } : {}), ...(o.colle ? { colle: o.colle } : {}), ...(o.objet ? { objet: o.objet } : {}), ...(o.armure ? { armure: o.armure } : {}), ...(o.monture ? { monture: o.monture } : {}) });
     (sim.stats.naissances ??= []).push(`${(sim.temps / 20).toFixed(2)} ${nom} (${o.type}${c.variante ? ' ' + c.variante : ''}${c.bebe ? ', bebe' : ''}, ${o.raison ?? 'apparition'}${o.modele ? ' de ' + o.modele : ''})`);
     sim.dire(`${nom} apparait (${o.raison ?? 'apparition'})`);
     sim.api.evenement('creature.nait', { creature: nom, type: o.type, raison: o.raison ?? 'apparition', parent: o.modele ?? null, pos: [o.x, o.y, o.z] });
@@ -901,4 +1193,7 @@ export class Acteurs {
   }
 }
 installerUtilisation(Acteur, EchecActe);
+installerEffets(Acteur);                  // tous les effets de potion, faim et epuisement (moteur/effets.js, partie 26)
+installerInventaire(Acteur, EchecActe);   // sac fini, usure, combat avec l'equipement enchante (moteur/inventaire.js, partie 26)
+installerObjets(Acteur, EchecActe);       // fabrique, enchante, forge, alambic, peche, trident (moteur/objets-actes.js, partie 26)
 void VEC; void FR; void FACE_3D; void blocsOuvrables; void ticksPourCasser; void etapeFissure; void dirDeLacet;

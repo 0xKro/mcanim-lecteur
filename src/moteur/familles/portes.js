@@ -103,9 +103,10 @@ export function installer(mc, regles) {
   // ---------------------------------------------------------------- portillons (FenceGateBlock)
   mc.bloc('FenceGateBlock').sur('utilise', (ev, monde) => {
     const [x, y, z] = ev.pos, b = monde.bloc(x, y, z);
-    if (!monde.regle('portes.mainLibre', true)) return 'passe';
+    if (!monde.regle('portes.mainLibre', true) && !ev.vent) return 'passe';
     let suivant;
     if (b.etat.open === 'true') suivant = avec(b, { open: 'false' });
+    else if (ev.vent) suivant = avec(b, { open: 'true' });   // rafale d'une charge de vent (FenceGateBlock.onExplosionHit) : il s'ouvre sans se retourner
     else {
       // si le joueur est de l'autre cote, le portillon se retourne vers lui (il s'ouvre en s'eloignant de lui)
       const dir = dirDeLacetLocal(ev.lacet);

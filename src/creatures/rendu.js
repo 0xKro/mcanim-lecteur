@@ -8,12 +8,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { decoderPNG } from '../rendu/png.js';
-import { ombre } from '../perso/modele.js';
+import { ombre, surcoucheRouge, surcoucheBlanche } from '../perso/modele.js';
+import { couleurArmure } from '../objets/armure.js';
+import { etatObjet } from '../objets/etat-objet.js';
 import { ESPECES, VEHICULES, TEINTURES, TYPES_VILLAGEOIS, METIERS, NIVEAUX, couleurTeinture, couleurLaine, lireVariante, rgb } from './especes.js';
 import { Poses } from './poses.js';
 import { poser, animerNommee } from './anim.js';
 import { maillageCorde, maillageNoeud } from './laisse.js';
 import { objetPourNotes } from '../objets/habillage.js';
+import { estElytresArmure, geometrieAiles, matricesAiles } from '../objets/armure.js';   // elytres (WingsLayer)
+import { AILES_REPOS } from '../film/acteurs-vivants.js';
 import { matriceAffichage } from '../objets/placement.js';
 import { cuire as cuireBloc, afficheDe } from '../objets/modele-objet.js';
 import { texture as textureObjet, teinter } from '../objets/fichiers.js';
@@ -175,8 +179,10 @@ export function couchesDe(o, modeles, kitDir) {
       if (type === 'horse' && ch[1] !== 'sans') ajoute(modele, 'main', b(`horse/horse_${ch[1].replace('markings_', 'markings_')}`));
       if (o.selle && adulte) ajoute(type, 'saddle', `equipment/${type === 'horse' ? 'horse' : type}_saddle/saddle`);
       if (o.armureCheval && type !== 'camel') {
-        const mat = MATERIAU_ARMURE[o.armureCheval] ?? o.armureCheval;
-        ajoute(['zombie_horse', 'skeleton_horse'].includes(type) ? 'undead_horse_armor' : 'horse_armor', 'main', `equipment/horse_body/${mat}`, mat === 'leather' ? rgb(0xA06540) : blanc);
+        const mat0 = String(o.armureCheval).replace(/#.*$/, ''), mat = MATERIAU_ARMURE[mat0] ?? mat0, mod = ['zombie_horse', 'skeleton_horse'].includes(type) ? 'undead_horse_armor' : 'horse_armor';
+        // equipment/leather.json, couche horse_body : le cuir teint (couleur de la scene ou sans teinture 0xA06540) puis son calque non teinte
+        ajoute(mod, 'main', `equipment/horse_body/${mat}`, mat === 'leather' ? rgb(couleurArmure(o.armureCheval) ?? 0xA06540) : blanc);
+        if (mat === 'leather') ajoute(mod, 'main', 'equipment/horse_body/leather_overlay', blanc);
       }
       break;
     }
@@ -217,10 +223,11 @@ export function couchesDe(o, modeles, kitDir) {
     const id = o.armure?.[emp];
     if (!id) continue;
     if (!modeles[base]?.[couche]) { notes.push(`${type} ne porte pas d'armure (${emp}) dans le jeu : ignoree`); continue; }
-    const mat0 = String(id).replace(/^minecraft:/, '').replace(/_(helmet|chestplate|leggings|boots)$/, '');
+    if (estElytresArmure(String(id).replace(/\[.*$/, ''))) continue;   // elytres : ailes (WingsLayer, Creature.ailes), pas une couche d'armure
+    const mat0 = String(id).replace(/^minecraft:/, '').replace(/#.*$/, '').replace(/\[.*$/, '').replace(/_(helmet|chestplate|leggings|boots)$/, '');
     const mat = MATERIAU_ARMURE[mat0] ?? mat0;
     const dossier = bebe ? 'humanoid_baby' : couche === 'leggings' ? 'humanoid_leggings' : 'humanoid';
-    ajoute(base, couche, `equipment/${dossier}/${mat}`, mat === 'leather' ? rgb(0xA06540) : blanc, { armure: true });
+    ajoute(base, couche, `equipment/${dossier}/${mat}`, mat === 'leather' ? rgb(couleurArmure(id) ?? 0xA06540) : blanc, { armure: true });
     if (mat === 'leather') ajoute(base, couche, `equipment/${dossier}/leather_overlay`, blanc, { armure: true });
   }
   return { couches, notes, echelleBebe };
@@ -256,6 +263,7 @@ export class Creature {
     }
     if (!this.couches.length) throw new Error(`creature ${o.type} : rien a dessiner (${notes.join(' ; ')})`);
     this.nbQuads = this.couches.reduce((s, c) => s + c.noeuds.reduce((a, n) => a + (n.q ? n.q.length / 20 : 0), 0), 0);
+    if (o.perso?.texture) this.couches[0].t = o.perso.texture;   // entite de mod (mc.definirEntite, texture de la scene) : la couche du corps
     this.texture = this.couches[0].t;
     // texture d'etat choisie image par image par l'IA (GhastRenderer : shooting ; VexRenderer : charging ; BeeRenderer : angry)
     const ALT = { ghast: 'ghast/ghast_shooting', vex: 'illager/vex_charging', bee: o.bebe ? null : `bee/bee_angry${lireVariante(o.type, o.variante).choix?.[1] === 'nectar' ? '_nectar' : ''}` };
@@ -304,6 +312,8 @@ export class Creature {
     if (this.vehicule) {
       let B = mul(T(pose.x, y + 0.375, pose.z), RY((180 - lacet) * RAD));
       if (pose.bascule) B = mul(B, RX(-pose.bascule * RAD));
+      const vj = pose.vehiculeJeu;
+      if (vj) B = mul(B, this.rotationJeu(vj));
       return mul(mul(B, S(-1, -1, 1)), RY(Math.PI / 2));
     }
     const tremble = et.tremble ? Math.cos(Math.floor(pose.age ?? 0) * 3.25) * Math.PI * 0.4 : 0;   // LivingEntityRenderer.setupRotations : isShaking (conversion)
@@ -323,6 +333,8 @@ export class Creature {
       if (q.hors) B = mul(mul(B, T(q.decal[0], q.decal[1], q.decal[2])), RZ(Math.PI / 2));
     }
     if (et.echelle && et.echelle !== 1) B = mul(B, S(et.echelle, et.echelle, et.echelle));
+    const ep = this.o?.perso?.echelle ?? 1;   // entite de mod : attribut scale (le jeu agrandit le rendu et la boite autour des pieds)
+    if (ep !== 1) B = mul(B, S(ep, ep, ep));
     if (pose.roulis) B = mul(B, RZ(pose.roulis * RAD * (et.retourne ? 2 : 1)));   // mort : le corps tombe sur le cote (180 pour les araignees)
     if (pose.bascule) B = mul(B, RX(-pose.bascule * RAD));
     if (et.inclinaison) B = mul(B, RZ(et.inclinaison * RAD));                 // IronGolemRenderer.setupRotations
@@ -332,10 +344,32 @@ export class Creature {
     return mul(B, T(0, -1.501, 0));
   }
 
+  // Vehicule simule (moteur/vehicules.js) : les rotations du jeu apres le lacet, dans le repere du jeu (axe du wagonnet = x) :
+  // AbstractMinecartRenderer : Rz(-tangage) puis Rx(sin(h) x h x degats / 10 x sens) ; AbstractBoatRenderer : Rx(meme secousse) puis la colonne de
+  // bulles autour de (1, 0, 1). Ici le modele est tourne de 90 degres de plus (lacet du film = lacet du jeu - 90 pour le wagonnet) : R = Ry(-90) . Rjeu . Ry(90).
+  rotationJeu(vj) {
+    let R = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    if (this.type.includes('minecart')) {
+      if (vj.tangage) R = mul(R, RZ(-vj.tangage * RAD));
+      if (vj.secousse) R = mul(R, RX(vj.secousse * RAD));
+      return mul(mul(RY(-Math.PI / 2), R), RY(Math.PI / 2));
+    }
+    if (vj.secousse) R = mul(R, RX(vj.secousse * RAD));
+    if (vj.bulle) { const a = vj.bulle * RAD, k = Math.SQRT1_2, c = Math.cos(a), s = Math.sin(a), t = 1 - c;   // rotation d'axe (1, 0, 1) normalise
+      R = mul(R, [t * k * k + c, -s * k, t * k * k, 0, s * k, c, -s * k, 0, t * k * k, s * k, t * k * k + c, 0, 0, 0, 0, 1]); }
+    return R;
+  }
+
+  // Hauteur (monde) du point le plus bas du corps dessine (couche du corps seulement, comme la pose debout : les couches gonflees de
+  // laine ou d'armure passent sous le sol dans le jeu aussi). Memes matrices que `maillage` : sert au pantin des explosions (film/ragdoll.js).
+  basMaillage(pose) { return basDesCouches(this, this.couches.slice(0, 1), pose); }
+
   // pose -> [maillages] (un par couche). lumiere 0..1 ; brut : couleurs a 1 et normales (vrai pack de shaders).
   maillage(pose, lumiere = 1, brut = false) {
     if (pose.absent) return [];
-    const B = this.base(pose), et = pose.creature ?? null;
+    const B = this.base(pose);
+    let et = pose.creature ?? null;
+    if (pose.volCreature && et?.s) et = { ...et, s: { ...et.s, vol: pose.volCreature } };   // vol plane aux elytres (HumanoidModel)
     const age = (pose.age ?? 0);
     const teinteCorps = pose.teinte ?? null;          // rougeur des degats
     const blanc = et?.blanc ?? 0;                     // eclair blanc du creeper qui gonfle
@@ -381,7 +415,7 @@ export class Creature {
             let r = o * teinte[0], g = o * teinte[1], bl = o * teinte[2];
             if (!emissif) {
               if (teinteCorps) { r *= teinteCorps[0]; g *= teinteCorps[1]; bl *= teinteCorps[2]; }
-              if (blanc) { const f = 1 + 1.6 * blanc; r *= f; g *= f; bl *= f; }
+              // rouge des degats et eclair blanc du creeper : surcouche du jeu ajoutee plus bas (OverlayTexture, perso/modele.js)
             }
             couleurs[v * 3] = r; couleurs[v * 3 + 1] = g; couleurs[v * 3 + 2] = bl;
           }
@@ -397,6 +431,9 @@ export class Creature {
       if (et?.dissolution && c.corps) texture = this.dissoudre(texture, et.dissolution);   // dragon qui meurt : seuls restent les pixels ou dragon_exploding est assez opaque
       const m = { positions, uvs, couleurs, indices, texture, mode: emissif ? 'melange' : c.mode, deuxFaces: c.mode !== 'melange' || emissif, genre: 'creature', entite: this.entite };
       if (emissif) { m.additif = true; m.emissif = true; if (c.yeux) m.yeux = true; if (!c.yeux && !c.defile && !c.pulse) m.lueur = true; }   // lueur : RenderType.entityTranslucentEmissive (warden, breeze, creaking, golem de cuivre) : un vrai pack la melange (pas d'ajout), pleine lumiere   // yeux (RenderType.eyes) : programme gbuffers_spidereyes d'un vrai pack
+      // surcouche du jeu (LivingEntityRenderer.getOverlayCoords) : rouge (degats, mort) sur le corps et les couches, sauf l'armure (NO_OVERLAY) ;
+      // eclair blanc du creeper sur le corps seulement (les couches prennent le rouge seul) ; rien sur les couches emissives
+      if (!brut && !emissif) { if (pose.rouge && !c.armure) surcoucheRouge(m, lumiere); else if (!pose.rouge && blanc > 0 && c.corps) surcoucheBlanche(m, blanc, lumiere); }
       if (brut && blanc > 0 && !emissif) m.blanc = blanc;   // eclair blanc du creeper : entityColor blanc d'un vrai pack (le rendu de base l'a deja dans les couleurs)
       if (normales) m.normales = normales;
       if (pose.horsImage) m.exempt = true;
@@ -408,7 +445,10 @@ export class Creature {
       if (!id || !this.kitDir) continue;
       const Mb = this.matrice(pose, bras, cachePoses.get(this.couches[0].racine));
       if (!Mb) continue;
-      const o = objetPourNotes(this.kitDir, id, gauche);
+      // objet tel que tenu : arc tendu du squelette, arbalete du pillard en charge (tension du replay : film/creatures.js), boussole, horloge
+      const ia = et?.m?._ia, tension = ia && (ia.dr & 4) ? ia.tension : 0;
+      const ut = tension > 0 && !gauche ? { type: /crossbow/.test(id) ? 4 : 3, ticks: tension } : null;
+      const o = objetPourNotes(this.kitDir, id, gauche, etatObjet({ ...pose, usageObjet: ut }, gauche));
       for (const c of o.couches) {
         let M = mul(Mb, mul(RX(-Math.PI / 2), RY(Math.PI)));
         M = mul(M, T((gauche ? -1 : 1) / 16, 2 / 16, -10 / 16));
@@ -418,6 +458,8 @@ export class Creature {
       }
     }
     if (this.kitDir) sorties.push(...this.blocs(pose, lumiere, brut, cachePoses.get(this.couches[0].racine)));
+    const ail = this.ailes(pose, B, lumiere, brut);   // WingsLayer : elytres au plastron d'un humanoide ou d'un support d'armure
+    if (ail) sorties.push(ail);
     // laisse (film/creatures.js : pose.laisse = { de, vers, noeud }) : corde du jeu jusqu'a la main ou au noeud de barriere
     if (pose.laisse) {
       const avecN = (m) => { if (m && brut) { m.normales = new Float32Array(m.positions.length); for (let i = 1; i < m.normales.length; i += 3) m.normales[i] = 1; } return m; };
@@ -425,6 +467,33 @@ export class Creature {
       if (pose.laisse.noeud) { const k = avecN(maillageNoeud(this.kitDir, pose.laisse.noeud, pose.laisse.lumVers ?? lumiere)); if (k) sorties.push(k); }
     }
     return sorties;
+  }
+
+  // WingsLayer (HumanoidMobRenderer, ArmorStandRenderer) : les ailes du modele minecraft:elytra#main (bebe : elytra_baby, racine (0, 12,008, 0)
+  // et echelle 0,5) dans le repere du modele, decalees de 0,125 vers l'arriere ; angles d'ElytraAnimationState (pose.ailes, film/acteurs-vivants.js)
+  ailes(pose, B, lumiere, brut) {
+    if (!this.kitDir || !estElytresArmure(pose.armure?.torse ?? this.o.armure?.torse)) return null;
+    if (!['HumanoidZombie', 'Zombie', 'Drowned', 'ZombieVillager', 'ZombifiedPiglin', 'Skeleton', 'Piglin', 'Humanoid', 'Statue', 'Illager', 'Vex'].some((f) => (ESPECES[this.type]?.[2] ?? '').includes(f)) && this.type !== 'armor_stand') return null;
+    const t = (this.texAiles ??= textureEntite(this.kitDir, 'equipment/wings/elytra'));
+    if (!t) return null;
+    const g = geometrieAiles(), ang = pose.ailes ?? AILES_REPOS, acc = !!pose.creature?.m?.accroupi;
+    let R0 = B;
+    if (this.o.bebe) R0 = mul(mul(B, T(0, 12.008 / 16, 0)), S(0.5, 0.5, 0.5));
+    const mats = matricesAiles(ang, acc).map(({ R, t: tr }) => mul(R0, [R[0], R[1], R[2], tr[0], R[3], R[4], R[5], tr[1], R[6], R[7], R[8], tr[2], 0, 0, 0, 1]));
+    const n = g.local.length / 3, positions = new Float32Array(n * 3), couleurs = new Float32Array(n * 3), normales = brut ? new Float32Array(n * 3) : null;
+    for (let v = 0; v < n; v++) {
+      const M = mats[g.partie[v]], X = g.local[v * 3] / 16, Y = g.local[v * 3 + 1] / 16, Z = g.local[v * 3 + 2] / 16;
+      positions[v * 3] = M[0] * X + M[1] * Y + M[2] * Z + M[3]; positions[v * 3 + 1] = M[4] * X + M[5] * Y + M[6] * Z + M[7]; positions[v * 3 + 2] = M[8] * X + M[9] * Y + M[10] * Z + M[11];
+      const nx = g.normales[v * 3], ny = g.normales[v * 3 + 1], nz = g.normales[v * 3 + 2];
+      let mx = M[0] * nx + M[1] * ny + M[2] * nz, my = M[4] * nx + M[5] * ny + M[6] * nz, mz = M[8] * nx + M[9] * ny + M[10] * nz;
+      const l = Math.hypot(mx, my, mz) || 1; mx /= l; my /= l; mz /= l;
+      const o = brut ? 1 : ombre(mx, my, mz) * lumiere;
+      couleurs[v * 3] = o; couleurs[v * 3 + 1] = o; couleurs[v * 3 + 2] = o;
+      if (normales) { normales[v * 3] = mx; normales[v * 3 + 1] = my; normales[v * 3 + 2] = mz; }
+    }
+    const m = { positions, uvs: g.uvs, couleurs, indices: g.indices, texture: t, mode: 'decoupe', deuxFaces: true, genre: 'creature', entite: this.entite };
+    if (normales) m.normales = normales;
+    return m;
   }
 
   // Bloc d'un wagonnet (AbstractMinecartRenderer : echelle 0,75, decalage d'affichage), bloc porte par l'enderman (CarriedBlockLayer),
@@ -437,9 +506,21 @@ export class Creature {
       const y = pose.y + (pose.dy ?? 0) + (pose.hauteur ?? 0);
       let B = mul(T(pose.x, y + 0.375, pose.z), RY((180 - (pose.lacet ?? 0)) * RAD));
       if (pose.bascule) B = mul(B, RX(-pose.bascule * RAD));
+      const vj = pose.vehiculeJeu;
+      if (vj) B = mul(B, this.rotationJeu(vj));
       const dec = DECALAGE_WAGONNET[id] ?? 6;
-      const M = mul(mul(mul(B, S(0.75, 0.75, 0.75)), T(-0.5, (dec - 8) / 16, 0.5)), RY(Math.PI / 2));
-      for (const mo of morceauxBloc(this.kitDir, id)) out.push(maillageObjet(mo, M, lumiere, brut, pose, this.entite));
+      let M = mul(mul(mul(B, S(0.75, 0.75, 0.75)), T(-0.5, (dec - 8) / 16, 0.5)), RY(Math.PI / 2));
+      // TntMinecartRenderer : le bloc gonfle les 10 derniers ticks (1 + g^4 x 0,3) et clignote en blanc quand meche / 5 est pair
+      let blanc = false;
+      if (vj && this.type === 'tnt_minecart' && vj.meche > -1) {
+        if (vj.meche < 10) { const g = Math.max(0, Math.min(1, 1 - vj.meche / 10)), k = 1 + g * g * g * g * 0.3; M = mul(mul(mul(M, T(0.5, 0.5, 0.5)), S(k, k, k)), T(-0.5, -0.5, -0.5)); }
+        blanc = Math.floor(Math.floor(vj.meche) / 5) % 2 === 0;
+      }
+      for (const mo of morceauxBloc(this.kitDir, id)) {
+        const m = maillageObjet(mo, M, lumiere, brut, pose, this.entite);
+        if (blanc) { m.texture = texBlanche(m.texture); m.couleurs = m.couleurs.map(() => 1); }
+        out.push(m);
+      }
       return out;
     }
     const porte = et.porte !== undefined ? et.porte : this.o.porte;   // bloc pris en cours de route (ia-vie.js) ou champ porte
@@ -477,6 +558,9 @@ export class Creature {
     return null;
   }
 }
+// texture toute blanche (alpha garde) : le clignotement du TNT (OverlayTexture blanc)
+const blanches = new WeakMap();
+function texBlanche(t) { if (!blanches.has(t)) blanches.set(t, { largeur: t.largeur, hauteur: t.hauteur, rgba: t.rgba.map((v, i) => (i % 4 === 3 ? v : 255)) }); return blanches.get(t); }
 // morceau d'objet tenu (local en px, normales, uvs, indices ; texture t) sous la matrice M (monde)
 function maillageObjet(mo, M, lumiere, brut, pose, entite) {
   const n = mo.local.length / 3, positions = new Float32Array(n * 3), couleurs = new Float32Array(n * 3), normales = brut ? new Float32Array(n * 3) : null;
@@ -553,4 +637,48 @@ function afficheSol(kitDir, id) {
   const d = resoudreObjet(kitDir, id, {});
   const e = d.entrees?.[0];
   return e?.model ? afficheDe(kitDir, e.model, false, 'ground') : null;
+}
+
+// ---------------------------------------------------------------- point le plus bas du corps (pantin des explosions, film/ragdoll.js)
+// ctx : une Creature (ou l'objet leger de basCreature) ; couches : [{ racine, noeuds }]. Memes matrices que Creature.maillage (base, animation
+// du type, pistes `parties`, parties cachees) ; rend la hauteur monde du sommet le plus bas (Infinity si rien n'est dessine).
+function basDesCouches(ctx, couches, pose) {
+  const B = Creature.prototype.base.call(ctx, pose), et = pose.creature ?? null;
+  let bas = Infinity;
+  for (const c of couches) {
+    let P;
+    try { P = Creature.prototype.poses.call(ctx, c, et); } catch {   // sans table d'animations (essais) : pose de repos et pistes `parties`
+      P = new Poses(c.racine);
+      for (const [nom, r] of Object.entries(et?.parties ?? {})) if (P.has(nom)) { const q = P.get(nom); q[3] += r[0] * RAD; q[4] += r[1] * RAD; q[5] += r[2] * RAD; }
+    }
+    const mats = new Array(c.noeuds.length), cachee = new Array(c.noeuds.length);
+    for (let i = 0; i < c.noeuds.length; i++) {
+      const n = c.noeuds[i], p = (n.nom && P.pose(n.nom)) || n.base;
+      cachee[i] = (n.parent >= 0 && cachee[n.parent]) || P.cache(n.nom) || (p[6] === 0 && p[7] === 0 && p[8] === 0);
+      mats[i] = matricePartie(n.parent >= 0 ? mats[n.parent] : B, p);
+      if (!n.q || cachee[i] || P.saute?.(n.nom)) continue;
+      const M = mats[i];
+      for (let k = 0; k < n.q.length; k += 5) {
+        const X = n.q[k] / 16, Y = n.q[k + 1] / 16, Z = n.q[k + 2] / 16, y = M[4] * X + M[5] * Y + M[6] * Z + M[7];
+        if (y < bas) bas = y;
+      }
+    }
+  }
+  return bas;
+}
+// La meme chose sans textures (film sans personnages prepares : essais, apercu) : couche du corps de couchesDe, modeles de `donnees`.
+const cacheGeo = new Map();
+export function basCreature(o, donnees, pose) {
+  const cle = `${o.type}|${o.variante ?? ''}|${o.bebe ? 1 : 0}`;
+  let ctx = cacheGeo.get(cle);
+  if (ctx === undefined) {
+    ctx = null;
+    try {
+      const { couches, echelleBebe } = couchesDe(o, donnees.modeles, null);
+      const m = donnees.modeles[couches[0].modele]?.[couches[0].couche];
+      if (m) ctx = { type: o.type, vehicule: VEHICULES.has(o.type), donnees, echelleBebe, couches: [{ racine: m.r, noeuds: aplatir(m.r) }] };
+    } catch { ctx = null; }
+    cacheGeo.set(cle, ctx);
+  }
+  return ctx ? basDesCouches(ctx, ctx.couches, pose) : null;
 }

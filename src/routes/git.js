@@ -125,7 +125,7 @@ export async function run(ctx) {
   const nots = {};
   await versionGit({});
   const assets = [...groups].filter((g) => GROUPES_ASSETS.includes(g));
-  const donnees = [...groups].filter((g) => g === 'biomes' || g === 'worldgen');
+  const donnees = [...groups].filter((g) => g === 'biomes' || g === 'worldgen' || g === 'recettes');
   const tagAssets = `${version}-assets-tiny`;
   const tagDonnees = `${version}-${ctx.opts.dataTag || 'data-json'}`;
   const tags = [];

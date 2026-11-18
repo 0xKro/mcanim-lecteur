@@ -6,6 +6,7 @@
 //     une valeur inconnue (`block_state`, `local_time`, `trim_material`, `custom_model_data`...) donne `fallback`.
 // Ignores (dits dans `exotiques`) : `bundle/selected_item` et tout type inconnu.
 import { lireJson } from './fichiers.js';
+import { couleurPotion, effetsPotion } from '../moteur/potions.js';   // couleur d'une potion (partie 26)
 
 const net = (s) => String(s).replace(/^minecraft:/, '');
 
@@ -25,7 +26,13 @@ export function normaliserId(id) {
 }
 
 // Retourne { id, existe, entrees: [{ model, tints } | { special, base }], exotiques: [] }.
-export function resoudreObjet(kit, id, { gauche = false } = {}) {
+// etat (facultatif) : l'objet tel que tenu a cet instant (objets/etat-objet.js) : { utilise, ticks (temps d'utilisation), charge ('none' | 'arrow' |
+// 'rocket' : arbalete chargee), boussole (angle 0..1 vers la cible), temps (heure du jour 0..1 de l'horloge) } : arc tendu, arbalete, boussole, horloge.
+export function resoudreObjet(kit, id, { gauche = false, etat = null } = {}) {
+  // potion, fleche a effet : `potion[potion=swiftness]` (objets/reflet.js idRendu) : teinte `minecraft:potion` = couleur des effets (PotionContents.getColor)
+  const pot = /\[potion=([a-z0-9_]+)\]$/.exec(String(id ?? ''))?.[1] ?? null;
+  const garniture = /\[garniture=([a-z0-9_]+)\]$/.exec(String(id ?? ''))?.[1] ?? null;   // galon : select `trim_material` (minecraft:gold...)
+  if (pot || garniture) id = String(id).replace(/\[.*$/, '');
   const n = normaliserId(id);
   const sortie = { id: n, existe: false, entrees: [], exotiques: [] };
   if (!n) return sortie;
@@ -37,9 +44,10 @@ export function resoudreObjet(kit, id, { gauche = false } = {}) {
     switch (net(prop)) {
       case 'display_context': return contexte;
       case 'main_hand': return 'right';
-      case 'charge_type': return 'none';
+      case 'charge_type': return etat?.charge ?? 'none';
       case 'context_entity_type': return 'player';
       case 'context_dimension': return 'overworld';
+      case 'trim_material': return garniture ?? undefined;
       default: return undefined;
     }
   };
@@ -47,13 +55,16 @@ export function resoudreObjet(kit, id, { gauche = false } = {}) {
     if (!nd || typeof nd !== 'object' || profondeur > 12) return;
     const type = net(nd.type ?? '');
     switch (type) {
-      case 'model': sortie.entrees.push({ model: net(nd.model), tints: (nd.tints ?? []).map(couleurTeinte) }); return;
+      case 'model': sortie.entrees.push({ model: net(nd.model), tints: (nd.tints ?? []).map((t) => (pot && t && net(t.type ?? '') === 'potion' ? (0xFF000000 | couleurPotion(effetsPotion(pot))) | 0 : couleurTeinte(t))) }); return;
       case 'empty': return;
       case 'composite': for (const m of nd.models ?? []) aller(m, profondeur + 1); return;
       case 'special': sortie.entrees.push({ special: net(nd.model?.type ?? ''), base: net(nd.base ?? '') }); return;
-      case 'condition': aller(nd.on_false, profondeur + 1); return;
+      case 'condition': aller(net(nd.property ?? '') === 'using_item' && etat?.utilise ? nd.on_true : nd.on_false, profondeur + 1); return;
       case 'range_dispatch': {
-        const v = net(nd.property ?? '') === 'count' ? 1 : 0;
+        // RangeSelectItemModel : valeur de la propriete x scale, la plus grande entree dont le seuil <= valeur (sinon fallback)
+        const p = net(nd.property ?? ''), k = nd.scale ?? 1;
+        const brute = p === 'count' ? 1 : p === 'use_duration' ? (etat?.ticks ?? 0) : p === 'crossbow/pull' ? (etat?.ticks ?? 0) / 25 : p === 'compass' ? (etat?.boussole ?? 0) : p === 'time' ? (etat?.temps ?? 0) : 0;
+        const v = p === 'count' ? 1 : brute * k;
         let choix = null;
         for (const e of [...(nd.entries ?? [])].sort((a, b) => a.threshold - b.threshold)) if (e.threshold <= v) choix = e.model;
         aller(choix ?? nd.fallback, profondeur + 1);

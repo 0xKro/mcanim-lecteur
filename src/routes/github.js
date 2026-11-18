@@ -24,7 +24,7 @@ export async function run(ctx) {
   const tasks = [];
   const assetGroups = new Set([...groups].filter((g) => ['blockstates', 'models', 'textures', 'colormap', 'skins', 'environnement', 'objets', 'armures', 'interface', 'projectiles', 'entites'].includes(g)));
   if (assetGroups.size) tasks.push(fromTarball(ctx, `${version}-assets-tiny`, assetGroups).then((n) => { notes.tarballAssetsTiny = n; }));
-  const dataGroups = new Set([...groups].filter((x) => x === 'worldgen' || x === 'biomes'));
+  const dataGroups = new Set([...groups].filter((x) => x === 'worldgen' || x === 'biomes' || x === 'recettes'));
   if (dataGroups.size) tasks.push(fromTarball(ctx, `${version}-${ctx.opts.dataTag || "data-json"}`, dataGroups).then((n) => { notes.tarballDataJson = n; }));
   for (const [g, evs, tol] of [['sons', ctx.opts.soundEvents || SOUND_EVENTS, false], ['sons_creatures', ctx.opts.evenementsCreatures || SOUND_EVENTS_CREATURES, true]]) {
     if (!groups.has(g)) continue;

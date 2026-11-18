@@ -13,8 +13,18 @@
 // prevue en P1 ; ici on avertit.
 import vm from 'node:vm';
 import { ErreurMonde } from './erreurs.js';
+import { verifierDefBloc, verifierDefEntite, MAX_BLOCS_PERSO, MAX_ENTITES_PERSO } from './perso.js';
 
-const API_PONT = ['bloc', 'poser', 'casser', 'planifier', 'voisins', 'survit', 'survitEtat', 'remplacable', 'appui', 'lumiere', 'evenement', 'son', 'particule', 'entites', 'champs', 'utiliser', 'alimenter', 'allumer', 'chuter', 'exploser', 'feu', 'blocEntite', 'regle', 'tick', 'dire'];
+// Premiere lecture des mods d'une scene : les blocs et entites qu'ils definissent (mc.definirBloc / mc.definirEntite), avant de construire
+// la simulation (les tables du jeu de la scene en dependent). `types` : types de creatures connus (ou null). Rend { blocs, entites }.
+export function collecterDefinitions(mods, donnees, types = null, options = {}) {
+  if (!mods.length || !mods.some((m) => /definir(Bloc|Entite)/.test(m.source))) return { blocs: [], entites: [] };
+  const h = new HoteMods(null, { ...options, collecte: { donnees, types } });
+  for (const m of mods) h.charger(m.nom, m.source);
+  return h.defs;
+}
+
+const API_PONT = ['bloc', 'poser', 'casser', 'planifier', 'voisins', 'survit', 'survitEtat', 'remplacable', 'appui', 'lumiere', 'evenement', 'son', 'particule', 'entites', 'champs', 'utiliser', 'alimenter', 'allumer', 'chuter', 'exploser', 'feu', 'blocEntite', 'regle', 'tick', 'dire', 'projectile', 'fusee', 'orienterProjectile'];
 
 const AMORCE = `(function (pont) {
   'use strict';
@@ -40,6 +50,9 @@ const AMORCE = `(function (pont) {
     bloc: (sel) => cible('bloc', sel), entite: (sel) => cible('entite', sel), monde: cible('monde', null),
     regle: (nom, repli) => appeler('regle', nom, repli),
     definirRegle: (nom, d) => appeler('definirRegle', nom, d),
+    // blocs et entites du mod (moteur/perso.js) : les donnees passent en JSON, les gestionnaires de "sur" s'enregistrent sur le nouvel identifiant
+    definirBloc: (id, def) => { const d = Object.assign({}, def); const sur = d.sur; delete d.sur; appeler('definirBloc', id, d); if (sur) for (const evt of Object.keys(sur)) cible('bloc', id).sur(evt, sur[evt]); },
+    definirEntite: (id, def) => { const d = Object.assign({}, def); const sur = d.sur; delete d.sur; appeler('definirEntite', id, d); if (sur) for (const evt of Object.keys(sur)) cible('entite', id).sur(evt, sur[evt]); },
   });
   globalThis.__mc = mc;
   // appel d'un gestionnaire : { i, mode, niveau, ev } -> texte JSON { ev, ret }
@@ -75,8 +88,10 @@ export class HoteMods {
   // sim : Simulation ; options : { budgetAppelMs, budgetTotalMs }
   // Le plafond d'un appel est LARGE (1 s de mur : un appel normal prend quelques microsecondes) : un depassement est une ERREUR de scene, jamais un
   // comportement, et le temps mur n'est pas deterministe (machine chargee). Le garde-fou deterministe est le nombre d'appels.
-  constructor(sim, { budgetAppelMs = 1000, budgetTotalMs = 10000, maxAppels = 2000000 } = {}) {
+  // collecte : { donnees, types } pour la PREMIERE lecture (collecterDefinitions) : seuls definirBloc / definirEntite comptent, le reste ne fait rien
+  constructor(sim, { budgetAppelMs = 1000, budgetTotalMs = 10000, maxAppels = 2000000, collecte = null } = {}) {
     this.maxAppels = maxAppels;
+    this.collecte = collecte; this.defs = { blocs: [], entites: [] };
     this.sim = sim; this.budgetAppelMs = budgetAppelMs; this.budgetTotalMs = budgetTotalMs;
     this.ms = 0; this.appels = 0; this.fichiers = [];
     this.ctx = vm.createContext(Object.create(null), { codeGeneration: { strings: false, wasm: false } });
@@ -94,6 +109,12 @@ export class HoteMods {
   _pontHote(op, json) {
     try {
       const a = JSON.parse(json), sim = this.sim;
+      if (this.collecte) return JSON.stringify({ v: this._collecter(op, a) });
+      if (op === 'definirBloc' || op === 'definirEntite') {   // deja lus par la premiere lecture (collecterDefinitions) : on verifie seulement
+        const liste = op === 'definirBloc' ? sim.d.perso?.blocs : sim.persoEntites;
+        if (!liste?.some((d) => d.id === a[0])) throw new ErreurMonde(`mc.${op}('${a[0]}') : a appeler au chargement du mod (pas dans un gestionnaire)`);
+        return JSON.stringify({ v: null });
+      }
       if (op === 'enregistrer') {
         const [genre, sel, evt, mode, idx] = a;
         const f = this.fichierCourant;
@@ -124,6 +145,22 @@ export class HoteMods {
     } catch (e) { return JSON.stringify({ __erreur: String(e && e.message ? e.message : e) }); }
   }
 
+  _collecter(op, a) {
+    const { donnees, types } = this.collecte, D = this.defs;
+    if (op === 'definirBloc' || op === 'definirEntite') {
+      if (this.fichierCourant === null) throw new ErreurMonde(`mc.${op}('${a[0]}') : a appeler au chargement du mod (pas dans un gestionnaire)`);
+      const bloc = op === 'definirBloc', liste = bloc ? D.blocs : D.entites;
+      if (D.blocs.some((d) => d.id === a[0]) || D.entites.some((d) => d.id === a[0])) throw new ErreurMonde(`mc.${op}('${a[0]}') : identifiant deja defini`);
+      if (liste.length >= (bloc ? MAX_BLOCS_PERSO : MAX_ENTITES_PERSO)) throw new ErreurMonde(`mc.${op} : ${bloc ? MAX_BLOCS_PERSO : MAX_ENTITES_PERSO} au plus par scene`);
+      liste.push(bloc ? verifierDefBloc(a[0], a[1], donnees) : verifierDefEntite(a[0], a[1], types));
+      return null;
+    }
+    if (op === 'regle') return a[1] === undefined ? null : a[1];
+    if (op === 'hasard.entier' || op === 'hasard.reel' || op === 'hasard.flottant') return 0;
+    if (op === 'hasard.booleen') return false;
+    return null;   // enregistrer, definirRegle, monde.* : rien a la premiere lecture
+  }
+
   // Appelle un gestionnaire du contexte ; `ev` (objet hote) est mis a jour avec les modifications du mod ; rend la valeur renvoyee
   _appelerGest(fichier, idx, mode, evt, ev, suivant, m) {
     if (this.appels >= this.maxAppels) throw new ErreurMonde(`${fichier} : plus de ${this.maxAppels} appels de gestionnaires dans la scene ; simplifie le mod`);
@@ -150,7 +187,7 @@ export class HoteMods {
   _erreur(fichier, evt, e) {
     if (e instanceof ErreurMonde) return e;
     const msg = String(e && e.message !== undefined ? e.message : e);
-    if (e && e.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') return new ErreurMonde(`${fichier} : en ${evt} : appel arrete apres ${this.budgetAppelMs} ms (boucle sans fin ?)`);
+    if (e && e.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') return new ErreurMonde(`${fichier} : ${evt ? 'en ' + evt + ' : ' : ''}appel arrete apres ${this.budgetAppelMs} ms (boucle sans fin ?)`);
     const pile = String((e && e.stack) || '');
     const m = new RegExp(fichier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ':(\\d+)').exec(pile);
     return new ErreurMonde(`${fichier}${m ? ':' + m[1] : ''} : ${evt ? 'en ' + evt + ' : ' : ''}${msg}`);
@@ -158,6 +195,15 @@ export class HoteMods {
 
   // Charge un mod : `source` = texte du fichier (corps de fonction recevant `mc`). Rend le nombre de gestionnaires enregistres.
   charger(fichier, source) {
+    if (this.collecte) {   // premiere lecture : execute le corps du mod, rien n'est enregistre
+      this.fichierCourant = fichier;
+      try {
+        let script;
+        try { script = new vm.Script('(function(mc){"use strict";' + normaliserMod(source) + '\n})(__mc)', { filename: fichier }); } catch (e) { const m = /:(\d+)/.exec(String(e.stack || '')); throw new ErreurMonde(`${fichier}${m ? ':' + m[1] : ''} : ${e.message}`); }
+        try { script.runInContext(this.ctx, { timeout: this.budgetAppelMs * 4 }); } catch (e) { throw this._erreur(fichier, null, e); }
+      } finally { this.fichierCourant = null; }
+      return 0;
+    }
     const avant = this.sim.reg.entrees.length;
     this.fichierCourant = fichier;
     try {

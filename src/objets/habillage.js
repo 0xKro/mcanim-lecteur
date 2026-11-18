@@ -5,10 +5,13 @@
 import * as M from '../perso/modele.js';
 import { definirParties } from '../perso/modele.js';
 import { texture, teinter, textureManquante } from './fichiers.js';
+import { cuireReflet } from './reflet.js';
 import { resoudreObjet } from './definition.js';
 import { cuire, cuireSpecial } from './modele-objet.js';
 import { repereMain, matriceObjet } from './placement.js';
-import { PIECES, EMPLACEMENTS, geometrie as geometrieArmure, nomMateriau, couchesTexture } from './armure.js';
+import { etatObjet } from './etat-objet.js';
+import { PIECES, EMPLACEMENTS, geometrie as geometrieArmure, nomMateriau, couleurArmure, couchesTexture, textureGalon, geometrieAiles, matricesAiles, estElytresArmure } from './armure.js';
+const AILES_REPOS = [Math.PI / 12, 0, -Math.PI / 12], AILES_ACCROUPI = [Math.PI * 2 / 9, 0.08726646, -Math.PI / 4];   // ElytraAnimationState (acteur sans simulation : pas de lissage par tick)
 
 // ---------------------------------------------------------------- atlas
 class Atlas {
@@ -46,6 +49,15 @@ class Atlas {
       this._masque = { largeur: l, hauteur: h, valeurs };
     }
   }
+  // reflet des objets enchantes (reflet.js) : la meme region, ses pixels recuits a chaque image
+  remplacer(e, t) {
+    if (e.t.largeur !== t.largeur || e.t.hauteur !== t.hauteur) return;
+    e.t = t;
+    const rgba = new Uint8Array(this._texture.rgba), l = this.l;   // une copie : le rendu reconnait une texture a son tampon (une nouvelle part aux travailleurs)
+    this._texture = { ...this._texture, rgba };
+    for (let y = 0; y < t.hauteur; y++) rgba.set(t.rgba.subarray(y * t.largeur * 4, (y + 1) * t.largeur * 4), ((e.oy + y) * l + e.ox) * 4);
+    this.version++;
+  }
   get texture() { return this._texture; }
   get masque() { return this._masque; }
 }
@@ -53,12 +65,13 @@ class Atlas {
 // ---------------------------------------------------------------- objets : geometrie en pixels de modele, mise en cache par (kit, id, main)
 const cacheObjets = new Map();
 // Retourne { couches: [{ quads par texture : [{ cle, t, local, normales, uvs, indices }], affiche }], notes: [] }
-function objetPret(kit, id, gauche) {
-  const cle = `${kit}|${id}|${gauche ? 'G' : 'D'}`;
+// etat : l'objet tel que tenu (arc tendu, arbalete, boussole, horloge : objets/etat-objet.js) ; le cache suit les modeles choisis
+export function objetPret(kit, id, gauche, etat = null) {
+  const def = resoudreObjet(kit, id, { gauche, etat });
+  const cle = `${kit}|${id}|${gauche ? 'G' : 'D'}|${def.entrees.map((e) => e.model ?? e.special).join(',')}`;
   if (cacheObjets.has(cle)) return cacheObjets.get(cle);
   const notes = [];
   const signaler = (t) => notes.push(t);
-  const def = resoudreObjet(kit, id, { gauche });
   const couches = [];
   if (!def.existe) notes.push(`objet inconnu : ${id}`);
   for (const e of def.entrees) {
@@ -130,8 +143,29 @@ export function habiller(perso, m, pose, mats, bitsFlexion, lumiere, brut) {
       const decale = e === 'torse' ? decalageArmure : 0;
       for (const c of couches) {
         const t = texture(kit, c.nom);
-        morceaux.push({ ...g, partie: decale ? g.partie.map((p) => p + decale) : g.partie, echelle: [64, 64], t: teinter(t, c.teinte), cle: `${kit}|${c.nom}|${c.teinte ?? ''}` });
+        const teinte = c.teinte !== null ? couleurArmure(armure[e]) ?? c.teinte : null;   // cuir teint de la scene (couleur ou teinture), sinon sa couleur sans teinture
+        const brille = !!pose.refletArmure?.[e], tt = teinter(t, teinte);   // armure enchantee : reflet d'armure cuit a cette image (reflet.js)
+        morceaux.push({ ...g, partie: decale ? g.partie.map((p) => p + decale) : g.partie, echelle: [64, 64], t: brille ? cuireReflet(kit, tt, (pose.age ?? 0) * 50, true) : tt, cle: `${kit}|${c.nom}|${teinte ?? ''}${brille ? '|reflet|' + e : ''}`, vivant: brille });
       }
+      // galon (composant trim) : une couche de plus, par-dessus, sur la meme geometrie (EquipmentLayerRenderer : apres les couches ; reflet aussi)
+      const gl = pose.galonArmure?.[e];
+      const tg = gl ? textureGalon(kit, mat, e, gl.motif, gl.garniture) : null;
+      if (tg) {
+        const brille = !!pose.refletArmure?.[e];
+        morceaux.push({ ...g, partie: decale ? g.partie.map((p) => p + decale) : g.partie, echelle: [64, 64], t: brille ? cuireReflet(kit, tg, (pose.age ?? 0) * 50, true) : tg, cle: `${kit}|galon|${e}|${mat}|${gl.motif}|${gl.garniture}${brille ? '|reflet' : ''}`, vivant: brille });
+      }
+    }
+  }
+
+  // ---- elytres au plastron (WingsLayer) : deux ailes dans le repere du modele, angles de pose.ailes (film/acteurs-vivants.js : ElytraAnimationState)
+  if (estElytresArmure(armure.torse)) {
+    const t = texture(kit, 'entity/equipment/wings/elytra');
+    if (t) {
+      const acc = (pose.accroupi ?? 0) > 0.5;
+      const ang = pose.ailes ?? AILES_REPOS.map((a, i) => a + (AILES_ACCROUPI[i] - a) * Math.min(1, Math.max(0, pose.accroupi ?? 0)));
+      const g = geometrieAiles(), i0 = matsExt.length;
+      for (const m of matricesAiles(ang, acc)) matsExt.push(m);
+      morceaux.push({ ...g, partie: Uint16Array.from(g.partie, (p) => p + i0), echelle: [64, 64], t, cle: `${kit}|entity/equipment/wings/elytra|` });
     }
   }
 
@@ -140,7 +174,7 @@ export function habiller(perso, m, pose, mats, bitsFlexion, lumiere, brut) {
     const id = pose[champ];
     if (!id) continue;
     const gauche = cote === 'G';
-    const o = objetPret(kit, id, gauche);
+    const o = objetPret(kit, id, gauche, etatObjet(pose, gauche));
     const j = gauche ? 1 : 0;
     const bras = definirParties(slim)[2 + j];
     const ym = bras.orig[1] + bras.taille[1] / 2, kz = bras.orig[2] + bras.taille[2] / 2;
@@ -148,13 +182,14 @@ export function habiller(perso, m, pose, mats, bitsFlexion, lumiere, brut) {
     for (const c of o.couches) {
       const idx = matsExt.length;
       matsExt.push(matriceObjet(main, c.affiche, gauche));
-      for (const mo of c.morceaux) morceaux.push({ ...mo, partie: new Uint16Array(mo.local.length / 3).fill(idx), echelle: null });
+      const brille = !!pose['reflet' + cote];   // objet enchante : reflet cuit a cette image (reflet.js)
+      for (const mo of c.morceaux) morceaux.push({ ...mo, ...(brille ? { cle: mo.cle + '|reflet|' + cote, t: cuireReflet(kit, mo.t, (pose.age ?? 0) * 50), vivant: true } : {}), partie: new Uint16Array(mo.local.length / 3).fill(idx), echelle: null });
     }
   }
   if (!morceaux.length) return m;
 
   // ---- atlas et UV
-  for (const p of morceaux) p.region = atlas.region(p.cle, p.t);
+  for (const p of morceaux) { p.region = atlas.region(p.cle, p.t); if (p.vivant && p.region.t !== p.t) atlas.remplacer(p.region, p.t); }
   const L = atlas.l, H = atlas.h;
   const nBase = m.positions.length / 3;
   const nExtra = morceaux.reduce((s, p) => s + p.local.length / 3, 0);
@@ -182,6 +217,12 @@ export function habiller(perso, m, pose, mats, bitsFlexion, lumiere, brut) {
   const sortie = { ...m, positions, uvs, couleurs, indices, texture: atlas.texture };
   if (m.normales) { const nn = new Float32Array((nBase + nExtra) * 3); nn.set(m.normales); nn.set(proj.normales, nBase * 3); sortie.normales = nn; }
   if (m.masque) sortie.masque = atlas.masque;
+  if (m.ajout) {   // surcouche rouge des degats : le corps seulement (armure et objets : NO_OVERLAY dans le jeu) ; deux maillages sur le meme atlas
+    const corps = { ...sortie, indices: indices.slice(0, m.indices.length) };
+    const reste = { ...sortie, indices: indices.slice(m.indices.length) };
+    delete reste.ajout;
+    return [corps, reste];
+  }
   return sortie;
 }
 

@@ -69,7 +69,7 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   mcanim creatures --liste [mot]     CREATURES (champ d'acteur type) : types, variantes, animations nommees, parties, vitesses (30 lignes au plus) ; gratuit
   mcanim objets --cherche <mot>       identifiants d'objets du jeu (20 au plus) pour les champs objet / objetG ; --armures : materiaux du champ armure
   mcanim simuler <scene.json>         simule le jeu (champ monde : blocs poses, regles, mods) AVANT de payer le rendu ; gratuit, resume court (blocs changes, avertissements)
-  (acteur.actes [[t,"verbe",..]] : un joueur SIMULE par le jeu : va x z | regarde | saute | accroupi | tient "objet" | attends s | utilise x y z (porte, bouton, levier, coffre, cloche...) | pose x y z "bloc" | casse x y z | utilise (manger, boire) | lance x y z|"acteur" (boule de neige, oeuf, perle, potion, trident) | tire x y z|"acteur" (arc, arbalete) | frappe "acteur" {coups, critique, objet} (epee : recharge, critique, recul) | jette n | prend|depose x y z "objet" n ; options {va, ouvrePortes, duree, max, effet, niveau, secondes, charge} ; portee 4.5 ; mcanim simuler dit les echecs ; fiches actions, blocs_interactifs, casser_poser, objets_utiliser, arcs_projectiles)
+  (acteur.actes [[t,"verbe",..]] : un joueur SIMULE par le jeu : va x z | regarde | saute | accroupi | tient "objet" | attends s | utilise x y z (porte, bouton, levier, coffre, cloche...) | pose x y z "bloc" | casse x y z | utilise (manger, boire) | lance x y z|"acteur" (boule de neige, oeuf, perle, potion, fiole d experience, trident) | tire x y z|"acteur" (arc, arbalete) | frappe "acteur" {coups, critique, objet} (epee : recharge, critique, recul) | jette n | prend|depose x y z "objet" n | plane [x y z] {tangage,lacet} (elytres : armure torse "elytra" ; fusee en main + utilise = propulsion) ; options {va, ouvrePortes, duree, max, effet, niveau, secondes, charge} ; portee 4.5 ; mcanim simuler dit les echecs ; fiches actions, blocs_interactifs, casser_poser, objets_utiliser, arcs_projectiles)
   (croissance et meteo comme le jeu : cultures (1/(floor(25/v)+1)), pousses -> arbres, farine d'os, feuilles qui meurent, herbe ; ciel.meteo [[t,"pluie"|"orage"|"clair"|"foudre",...]] : pluie, neige, tonnerre, eclair, ciel terne ; regle croissance.vitesse = lapse de temps ; fiches croissance, meteo)
   (redstone et pistons comme le jeu : levier, bouton, plaque, poudre (15, -1 par bloc), torche (2 ticks, grille), repeteur (2 a 8 ticks), comparateur, observateur (2 ticks), lampe, pistons (12 blocs, collant, slime), entonnoir, dropper ; monde.contenus [[x,y,z,"objet",n]] ; monde.cmd [t,"frappe",x,y,z,force] ; regles redstone.* pistons.* contenus.* ; fiches redstone, pistons)
   mcanim regles --liste [famille]     parametres du jeu que monde.regles peut changer (nom = defaut [plage] explication) ; --familles : les familles
@@ -212,12 +212,12 @@ async function terrainDeScene(scene, { telecharger, baseDir = process.cwd() }) {
   const cache = path.join(dossierCache(), 'zones', `${scene.zone}.mcz`);
   if (!telecharger && !fs.existsSync(cache)) return null;
   const zone = await obtenirZone(scene.zone);
-  const kit = await trouverKit({});
+  const kit = await trouverKit(scene.monde ? { groupes: ['worldgen'] } : {});   // monde : les caracteristiques du jeu (arbres, champignons geants)
   const { chargerScene } = await import('../src/rendu/scene.js');
   if (scene.monde) {   // scene avec simulation : le terrain est le monde VIVANT (blocs poses, portes ouvertes) ; les acteurs a `actes` viennent du replay
     const { simulerScene } = await import('../src/film/video.js');
     const { creerTerrainVivant } = await import('../src/film/terrain-vivant.js');
-    const sim = await simulerScene({ scene, zonePath: zone.chemin, baseDir });
+    const sim = await simulerScene({ scene, zonePath: zone.chemin, baseDir, kitDir: kit });
     const rs = await chargerScene({ zonePath: zone.chemin, zone: sim.zone, kitDir: kit, travailleurs: 0, options: { monde: { donnees: sim.donnees, replay: sim.replay, lumiere: scene.monde.lumiere } } });
     return { rs, terrain: creerTerrainVivant({ rs, replay: sim.replay, donnees: sim.donnees }), monde: { replay: sim.replay } };
   }
@@ -468,7 +468,10 @@ async function commandeSimuler(argv) {
     const hp = scene.ciel?.heure;
     const { evaluer } = await import('../src/film/scene.js');
     const typesC = scene.acteurs.some((a) => a.creature && (a.actes || a.creature.ia)) ? (await (await import('../src/creatures/donnees.js')).donneesCreatures({})).types : null;
-    const r = simuler({ zone: zoneS, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene, typesC), baseDir, duree: scene.duree, options: { heure: hp ? (t) => evaluer(hp, t)[0] : undefined, meteo: scene.ciel?.meteo ?? null } });
+    void simuler; void evaluer;
+    // les mods tournent dans un processus fils a permissions (src/moteur/isolement.js)
+    const { simulerIsole } = await import('../src/moteur/isolement.js');
+    const r = await simulerIsole({ zone: zoneS, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene, typesC), baseDir, duree: scene.duree, options: { meteo: scene.ciel?.meteo ?? null }, contexte: { heurePiste: hp ?? null, typesC } });
     dire(r.rapport);
   } catch (e) { if (e instanceof ErreurMonde) throw new Usage(e.message); throw e; }
 }
@@ -497,9 +500,11 @@ async function commandeMods(argv) {
   const donnees = await donneesDuJeu({ log: dire });
   const zone = new Zone({ palette: ['minecraft:air', '#hidden'], biomes: ['minecraft:plains'], origine: [0, 0, 0], taille: [1, 1, 1] }, new Uint32Array(1), new Uint8Array(1), new Int16Array(1));
   try {
-    const sim = preparer({ zone, donnees, monde: {}, mods: [{ nom: path.basename(fichier), source: texte }] });
-    const n = sim.reg.entrees.filter((e) => e.source !== 'moteur').length;
-    dire(`${path.basename(fichier)} : ok, ${n} gestionnaire(s) enregistre(s)${sim.regles.val.size ? '' : ''}`);
+    void preparer;
+    const { verifierModIsole } = await import('../src/moteur/isolement.js');   // le mod est charge dans le processus fils a permissions
+    const { n, definitions: df } = await verifierModIsole({ mod: { nom: path.basename(fichier), source: texte }, donnees, zone });
+    const defs = [...(df?.blocs ?? []).map((b) => b.id), ...(df?.entites ?? []).map((e) => e.id)];
+    dire(`${path.basename(fichier)} : ok, ${n} gestionnaire(s) enregistre(s)${defs.length ? ` ; defini(s) : ${defs.join(', ')}` : ''}`);
   } catch (e) { if (e instanceof ErreurMonde) throw new Usage(e.message); throw e; }
 }
 

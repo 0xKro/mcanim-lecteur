@@ -16,7 +16,7 @@ const rel = (p, f, n = 1) => [p[0] + V[f][0] * n, p[1] + V[f][1] * n, p[2] + V[f
 export function installer(mc, regles) {
   regles.declarer('contenus.delaiEntonnoir', { def: 8, min: 1, max: 200, entier: true, doc: 'ticks entre deux transferts d\'un entonnoir (jeu : 8)' });
   regles.declarer('contenus.delaiDistributeur', { def: 4, min: 1, max: 200, entier: true, doc: 'ticks entre le signal et le tir d\'un dropper ou distributeur (jeu : 4)' });
-  regles.declarer('contenus.projectiles', { def: 'lache', choix: ['lache', 'garde'], doc: 'fleches, boules de neige, oeufs... ne sont pas lances : "lache" les depose comme un dropper, "garde" ne fait rien' });
+  regles.declarer('contenus.projectiles', { def: 'tire', choix: ['tire', 'lache', 'garde'], doc: 'distributeur : "tire" lance fleches, boules de neige, oeufs, potions, fusees, charges de feu et de vent comme le jeu (ProjectileDispenseBehavior) ; "lache" les depose comme un dropper ; "garde" ne fait rien' });
 
   const entonnoirs = new Map();                      // 'x,y,z' -> ticks de pause restants
   const cle = (p) => p.join(',');
@@ -25,14 +25,39 @@ export function installer(mc, regles) {
   const notifie = (monde, p) => { monde.contenuNotifie(p[0], p[1], p[2]); };
 
   // ------------------------------------------------------------ conteneurs : ce qu'on lache quand le bloc est retire
-  for (const classe of ['ChestBlock', 'BarrelBlock', 'HopperBlock', 'DispenserBlock', 'ShulkerBoxBlock']) {
+  // BlockEntity.preRemoveSideEffects -> Containers.dropContents : chaque case (vide comprise) tire sa place dans le bloc (3 nextDouble), puis
+  // la pile part en morceaux de 10 a 30 (nextInt(21) + 10) avec la vitesse triangle(0 ; 0,11485), triangle(0,2 ; 0,11485), triangle(0 ; 0,11485)
+  // (Horizon horizon-world level/removal.rs drop_item_stack). Casse a la main, par un piston ou par une explosion : le meme chemin.
+  // La boite de shulker ne se vide pas : son objet garde son contenu (composant `container` du jeu ; champ `contenu` de l'objet au sol).
+  const tri = (monde, a, b) => a + b * (monde.hasard.reel() - monde.hasard.reel());
+  for (const classe of ['ChestBlock', 'BarrelBlock', 'HopperBlock', 'DispenserBlock', 'AbstractFurnaceBlock', 'ShulkerBoxBlock']) {
     mc.bloc(classe).sur('retire', (ev, monde) => {
       if (ev.nouveau.startsWith('minecraft:' + ev.bloc)) return;
       const [x, y, z] = ev.pos;
       entonnoirs.delete(cle(ev.pos));
-      for (const e of monde.contenuVider(x, y, z)) monde.lacher(e.item, e.n, x + 0.5, y + 0.5, z + 0.5);
+      const cases = monde.contenuViderCases(x, y, z);
+      if (classe === 'ShulkerBoxBlock') { monde.contenuAttacher(x, y, z, ev.bloc, cases.filter(Boolean)); return; }
+      for (const e of cases) {
+        const px = x + monde.hasard.reel() * 0.75 + 0.125, py = y + monde.hasard.reel() * 0.75, pz = z + monde.hasard.reel() * 0.75 + 0.125;
+        let reste = e ? e.n : 0;
+        while (reste > 0) {
+          const k = Math.min(reste, monde.hasard.entier(21) + 10);
+          reste -= k;
+          const v = [tri(monde, 0, 0.11485000171139836), tri(monde, 0.2, 0.11485000171139836), tri(monde, 0, 0.11485000171139836)];
+          monde.lacher(e.item, k, px, py, pz, { vx: v[0], vy: v[1], vz: v[2], delai: 10 });
+        }
+      }
     });
   }
+
+  // ------------------------------------------------------------ composteur (ComposterBlock.onPlace / tick : le niveau 7 devient 8, « pret », 20 ticks plus tard)
+  // Ecart trouve par la trace tick a tick de Horizon (test/trace-horizon.test.js).
+  mc.bloc('composter').sur('pose', (ev, monde) => { if (monde.prop(...ev.pos, 'level') === '7') monde.planifier(...ev.pos, 20); });
+  mc.bloc('composter').sur('tick', (ev, monde) => {
+    if (monde.prop(...ev.pos, 'level') !== '7') return;
+    set(monde, ev.pos, { level: '8' }, 3);
+    monde.son('block.composter.ready', ev.pos[0] + 0.5, ev.pos[1] + 0.5, ev.pos[2] + 0.5, 1, 1);
+  });
 
   // ------------------------------------------------------------ entonnoir
   mc.bloc('HopperBlock').sur('pose', (ev, monde) => {
@@ -64,6 +89,9 @@ export function installer(mc, regles) {
       if (monde.contenuTaille(...d) && !monde.contenuPlein(...d)) {
         const liste = monde.contenuListe(...p);
         for (let i = 0; i < liste.length && !fait; i++) if (liste[i] && pousser1(monde, p, i, d)) { fait = true; if (entonnoirs.has(cle(d))) entonnoirs.set(cle(d), Math.max(entonnoirs.get(cle(d)), monde.regle('contenus.delaiEntonnoir', 8))); notifie(monde, d); notifie(monde, p); }
+      } else if (!monde.contenuTaille(...d)) {   // HopperBlockEntity.getEntityContainer : un wagonnet a coffre ou a entonnoir dans la cellule devant
+        const w = monde.wagonCases(...d), liste = monde.contenuListe(...p);
+        if (w) for (let i = 0; i < liste.length && !fait; i++) if (liste[i] && w.ajouter(liste[i].item, 1) === 0) { monde.contenuRetirer(p[0], p[1], p[2], i, 1); fait = true; notifie(monde, p); }
       }
     }
     // 2. aspirer : un objet du conteneur au-dessus, sinon les objets au sol au-dessus
@@ -74,6 +102,9 @@ export function installer(mc, regles) {
           const liste = monde.contenuListe(...h);
           for (let i = 0; i < liste.length; i++) if (liste[i] && pousser1(monde, h, i, p)) { fait = true; notifie(monde, h); notifie(monde, p); break; }
         }
+      } else if (monde.wagonCases(...h)) {   // un wagonnet a conteneur au-dessus : un objet de ses cases
+        const w = monde.wagonCases(...h);
+        for (let i = 0; i < w.cases.length; i++) if (w.cases[i] && monde.contenuAjouter(p[0], p[1], p[2], w.cases[i].item, 1) === 0) { w.retirer(i); fait = true; notifie(monde, p); break; }
       } else {
         const pris = monde.prendreObjets([p[0], p[1] + 11 / 16, p[2], p[0] + 1, p[1] + 2, p[2] + 1], (e) => monde.contenuAjouter(p[0], p[1], p[2], e.item, e.n));
         if (pris) { fait = true; notifie(monde, p); }
@@ -125,6 +156,31 @@ export function installer(mc, regles) {
     } else {
       if (!dropper && /^(arrow|spectral_arrow|tipped_arrow|snowball|egg|ender_pearl|fire_charge|wind_charge|splash_potion|lingering_potion|experience_bottle|firework_rocket|trident)$/.test(item) && monde.regle('contenus.projectiles', 'lache') === 'garde') {
         monde.son('block.dispenser.fail', p[0] + 0.5, p[1] + 0.5, p[2] + 0.5, 1, 1.2); return;
+      }
+      // ProjectileDispenseBehavior (Horizon game/dispenser.rs dispense_projectile) : position, imprecision, puissance et son de chaque objet ;
+      // vitesse = (direction + triangle(0 ; 0,0172275 x imprecision)) x puissance
+      const TIRS = { arrow: ['fleche', 0.7, 6, 1.1], tipped_arrow: ['fleche', 0.7, 6, 1.1], spectral_arrow: ['fleche', 0.7, 6, 1.1], snowball: ['boule', 0.7, 6, 1.1], egg: ['oeuf', 0.7, 6, 1.1], splash_potion: ['potion', 0.7, 3, 1.375], lingering_potion: ['potion', 0.7, 3, 1.375], experience_bottle: ['fiole', 0.7, 3, 1.375], firework_rocket: ['fusee', 0.5000099999997474, 1, 0.5], fire_charge: ['petite_boule_feu', 1, 6.6666665, 1], wind_charge: ['vent', 1, 6.6666665, 1] };
+      const tir = !dropper && monde.regle('contenus.projectiles', 'tire') === 'tire' ? TIRS[item] : null;
+      if (tir) {
+        const [type, k, u, puiss] = tir, v = V[dir], haut = k === 0.7 ? 0.1 : 0;
+        const pos = [p[0] + 0.5 + v[0] * k, p[1] + 0.5 + v[1] * k + haut, p[2] + 0.5 + v[2] * k];
+        const tri = () => (monde.hasard.flottant() - monde.hasard.flottant()) * 0.0172275 * u;
+        monde.contenuRetirer(p[0], p[1], p[2], slot, 1);
+        if (type === 'fusee') {   // la fusee tire d'abord ses propres tirages (vitesse, duree), puis le tir de biais
+          const id = monde.fusee(pos, liste[slot]?.fusee ?? null, { vitesse: [0, 0, 0] });
+          monde.orienterProjectile(id, [(v[0] + tri()) * puiss, (v[1] + tri()) * puiss, (v[2] + tri()) * puiss]);
+          monde.son('entity.firework_rocket.shoot', p[0] + 0.5, p[1] + 0.5, p[2] + 0.5, 1, 1.2);
+        } else {
+          if (type === 'petite_boule_feu' || type === 'vent') { tri(); tri(); tri(); }   // asProjectile vise d'abord avec le hasard du monde (0,11485), remplace ensuite
+          monde.projectile(type, pos, [(v[0] + tri()) * puiss, (v[1] + tri()) * puiss, (v[2] + tri()) * puiss]);
+          const r = monde.hasard.flottant() - monde.hasard.flottant();
+          if (type === 'petite_boule_feu') monde.son('entity.blaze.shoot', p[0] + 0.5, p[1] + 0.5, p[2] + 0.5, 2, r * 0.2 + 1);
+          else if (type === 'vent') monde.son('entity.wind_charge.throw', p[0] + 0.5, p[1] + 0.5, p[2] + 0.5, 0.5, 0.4 / (monde.hasard.flottant() * 0.4 + 0.8));
+          else monde.son('block.dispenser.launch', p[0] + 0.5, p[1] + 0.5, p[2] + 0.5, 1, 1.2);
+        }
+        notifie(monde, p);
+        monde.particule('smoke', p[0] + 0.5 + v[0] * 0.6, p[1] + 0.5 + v[1] * 0.6, p[2] + 0.5 + v[2] * 0.6, 0, 0, 0, 10);
+        return;
       }
       // DefaultDispenseItemBehavior : l'objet part devant, a 0,7 bloc, avec une vitesse au hasard
       const v = V[dir], g = monde.hasard.reel() * 0.1 + 0.2, alea = () => (monde.hasard.reel() + monde.hasard.reel() - 1) * 0.0172275 * 6;

@@ -45,8 +45,41 @@ export function texture(kit, nom) {
       }
     } catch { /* pas de mcmeta ou illisible : pas anime */ }
   } catch { /* absente ou illisible */ }
+  if (!t) t = permutation(kit, nom);
   textures.set(cle, t);
   return t;
+}
+
+// Texture produite par l'atlas des objets (atlases/items.json, source `paletted_permutations`) : `trims/items/chestplate_trim_gold` = la
+// texture `trims/items/chestplate_trim` dont chaque couleur de la palette cle (palettes/trim_base) est remplacee par la couleur de meme rang
+// de la palette de la permutation (palettes/trim/gold). Lu dans le kit, rien n'est recopie (docs/SIMULATION.md partie 29).
+function permutation(kit, nom) {
+  const atlas = lireJson(kit, 'atlases/items.json');
+  for (const s of atlas?.sources ?? []) {
+    if (nettoyer(s.type ?? '') !== 'paletted_permutations') continue;
+    for (const base of (s.textures ?? []).map(nettoyer)) {
+      if (!nom.startsWith(base + '_')) continue;
+      const cleP = nom.slice(base.length + 1), pal = s.permutations?.[cleP];
+      if (!pal) continue;
+      return recolorer(texture(kit, base), texture(kit, 'palettes/' + nettoyer(s.palette_key)), texture(kit, 'palettes/' + nettoyer(pal)));
+    }
+  }
+  return null;
+}
+// PalettedPermutations : couleur de la palette cle -> couleur de meme rang (l'alpha de la texture est garde ; une couleur absente reste)
+export function recolorer(t, cle, pal) {
+  if (!t || !cle || !pal) return null;
+  const table = new Map();
+  for (let i = 0; i < Math.min(cle.rgba.length, pal.rgba.length); i += 4) table.set((cle.rgba[i] << 16) | (cle.rgba[i + 1] << 8) | cle.rgba[i + 2], i);
+  const rgba = new Uint8Array(t.rgba);
+  for (let i = 0; i < rgba.length; i += 4) {
+    if (!rgba[i + 3]) continue;
+    const k = table.get((rgba[i] << 16) | (rgba[i + 1] << 8) | rgba[i + 2]);
+    if (k === undefined) continue;
+    rgba[i] = pal.rgba[k]; rgba[i + 1] = pal.rgba[k + 1]; rgba[i + 2] = pal.rgba[k + 2];
+    rgba[i + 3] = Math.round(rgba[i + 3] * pal.rgba[k + 3] / 255);
+  }
+  return { largeur: t.largeur, hauteur: t.hauteur, rgba };
 }
 
 // Copie de `t` multipliee par la couleur ARGB entiere `argb` (comme les teintes du jeu) ; null : `t` telle quelle.

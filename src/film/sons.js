@@ -257,9 +257,12 @@ export function mixer({ evenements, duree, sons, volume = VOLUME_MIXAGE }) {
     const debut = Math.round(e.t * FREQUENCE);
     const angle = ((e.pan + 1) * Math.PI) / 4;     // puissance constante
     const gl = Math.cos(angle) * e.gain * volume * 1.4142, gd = Math.sin(angle) * e.gain * volume * 1.4142;
-    const fin = Math.min(n, debut + pcm.length, e.duree !== undefined ? debut + Math.round(e.duree * FREQUENCE) : Infinity);   // duree : musique du juke-box coupee
-    for (let i = debut; i < fin; i++) {
-      const v = pcm[i - debut] / 32768;
+    // boucle : le son repart au debut (son en boucle du jeu, elytres) ; decalage : on reprend le fichier a cet instant (secondes du fichier)
+    const k0 = e.decalage ? Math.round(e.decalage * FREQUENCE / (e.hauteur || 1)) : 0;
+    const fin = Math.min(n, e.boucle ? Infinity : debut + pcm.length - k0, e.duree !== undefined ? debut + Math.round(e.duree * FREQUENCE) : Infinity);   // duree : musique du juke-box coupee
+    if (!pcm.length) continue;
+    for (let i = Math.max(0, debut); i < fin; i++) {
+      const v = pcm[(i - debut + k0) % pcm.length] / 32768;
       mix[2 * i] += v * gl; mix[2 * i + 1] += v * gd;
     }
   }

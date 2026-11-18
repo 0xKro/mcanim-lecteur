@@ -6,7 +6,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Simulation, MOTEUR } from './simulation.js';
-import { HoteMods, normaliserMod } from './mods.js';
+import { HoteMods, normaliserMod, collecterDefinitions } from './mods.js';
+import { donneesAvecPerso, appliquerEntitesPerso } from './perso.js';
 import { installerFamilles } from './familles/index.js';
 import { Regles } from './regles.js';
 import { ErreurMonde } from './erreurs.js';
@@ -14,6 +15,34 @@ import { voulaisTu } from './util.js';
 import { texteRapport } from './rapport.js';
 import { Acteurs } from './acteurs.js';
 import { solSous } from './collision.js';
+import { Enchanteur } from './enchantements.js';
+import { chargerObjetsJeu, racineObjetsLocale } from './objets-jeu.js';
+import { Alambics } from './alambic.js';
+import { Nuages } from './nuage.js';
+import { Aleatoire } from './aleatoire.js';
+import { allumerActeur } from './projectiles.js';
+import { rafale, RAFALE } from './vent.js';
+
+// Objets du jeu dans la simulation (docs/SIMULATION.md partie 26) : donnees du kit (recettes, enchantements ; null sans le groupe `recettes`),
+// enchanteur, alambics, nuages ; crochets que les enchantements et les effets appellent (feu, foudre, rafale, hasard d'une graine)
+// Donnees d'objets du kit de la scene (groupe `recettes`), sinon une copie locale du jeu (MCANIM_OBJETS_JEU, dossier prepare) ; null sinon
+export function objetsDuKit(kitDir) {
+  try { if (kitDir) return chargerObjetsJeu(kitDir); } catch { /* kit sans le groupe recettes */ }
+  try { const r = racineObjetsLocale(); return r ? chargerObjetsJeu(r) : null; } catch { return null; }   // processus fils : lecture refusee hors du kit
+}
+export function installerObjetsJeu(sim, objetsJeu) {
+  sim.objetsJeu = objetsJeu;
+  // objets qui brillent sans enchantement (composant enchantment_glint_override : pomme en or enchantee, livre enchante...) : lus par le film
+  const forces = Object.entries(sim.d.j.objets ?? {}).filter(([, o]) => o[12] === 1).map(([k]) => k);
+  if (forces.length) sim.replay.refletsForces = forces;
+  sim.enchant = new Enchanteur(sim);
+  sim.alambics = new Alambics(sim);
+  sim.nuages = new Nuages(sim);
+  sim.nouvelAleatoire = (g) => new Aleatoire(g);
+  sim.allumerEntite = (a, ticks) => { if (a && typeof a === 'object' && a.mort < 0) allumerActeur(a, ticks); };
+  sim.foudreEn = (x, y, z) => { if (sim.meteo) sim.meteo.foudre(Math.floor(x), Math.floor(z), Math.floor(y), {}); else sim.avertir('foudre (Canalisation) sans meteo : ajoute ciel.meteo a la scene'); };
+  sim.rafale = (x, y, z, { rayon, recul }) => { RAFALE.__enchant = { rayon, recul }; rafale(sim, [x, y, z], '__enchant'); };
+}
 
 export { MOTEUR, Simulation, ErreurMonde };
 export const LIMITES_MODS = { fichiers: 8, octets: 64 * 1024 };
@@ -49,11 +78,20 @@ export function lireFichiersMods(liste, baseDir) {
 
 // Prepare la simulation (familles, mods, regles, commandes) sans la lancer. Utile aux tests et a `mcanim mods verifier`.
 export function preparer({ zone, donnees, monde = {}, mods = [], acteurs = [], options = {} } = {}) {
+  // blocs et entites definis par les mods (moteur/perso.js) : premiere lecture des mods, puis tables du jeu de la scene
+  const definitions = mods.length ? collecterDefinitions(mods.slice(0, LIMITES_MODS.fichiers), donnees, options.typesCreatures ?? null, options.hote) : { blocs: [], entites: [] };
+  donnees = donneesAvecPerso(donnees, definitions.blocs);
   const config = {
     graine: monde.graine ?? 1, blocs: monde.blocs || [], cmd: monde.cmd || [], regles: monde.regles, plafondMs: options.plafondMs, heure: options.heure, contenus: monde.contenus, meteo: options.meteo, creatures: options.creatures ?? null,
     fontaine: monde.fontaine ?? null,   // fontaine de l'End [x, y, z] : centre des cercles du dragon (ia-boss.js)
+    dimension: monde.dimension ?? 'overworld',   // monde de l'End : pas d'assombrissement du ciel, ni pluie, ni foudre (environnement.js)
+    pupitres: monde.pupitres ?? [], balises: monde.balises ?? [], cadres: monde.cadres ?? [],   // pupitres, balises, cadres (docs/SIMULATION.md partie 27)
+    kitDir: options.kitDir ?? null,      // kit de l'utilisateur : caracteristiques du jeu (arbres, champignons geants : caracteristiques.js)
   };
   const sim = new Simulation({ zone, donnees, config, monde: options.monde });
+  installerObjetsJeu(sim, options.objetsJeu !== undefined ? options.objetsJeu : objetsDuKit(options.kitDir));   // recettes, enchantements, alambics, nuages de potion (partie 26)
+  sim.persoEntites = definitions.entites; sim.definitions = definitions;
+  if (definitions.blocs.length || definitions.entites.length) sim.replay.perso = definitions;   // le rendu en a besoin (modeles, textures, echelle)
   declarerReglesMonde(sim.regles);
   installerFamilles(sim.reg, sim.regles);
   if (mods.length > LIMITES_MODS.fichiers) throw new ErreurMonde(`scene.monde.mods : ${LIMITES_MODS.fichiers} fichiers au maximum`);
@@ -65,7 +103,7 @@ export function preparer({ zone, donnees, monde = {}, mods = [], acteurs = [], o
     sim.replay.mods = mods.map((m) => m.nom);
   }
   sim.regles.appliquer(monde.regles);
-  if (acteurs.length) sim.acteurs = creerActeurs(sim, acteurs);
+  if (acteurs.length) sim.acteurs = creerActeurs(sim, appliquerEntitesPerso(acteurs, definitions.entites));
   // commandes datees : verification des blocs (messages avec le chemin du champ)
   const noms = [...donnees.noms];
   config.blocs = (monde.blocs || []).map((b, i) => {
@@ -96,7 +134,7 @@ export function creerActeurs(sim, descs) {
   const liste = descs.map((d) => {
     const p = d.pos;
     const x = p[0], z = p.length === 3 ? p[2] : p[1];
-    return { nom: d.nom, x, z, y: p.length === 3 ? p[1] : null, lacet: d.lacet ?? 0, objet: d.objet ?? null, vie: d.vie, invulnerable: d.invulnerable, ramasse: d.ramasse, faim: d.faim, sac: d.sac, gabarit: d.gabarit, typeCreature: d.typeCreature, ia: d.ia, armure: d.armure, protectionExplosion: d.protectionExplosion, actes: (d.actes || []).map((a) => ({ ...a, tick: Math.floor(a.t * 20 * ralenti + 1e-9) })) };
+    return { nom: d.nom, x, z, y: p.length === 3 ? p[1] : null, lacet: d.lacet ?? 0, objet: d.objet ?? null, vie: d.vie, invulnerable: d.invulnerable, ramasse: d.ramasse, faim: d.faim, sac: d.sac, mode: d.mode, niveaux: d.niveaux, saturation: d.saturation, gauche: d.gauche, gabarit: d.gabarit, typeCreature: d.typeCreature, ia: d.ia, armure: d.armure, protectionExplosion: d.protectionExplosion, persoDef: d.persoDef, monture: d.monture ?? null, wagon: d.wagon ?? null, actes: (d.actes || []).map((a) => ({ ...a, tick: Math.floor(a.t * 20 * ralenti + 1e-9) })) };
   });
   const lec = { etatEn: (x, y, z) => sim.monde.etatEn(x, y, z), d: sim.d };
   for (const a of liste) {

@@ -74,7 +74,7 @@ export const METHODES_OEUFS = {
       this.fracTetard += sim.regles.valeur('croissance.vitesse', 1);
       const n = Math.floor(this.fracTetard); this.fracTetard -= n; this.ageTetard += n;
       if (this.ageTetard >= 24000) {
-        const v = climatGrenouille(sim.zone.biome?.(Math.floor(a.x), Math.floor(a.y), Math.floor(a.z)));
+        const v = climatGrenouille(sim.zone.biome?.(Math.floor(a.x), Math.floor(a.z)));
         this.convertir('frog', { variante: v, son: 'entity.tadpole.grow_up', raison: 'metamorphose' });
       }
     }

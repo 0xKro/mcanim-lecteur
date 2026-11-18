@@ -54,6 +54,7 @@ export class Donnees {
       this.instrumentE[i] = l[c.instrument]; this.jeuE[i] = l[c.drapeauxJeu]; this.fluideE[i] = l[c.fluide]; this.niveauFluideE[i] = l[c.niveauFluide]; this.pousseeE[i] = l[c.poussee];
     }
     this._etiq = new Map();
+    this.copies = new Map();                     // bloc du jeu -> blocs de mods qui le copient (mc.definirBloc, moteur/perso.js)
     this.air = this.etatId('air');
     this.pierre = this.etatId('stone');
   }
@@ -61,7 +62,9 @@ export class Donnees {
   // ---- identifiants
   idBloc(nom) { return this.parNom.get(nom.startsWith('minecraft:') ? nom.slice(10) : nom) ?? -1; }
   blocDe(id) { return this.blocDeEtat[id]; }
-  nomBloc(id) { return this.noms[this.blocDeEtat[id]]; }
+  // nom du COMPORTEMENT : un bloc de mod (mc.definirBloc) repond par le nom du bloc qu'il copie (les familles le traitent comme lui) ; son
+  // identifiant reste dans chaine(id) (palette, rendu, replay)
+  nomBloc(id) { const b = this.blocDeEtat[id]; return this.alias?.get(b) ?? this.noms[b]; }
   // classes de comportement du bloc (la plus derivee d'abord), ex. ['DoorBlock', 'Block']
   classes(bloc) { return this.j.chaines[this.j.chaineBloc[bloc]].map((i) => this.j.classes[i]); }
   champsBloc(bloc) { return this.j.champs[bloc] ?? null; }
@@ -94,9 +97,10 @@ export class Donnees {
   // numero d'etat -> texte canonique
   chaine(id) {
     const b = this.blocDeEtat[id], sch = this.schema(b);
-    if (!sch.length) return 'minecraft:' + this.noms[b];
+    const ns = this.noms[b].includes(':') ? this.noms[b] : 'minecraft:' + this.noms[b];   // blocs definis par un mod (mc.definirBloc) : 'ville:tnt_bleue'
+    if (!sch.length) return ns;
     const k = id - this.debut[b], pas = this.pas[b];
-    return `minecraft:${this.noms[b]}[${sch.map(([n, v], p) => `${n}=${v[Math.floor(k / pas[p]) % v.length]}`).join(',')}]`;
+    return `${ns}[${sch.map(([n, v], p) => `${n}=${v[Math.floor(k / pas[p]) % v.length]}`).join(',')}]`;
   }
   // proprietes de l'etat : { facing: 'north', ... }
   props(id) {
@@ -122,13 +126,19 @@ export class Donnees {
   // instrument du bloc de bois musical pose DESSUS-DESSOUS (NoteBlockInstrument.byState), en minuscules : 'harp', 'basedrum'...
   instrument(id) { return String(this.j.instruments[this.instrumentE[id]]).toLowerCase(); }
   // regles de l'outil `nom` (composant minecraft:tool) : { r: [[selecteurs, butinOk (1/0/-1), vitesse|null]], d, u } ou null
-  outil(nom) { return this.j.outils?.[String(nom).replace(/^minecraft:/, '')] ?? null; }
+  outil(nom) { return this.j.outils?.[String(nom).replace(/^minecraft:/, '').replace(/\[.*$/, '')] ?? null; }   // composants (enchantements, usure) ignores
   // objets du jeu (phase 7) : nourriture [nutrition, saturation, toujours, ticks, 'eat'|'drink', rendu, effets], combustible (ticks), cuisson [resultat, ticks, xp],
   // arbre (caracteristique de generation simplifiee), biome [temperature, precipitation, gele]
-  aliment(nom) { return this.j.aliments?.[String(nom).replace(/^minecraft:/, '')] ?? null; }
+  aliment(nom) { return this.j.aliments?.[String(nom).replace(/^minecraft:/, '').replace(/\[.*$/, '')] ?? null; }
   combustible(nom) { return this.j.combustibles?.[String(nom).replace(/^minecraft:/, '')] ?? 0; }
   cuisson(nom) { return this.j.cuisson?.[String(nom).replace(/^minecraft:/, '')] ?? null; }
   arbre(nom) { return this.j.arbres?.[nom] ?? null; }
+  // taille de pile du composant `max_stack_size` (table entiere du jeu ; 64 pour un objet absent : docs/SIMULATION.md partie 27)
+  pileMax(nom) { return this.j.piles?.[String(nom).replace(/^minecraft:/, '')] ?? 64; }
+  // fours : recette du bloc ('furnace' smelting, 'blast_furnace' blasting, 'smoker' smoking) ; combustion et vitesse du combustible (four rapide : haut fourneau, fumoir)
+  recetteFour(bloc, nom) { const n = String(nom).replace(/^minecraft:/, ''); return bloc === 'blast_furnace' ? this.j.fours?.hautFourneau?.[n] ?? null : bloc === 'smoker' ? this.j.fours?.fumoir?.[n] ?? null : this.cuisson(n); }
+  combustionFour(nom, rapide) { const n = String(nom).replace(/^minecraft:/, ''); return rapide ? this.j.fours?.rapide?.[n] ?? 0 : this.combustible(n); }
+  vitesseCombustible(nom, rapide) { const v = this.j.fours?.vitesse?.[String(nom).replace(/^minecraft:/, '')] ?? this.j.fours?.vitesseDefaut ?? [1, 2]; return rapide ? v[1] : v[0]; }
   biome(nom) { return this.j.biomes?.[String(nom || '').replace(/^minecraft:/, '')] ?? null; }
   etatParDefaut(bloc) { return this.debut[bloc] + this.j.defauts[bloc]; }
 
@@ -148,6 +158,28 @@ export class Donnees {
   sourceSignal(id) { return (this.jeuE[id] & 8) !== 0; }
   sortieAnalogique(id) { return (this.jeuE[id] & 16) !== 0; }
   esAir(id) { return (this.jeuE[id] & 2) !== 0; }
+  // BlockState.isSolid (legacySolid du jeu : forceSolidOn/Off puis la boite de collision, taille moyenne >= 0,7291666 ou hauteur pleine) : bit 0 du drapeau du jeu
+  estSolide(id) { return (this.jeuE[id] & 1) !== 0; }
+  // Navigation du jeu (partie 28) : PathType de l'etat (WalkNodeEvaluator.getPathTypeFromState) et isPathfindable (bit 0 LAND, 1 WATER, 2 AIR)
+  _chemins() {
+    if (!this._ch) {
+      const c = this.j.chemins;
+      if (!c) throw new Error('donnees-jeu : table `chemins` absente (relance outils/extraire-donnees-jeu.mjs)');
+      this._ch = { types: c.types, e: new Uint8Array(Buffer.from(c.etat, 'base64')), d: new Uint8Array(Buffer.from(c.drap, 'base64')), h: new Uint8Array(Buffer.from(c.haut ?? '', 'base64')) };
+    }
+    return this._ch;
+  }
+  typeChemin(id) { const c = this._chemins(); return c.types[c.e[id]]; }
+  cheminPossible(id, quoi = 0) { return (this._chemins().d[id] & (1 << quoi)) !== 0; }
+  hautCollision(id) { const c = this._chemins(); return c.h.length ? c.h[id] / 64 : (this.boites(id).length ? Math.max(...this.boites(id).map((b) => b[4])) : 0); }   // haut de la forme de collision
+  // Lumiere (partie 28) : forme d'occlusion de l'etat (getOcclusionShape) si le jeu s'en sert pour la lumiere (useShapeForLightOcclusion), sinon null
+  formeOcclusion(id) {
+    const o = this.j.occlusion;
+    if (!o) return null;
+    if (!this._occ) this._occ = new Int16Array(new Uint8Array(Buffer.from(o.etat, 'base64')).buffer);
+    const k = this._occ[id];
+    return k < 0 ? null : o.formes[k];
+  }
   signalFaible(id) { return this.faibleE[id]; }
   signalFort(id) { return this.fortE[id]; }
   fluide(id) { return this.fluideE[id]; }                         // 0 aucun, 1 eau qui coule, 2 eau, 3 lave qui coule, 4 lave
@@ -167,7 +199,9 @@ export class Donnees {
 // ---------------------------------------------------------------- chargement
 export function depuisOctets(brut) {
   const octets = brut[0] === 0x1f && brut[1] === 0x8b ? zlib.gunzipSync(brut) : brut;
-  return new Donnees(JSON.parse(octets.toString('utf8')));
+  const d = new Donnees(JSON.parse(octets.toString('utf8')));
+  d.octets = brut;   // fichier tel quel : passe au processus fils des scenes avec mods (moteur/isolement.js)
+  return d;
 }
 export function sha256Octets(b) { return crypto.createHash('sha256').update(b).digest('base64url'); }
 

@@ -19,8 +19,11 @@ import * as croissance from './croissance.js';
 import * as meteo from './meteo.js';
 import * as musique from './musique.js';
 import * as oeufs from './oeufs.js';
+import * as rails from './rails.js';         // rails, detecteurs, fil piege (docs/SIMULATION.md partie 27)
+import * as machines from './machines.js';   // paratonnerre, pupitre, colonnes de bulles, balise (partie 27)
+import * as cadres from './cadres.js';       // cadres et cadres lumineux (partie 27)
 
-export const FAMILLES = { torches, herbe, portes, boutons, conteneurs, pose, joueur, chute, tnt, feu, fluides, objets, redstone, pistons, contenus, projectiles, croissance, meteo, musique, oeufs };
+export const FAMILLES = { torches, herbe, portes, boutons, conteneurs, pose, joueur, chute, tnt, feu, fluides, objets, redstone, pistons, contenus, projectiles, croissance, meteo, musique, oeufs, rails, machines, cadres };
 
 export function installerFamilles(reg, regles) {
   const mc = { bloc: (s) => reg.bloc(s), entite: (s) => reg.entite(s), get monde() { return reg.monde; }, donnees: reg.d };

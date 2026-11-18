@@ -18,6 +18,8 @@ export async function creerIncrustations({ scene, kit, baseDir = process.cwd(), 
   const policeSans = await chargerPoliceSans(kit);   // police des legendes (gras rond, fournie avec le lecteur)
   const tous = [...(scene.textes ?? []), ...(scene.incrustations ?? [])];
   tous.forEach((e, i) => { e._seq = i; });
+  // ecran de poste (table d'enchantement) : la police du jeu "alt" (alphabet galactique des boutons, EnchantmentNames)
+  const policeAlt = tous.some((e) => e.type === 'poste') ? await chargerPolice(kit, 'alt').catch(() => null) : null;
   const cartes = tous.filter((e) => e.type === 'carte');
   const enfants = new Set();
   // carte : le fond d'abord, puis le contenu, un element apres l'autre (0,1 s d'ecart, sauf retard donne)
@@ -41,7 +43,7 @@ export async function creerIncrustations({ scene, kit, baseDir = process.cwd(), 
     //   im : image d'animation (camera, acteurs) ; proj : projecteur ; prof : profondeur { donnees, W, H, ssaa } ou null ; carte : carte active.
     dessiner(film, W, H, { t, im, proj = null, prof = null, carte = null, roulis = null, images = null, carteImage = false }) {
       const U = Math.min(W, H);
-      const ctx = { obstacles: null, occupe: null, kit, police, policeSans, images, carteImage, cacheEvite, W, H, U, t, im, scene, zone: rectSur(scene.zonesSures, W, H), notes: notesZone, anim: null, proj: proj ?? creerProjecteur(im.camera, W, H, roulis ? transformRoulis(roulis, W, H) : null), solide, prof, baseDir, manquants };
+      const ctx = { obstacles: null, occupe: null, kit, police, policeSans, policeAlt, images, carteImage, cacheEvite, W, H, U, t, im, scene, zone: rectSur(scene.zonesSures, W, H), notes: notesZone, anim: null, proj: proj ?? creerProjecteur(im.camera, W, H, roulis ? transformRoulis(roulis, W, H) : null), solide, prof, baseDir, manquants };
       const liste = carte ? tri([...libresTries.filter((e) => e.monde === undefined && e.acteur === undefined && e.type !== 'fleche' && e.type !== 'ligne'), ...carte.incrustations]) : libresTries;
       // 1. on prepare tout ce qui est visible, 2. la disposition decale ou cache ce qui se recouvre, 3. on dessine dans l'ordre des calques
       const prets = [];

@@ -1,21 +1,23 @@
 // Ce que la scene demande en objets et en armure : groupes de kit a recuperer, controle des identifiants (erreur d'une ligne, rien n'est
 // rendu), et UNE ligne de notes (objets en plaque de repli, types non geres). Sert a mcanim (rendre, apercu) et a `mcanim objets`.
+import fs from 'node:fs';
+import path from 'node:path';
 import { idsDeScene } from '../film/objets-scene.js';
 import { evenementsDeScene } from '../creatures/scene.js';
 import { listeObjets, groupePresent } from './fichiers.js';
 import { objetPourNotes } from './habillage.js';
-import { nomMateriau, couchesTexture, materiauxDuKit, EMPLACEMENTS } from './armure.js';
+import { nomMateriau, couleurArmure, couchesTexture, materiauxDuKit, EMPLACEMENTS } from './armure.js';
 
 // Groupes a la demande (kit.js) dont la scene a besoin : ['objets'], ['armures'], les deux ou [].
 export function groupesDeScene(scene) {
   const { objets, armures } = idsDeScene(scene);
   const m = groupesMontage(scene);   // textes et incrustations : groupe `interface` (police, sprites) ; icones d'objets : `objets`
   // une scene avec monde peut lacher des objets au sol (butin des blocs casses ou detruits) : leur modele vient du groupe `objets`
-  return [...(objets.size || m.objets || scene.monde || scene.acteurs.some((a) => a.creature?.echange) ? ['objets'] : []), ...(armures.size ? ['armures'] : []), ...(m.interface || scene.acteurs.some((a) => a.etiquette) ? ['interface'] : []), ...(scene.monde ? ['projectiles'] : []), ...(scene.acteurs.some((a) => a.creature) ? ['entites', 'sons_creatures'] : evenementsDeScene(scene) ? ['sons_creatures'] : [])];   // creatures : textures et sons du jeu ; sons du monde a la demande (ambiance, sons nommes hors du kit de base)
+  return [...(objets.size || m.objets || scene.monde || scene.acteurs.some((a) => a.creature?.echange) ? ['objets'] : []), ...(armures.size ? ['armures'] : []), ...(m.interface || scene.acteurs.some((a) => a.etiquette) ? ['interface'] : []), ...(scene.monde ? ['projectiles', 'worldgen', 'recettes'] : []),...(scene.acteurs.some((a) => a.creature) ? ['entites', 'sons_creatures'] : evenementsDeScene(scene) ? ['sons_creatures'] : []), ...(scene.monde && !scene.acteurs.some((a) => a.creature) ? ['entites'] : [])];   // monde : rayon de la balise, livre du pupitre, wagonnets nes en route (textures entity/)   // creatures : textures et sons du jeu ; sons du monde a la demande (ambiance, sons nommes hors du kit de base)
 }
 
 // Groupes de kit dont le montage a besoin : { interface, objets }.
-const AVEC_OBJETS = new Set(['icone', 'equation', 'inventaire', 'coffre', 'hud', 'succes', 'horloge', 'minuteur']);
+const AVEC_OBJETS = new Set(['icone', 'equation', 'inventaire', 'coffre', 'hud', 'succes', 'horloge', 'minuteur', 'poste']);
 function groupesMontage(scene) {
   const r = { interface: !!scene.textes?.length, objets: false };
   const marche = (liste) => { for (const e of liste ?? []) { r.interface = true; if (AVEC_OBJETS.has(e.type) && !(e.type === 'icone' && !e.objet)) r.objets = true; marche(e.incrustations); } };
@@ -80,7 +82,10 @@ export function planifier(scene, kit) {
       for (const k of p.cles) {
         if (!k.id) continue;
         const mat = nomMateriau(k.id);
+        if (mat === 'elytra' && e === 'torse') { if (!fs.existsSync(path.join(kit, 'assets', 'minecraft', 'textures', 'entity', 'equipment', 'wings', 'elytra.png'))) return { erreur: 'armure.torse "elytra" : texture entity/equipment/wings/elytra absente du kit (groupe "armures")', note: null }; continue; }   // elytres : couche wings (WingsLayer)
         if (!mat || !couchesTexture(kit, mat, e)) return { erreur: `armure.${e} : "${k.id}" inconnu pour cet emplacement (materiaux : ${materiauxDuKit(kit).join(', ')} ; ou un objet comme diamond_helmet ; jambieres : pas de turtle)`, note: null };
+        // cuir teint : "leather_chestplate#3A6FD8" ou "leather_chestplate#red" (une teinture du jeu) ; seul un calque teignable se teint
+        if (/#/.test(k.id) && (couleurArmure(k.id) === null || !couchesTexture(kit, mat, e).some((c) => c.teinte !== null))) return { erreur: `armure.${e} : "${k.id}" : la teinte se met au cuir seulement, en #RRGGBB ou #teinture (white, orange, magenta, light_blue, yellow, lime, pink, gray, light_gray, cyan, purple, blue, brown, green, red, black)`, note: null };
       }
     }
   }

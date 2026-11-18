@@ -28,12 +28,29 @@ export const SOUND_EVENTS_MONDE = [
   'entity.splash_potion.throw', 'entity.splash_potion.break', 'item.trident.throw', 'item.trident.hit_ground', 'item.crossbow.loading_start', 'item.crossbow.loading_middle', 'item.crossbow.loading_end', 'item.crossbow.shoot',
   'entity.generic.eat', 'entity.generic.drink', 'entity.player.burp', 'item.hoe.till', 'item.bone_meal.use', 'item.crop.plant', 'item.bottle.fill', 'entity.item.break',
   'weather.rain', 'weather.rain.above', 'entity.lightning_bolt.thunder', 'entity.lightning_bolt.impact', 'block.furnace.fire_crackle', 'item.bucket.fill_powder_snow',
+  // feux d'artifice, charges de vent, breeze (moteur/fusees.js, vent.js, ia-breeze.js)
+  ...['launch', 'shoot', 'blast', 'blast_far', 'large_blast', 'large_blast_far', 'twinkle', 'twinkle_far'].map((k) => `entity.firework_rocket.${k}`),
+  'entity.wind_charge.throw', 'entity.wind_charge.wind_burst',
+  ...['wind_burst', 'deflect', 'shoot', 'jump', 'land', 'charge', 'inhale', 'slide', 'whirl', 'idle_air'].map((k) => `entity.breeze.${k}`),
+  // elytres et fiole d'experience (docs/SIMULATION.md partie 25)
+  'item.elytra.flying', 'entity.experience_bottle.throw', 'entity.experience_orb.pickup', 'entity.player.levelup',
+  // objets et inventaire (docs/SIMULATION.md partie 26) : peche, trident, alambic, table d'enchantement, enclume, forge, tailleur, masse
+  'entity.fishing_bobber.throw', 'entity.fishing_bobber.retrieve', 'entity.fishing_bobber.splash', 'item.trident.return', 'item.trident.riptide_1', 'item.trident.riptide_2',
+  'item.trident.riptide_3', 'item.trident.thunder', 'item.trident.hit', 'block.brewing_stand.brew', 'block.enchantment_table.use', 'block.anvil.use', 'block.anvil.destroy',
+  'block.smithing_table.use', 'ui.stonecutter.take_result', 'item.mace.smash_air', 'item.mace.smash_ground', 'item.mace.smash_ground_heavy', 'enchant.thorns.hit',
+  'entity.player.attack.strong', 'entity.player.attack.weak', 'entity.player.attack.crit', 'entity.player.attack.knockback', 'entity.player.attack.sweep', 'entity.player.hurt_on_fire',
+  'block.crafter.craft', 'entity.villager.work_toolsmith',
+  // blocs et machines (docs/SIMULATION.md partie 27) : fil piege, balise, pupitre, cadres, colonnes de bulles, fours rapides, wagonnets, bateaux
+  'block.tripwire.click_on', 'block.tripwire.click_off', 'block.tripwire.attach', 'block.tripwire.detach', 'block.beacon.activate', 'block.beacon.ambient', 'block.beacon.deactivate',
+  'item.book.put', 'item.book.page_turn', ...['add_item', 'rotate_item', 'remove_item', 'break', 'place'].flatMap((k) => [`entity.item_frame.${k}`, `entity.glow_item_frame.${k}`]),
+  'block.bubble_column.upwards_ambient', 'block.bubble_column.whirlpool_ambient', 'block.bubble_column.upwards_inside', 'block.bubble_column.whirlpool_inside', 'block.bubble_column.bubble_pop',
+  'block.blastfurnace.fire_crackle', 'block.smoker.smoke', 'entity.minecart.riding', 'entity.minecart.inside', 'entity.minecart.inside.underwater', 'entity.generic.splash', 'entity.generic.burn',
 ];
 export const SOUND_EVENTS = [...new Set([...SOUND_EVENTS_PAS, ...SOUND_EVENTS_MONDE])];
 // Sons des creatures (groupe a la demande `sons_creatures`) : cris, blessure, mort, pas de chaque type (src/creatures/especes.js)
 export { SOUND_EVENTS_CREATURES } from './creatures/especes.js';
 // Version de chaque groupe du kit : un cache plus ancien (kit.json) est complete la prochaine fois (sons du monde, textures de coffre et de cloche, particules)
-export const GROUP_VERSIONS = { sons: 4, textures: 2 };
+export const GROUP_VERSIONS = { sons: 8, textures: 2, objets: 4, projectiles: 2, recettes: 2 };   // sons 8 : blocs et machines (partie 27) ; objets 3 : reflet d'enchantement (textures/misc/enchanted_glint_*.png), 4 : galons (textures/trims, palettes, atlases/items.json) ; recettes 2 : trim_material, trim_pattern ; projectiles 2 : bouchon de la canne a peche
 
 // groupe -> prefixes de chemin dans le jar (et dans le cache, qui reprend les memes chemins)
 export const GROUPS = {
@@ -47,9 +64,14 @@ export const GROUPS = {
   biomes: ['data/minecraft/worldgen/biome/'], // temperature, humidite, couleurs (teintes herbe/feuilles/eau)
   worldgen: ['data/minecraft/worldgen/'], // facultatif (le reste de worldgen)
   // groupes A LA DEMANDE (recuperes seulement quand une scene en a besoin : voir GROUPES_A_LA_DEMANDE) :
-  objets: ['assets/minecraft/items/', 'assets/minecraft/models/item/', 'assets/minecraft/textures/item/'],   // objets tenus en main (champs `objet` et `objetG`)
+  objets: ['assets/minecraft/items/', 'assets/minecraft/models/item/', 'assets/minecraft/textures/item/', 'assets/minecraft/textures/misc/enchanted_glint_item.png', 'assets/minecraft/textures/misc/enchanted_glint_armor.png',
+    'assets/minecraft/textures/trims/', 'assets/minecraft/textures/palettes/', 'assets/minecraft/atlases/items.json'],   // objets tenus en main (champs `objet` et `objetG`) ; reflet des objets enchantes ; galons d'armure
   armures: ['assets/minecraft/equipment/', 'assets/minecraft/textures/entity/equipment/'],                    // armure portee (champ `armure`)
-  projectiles: ['assets/minecraft/textures/entity/projectiles/'],                                            // fleche, trident, fleche spectrale, charge de vent... (monde simule)
+  projectiles: ['assets/minecraft/textures/entity/projectiles/', 'assets/minecraft/textures/entity/fishing/', 'assets/minecraft/textures/entity/trident/', 'assets/minecraft/textures/entity/enchantment/'],   // fleche, trident, fleche spectrale, charge de vent, bouchon de peche... (monde simule)
+  // donnees du jeu pour les objets (docs/SIMULATION.md partie 26) : recettes (etabli, tailleur, forge, alambic), enchantements et leurs etiquettes, butin de la peche,
+  // etiquettes d'objets, de creatures et de degats (conditions des enchantements), predicats d'outils, carburant de l'alambic. Lues au lancement, jamais recopiees.
+  recettes: ['data/minecraft/recipe/', 'data/minecraft/enchantment/', 'data/minecraft/tags/item/', 'data/minecraft/tags/enchantment/', 'data/minecraft/tags/entity_type/',
+    'data/minecraft/tags/damage_type/', 'data/minecraft/damage_type/', 'data/minecraft/loot_table/gameplay/', 'data/minecraft/predicate/', 'data/minecraft/context_int_provider/brewing/', 'data/minecraft/context_float_provider/brewing/', 'data/minecraft/trim_material/', 'data/minecraft/trim_pattern/'],
   // interface (montage : textes, incrustations) : police du jeu (fournisseurs + textures), sprites de l'interface (coeurs, barre d'objets, infobulle, succes...), fonds de conteneurs
   // creatures (champ d'acteur `type`) : textures des entites (0,4 Mo) et sons des creatures (evenements de SOUND_EVENTS_CREATURES seulement)
   entites: ['assets/minecraft/textures/entity/'],
@@ -57,9 +79,9 @@ export const GROUPS = {
   interface: ['assets/minecraft/font/', 'assets/minecraft/textures/font/', 'assets/minecraft/textures/gui/sprites/', 'assets/minecraft/textures/gui/container/'],
 };
 // Hors de DEFAULT_GROUPS : le premier lancement reste leger. `trouverKit({ groupes })` (film/cache.js) les ajoute quand la scene en a besoin.
-export const GROUPES_A_LA_DEMANDE = ['objets', 'armures', 'interface', 'projectiles', 'entites', 'sons_creatures'];
+export const GROUPES_A_LA_DEMANDE = ['objets', 'armures', 'interface', 'projectiles', 'entites', 'sons_creatures', 'recettes'];
 export const DEFAULT_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'environnement', 'sons'];
-export const JAR_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'environnement', 'worldgen', 'objets', 'armures', 'interface', 'projectiles', 'entites'];
+export const JAR_GROUPS = ['blockstates', 'models', 'textures', 'colormap', 'skins', 'biomes', 'environnement', 'worldgen', 'objets', 'armures', 'interface', 'projectiles', 'entites', 'recettes'];
 
 // Groupe d'un chemin : le prefixe le plus LONG l'emporte (textures/entity/player/ = skins, le reste de textures/entity/ = entites ;
 // sounds/mob/ = sons_creatures, le reste de sounds/ = sons).

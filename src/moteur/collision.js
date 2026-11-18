@@ -22,6 +22,17 @@ export function boitesDans(lec, b, sortie = []) {
     const L = boitesLocales(lec, x, y, z);
     for (let i = 0; i < L.length; i++) { const k = L[i]; sortie.push([k[0] + x, k[1] + y, k[2] + z, k[3] + x, k[4] + y, k[5] + z]); }
   }
+  // BlockCollisions : la couronne d'une cellule autour de la boite ne compte que les formes qui debordent de leur cellule
+  // (hasLargeCollisionShape) : le bloc en mouvement d'un piston (sa forme decalee par le progres peut entrer dans la cellule voisine)
+  if (lec.dyn) {
+    for (let y = y0; y <= y1 + 1; y++) for (let z = z0 - 1; z <= z1 + 1; z++) for (let x = x0 - 1; x <= x1 + 1; x++) {
+      if (x >= x0 && x <= x1 && z >= z0 && z <= z1 && y <= y1) continue;
+      const e = lec.etatEn(x, y, z);
+      if (e < 0 || lec.d.nomBloc(e) !== 'moving_piston') continue;
+      const L = lec.dyn(e, x, y, z) ?? [];
+      for (let i = 0; i < L.length; i++) { const k = L[i]; sortie.push([k[0] + x, k[1] + y, k[2] + z, k[3] + x, k[4] + y, k[5] + z]); }
+    }
+  }
   return sortie;
 }
 
@@ -72,7 +83,8 @@ function collideBoite(liste, b, mx, my, mz) {
 
 // Deplacement d'une boite avec collisions et marche (Entity.collide). `b` : boite, `mv` : [dx,dy,dz] voulu, `auSol` : l'entite etait-elle au sol,
 // `pas` : hauteur de marche (0,6). Rend { dx, dy, dz, bloqueX, bloqueY, bloqueZ, auSol (apres) }.
-export function deplacerBoite(lec, b, mv, auSol, pas = 0.6) {
+// extra : boites d'entites en plus des blocs (AbstractMinecart/AbstractBoat.canCollideWith : wagonnets, bateaux, corps poussables)
+export function deplacerBoite(lec, b, mv, auSol, pas = 0.6, extra = null) {
   const [mx, my, mz] = mv;
   const zone = [Math.min(b[0], b[0] + mx), Math.min(b[1], b[1] + my) - EPS, Math.min(b[2], b[2] + mz), Math.max(b[3], b[3] + mx), Math.max(b[4], b[4] + my + Math.max(pas, 0)), Math.max(b[5], b[5] + mz)];
   const liste = boitesDans(lec, zone);

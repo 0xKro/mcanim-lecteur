@@ -55,12 +55,13 @@ const rotYcentre = (p, deg) => { const a = deg * RAD, x = p[0] - 8, z = p[2] - 8
 
 // Matrice (monde) du fantome du gardien ancien a la fraction f (0..1) de ses 30 ticks : ElderGuardianParticle.renderCustom, dans le repere
 // de la camera (x a droite, y en haut, -z devant) : rotate(camera.rotation()) . Rx(60 - 150 f) . scale(1/2,35, -1/2,35, -1/2,35)
-// . translate(0, -0,56, 3,5), puis le modele cuit du gardien ancien (racine a l'echelle 2,35), SANS le T(0, -1,501, 0) des entites.
+// . translate(0, -0,56, 3,5), puis le modele cuit du gardien ancien (racine a l'echelle 2,35, comme le calque ELDER_GUARDIAN du jeu), SANS le T(0, -1,501, 0) des entites.
+// Le jeu fait scale(1, -1, -1) (pas 1/2,35) : avec 1/2,35, le gardien etait a 1 bloc de la camera, vu presque de l'interieur (signale par le proprietaire).
 // camera.rotation() = Ry(180 - lacet) . Rx(-tangage) (Camera.setRotation). Le gardien regarde la camera (son oeil, -z du modele, vient
 // vers elle), tete en haut, pas en miroir (scale(1, -1, -1) = Ry(180) . scale(-1, -1, 1) du rendu normal) ; il passe d'au-dessus
 // (60 degres) a devant (f = 0,4) puis en dessous (-90 degres) en tournant autour de la camera.
 export function matriceFantome(camera, f) {
-  const k = 1 / 2.35;   // 0,42553192 : annule l'echelle 2,35 cuite dans le modele
+  const k = 1;   // ElderGuardianParticle : scale(1, -1, -1) ; le modele garde sa taille de gardien ancien (2,35)
   const rot = mul(RY((180 - camera.lacet) * RAD), RX(-camera.tangage * RAD));
   return mul(mul(mul(mul(T(camera.x, camera.y, camera.z), rot), RX((60 - 150 * f) * RAD)), S(k, -k, -k)), T(0, -0.56, 3.5));
 }
@@ -250,14 +251,22 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain, creatu
   if (fantomes.length && creaturesDonnees) { try { ancien = new Creature({ type: 'elder_guardian' }, creaturesDonnees, kit); } catch { ancien = null; } }
   const transparents = new Map();
   const transparent = (t, a) => { const k = Math.round(a * 50); let c = transparents.get(t); if (!c) transparents.set(t, (c = new Map())); if (!c.has(k)) { const rgba = new Uint8Array(t.rgba); for (let i = 3; i < rgba.length; i += 4) rgba[i] = Math.round(rgba[i] * k / 50); c.set(k, { largeur: t.largeur, hauteur: t.hauteur, rgba }); } return c.get(k); };
+  // piques sorties comme sur les images du jeu (wiki : piques longues autour du corps)
+  const etatGhost = () => { const m = etatInitial('elder_guardian'); m.anim.v[2] = 1; m.anim.vo[2] = 1; return m; };
   function fantomeAncien(u, camera) {
     if (!ancien) return [];
     const t0 = fantomes.filter((t) => u >= t && u < t + 30).pop();
     if (t0 === undefined) return [];
     const f = (u - t0) / 30, alpha = 0.05 + 0.5 * Math.sin(f * Math.PI);
     const pose = { x: camera.x, y: camera.y, z: camera.z, matrice: matriceFantome(camera, f), age: u,
-      creature:{ cacher: [], s: { pos: 0, speed: 0, age: u, yRot: 0, xRot: 0, swing: 0, baby: false, partial: 0 }, m: etatInitial('elder_guardian'), parties: {} } };
-    return ancien.maillage(pose, 1).map((m) => ({ ...m, texture: transparent(m.texture, alpha), mode: 'melange', deuxFaces: true, exempt: true }));
+      creature:{ cacher: [], s: { pos: 0, speed: 0, age: u, yRot: 0, xRot: 0, swing: 0, baby: false, partial: 0 }, m: etatGhost(), parties: {} } };
+    // faces arriere cachees : sinon, en transparence, on voit l'interieur de la boite (parois qui fuient vers l'oeil, signale par le
+    // proprietaire). Les quads du modele sont tournes dans le sens que le rendu cache pour cette matrice : on inverse chaque triangle.
+    return ancien.maillage(pose, 1).map((m) => {
+      const ind = new Uint32Array(m.indices);
+      for (let i = 0; i < ind.length; i += 3) { const a = ind[i + 1]; ind[i + 1] = ind[i + 2]; ind[i + 2] = a; }
+      return { ...m, indices: ind, texture: transparent(m.texture, alpha), mode: 'melange', deuxFaces: false, exempt: true };
+    });
   }
 
   // ---------------------------------------------------------------- une image

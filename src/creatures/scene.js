@@ -44,7 +44,7 @@ export function lireCreature(a, o, ch, err, { duree, noms, typesActeurs }) {
   }
   if (a.etiquette !== undefined) { if (typeof a.etiquette !== 'string' || a.etiquette.length > 40) err(`${ch}.etiquette`, 'texte de 40 caracteres au plus attendu (nom affiche au-dessus de la tete)'); o.etiquette = a.etiquette; }
   if (type === null) {
-    for (const k of ['variante', 'bebe', 'taille', 'charge', 'selle', 'armureCheval', 'colle', 'coffre', 'tondu', 'gonfle', 'anim', 'parties', 'agressif', 'porte', 'contenu', 'echange', 'sautille', 'ia', 'comportement', 'garde', 'maison', 'travail', 'lit', 'rassemblement', 'epaule', 'ami', 'laisse', 'apprivoise', 'ruche', 'nourriture', 'centre', 'perchoir', 'emerge', 'genes', 'confiance', 'aOeuf', 'enceinte']) if (a[k] !== undefined) err(`${ch}.${k}`, 'champ des creatures : il faut aussi "type" (par exemple "type": "zombie")');
+    for (const k of ['variante', 'bebe', 'taille', 'charge', 'selle', 'armureCheval', 'colle', 'coffre', 'tondu', 'gonfle', 'anim', 'parties', 'agressif', 'porte', 'contenu', 'echange', 'sautille', 'ia', 'comportement', 'garde', 'maison', 'travail', 'lit', 'rassemblement', 'epaule', 'ami', 'laisse', 'apprivoise', 'ruche', 'nourriture', 'age', 'centre', 'perchoir', 'emerge', 'genes', 'confiance', 'aOeuf', 'enceinte']) if (a[k] !== undefined) err(`${ch}.${k}`, 'champ des creatures : il faut aussi "type" (par exemple "type": "zombie")');
     return;
   }
   const c = { type };
@@ -107,6 +107,8 @@ export function lireCreature(a, o, ch, err, { duree, noms, typesActeurs }) {
     if (type !== 'villager' || !estObjet(a.nourriture) || Object.entries(a.nourriture).some(([k, v]) => !['bread', 'potato', 'carrot', 'beetroot', 'wheat', 'wheat_seeds', 'beetroot_seeds'].includes(k) || !Number.isInteger(v) || v < 1 || v > 64)) err(`${ch}.nourriture`, 'villageois seulement : { "bread": 3 } (bread 4 points, potato, carrot, beetroot 1 ; 12 points pour un bebe)');
     c.nourriture = a.nourriture;
   }
+  // age d'un bebe en ticks (AgeableMob : -24000 a la naissance, adulte a 0 ; x croissance.vitesse)
+  if (a.age !== undefined && a.age !== null) { avecIa('age'); if (!a.bebe || !Number.isInteger(a.age) || a.age < -48000 || a.age > -1) err(`${ch}.age`, 'bebe seulement : ticks avant l age adulte, entier negatif (le jeu : -24000 a la naissance)'); c.age = a.age; }
   // dernieres creatures (moteur/ia-boss.js, ia-warden.js, ia-oeufs.js) : centre et perchoir du dragon, warden qui sort de terre, genes du panda,
   // ocelot confiant, tortue qui porte un oeuf, grenouille enceinte
   if (a.centre !== undefined && a.centre !== null) { avecIa('centre'); if (type !== 'ender_dragon' || !Array.isArray(a.centre) || a.centre.length !== 2 || !a.centre.every(estNombre)) err(`${ch}.centre`, 'dragon seulement : [x, z] du centre de ses cercles (defaut : monde.fontaine, sinon son depart)'); c.centre = a.centre; }

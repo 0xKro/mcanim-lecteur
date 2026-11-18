@@ -33,7 +33,6 @@ const SUIT = { cow: 1.25, mooshroom: 1.25, sheep: 1.1, pig: 1.1, chicken: 1.1, g
 const SON_MANGER = { pig: 'entity.pig.eat', cat: 'entity.cat.eat', fox: 'entity.fox.eat', goat: 'entity.goat.eat', armadillo: 'entity.armadillo.eat', strider: 'entity.strider.eat', horse: 'entity.horse.eat', donkey: 'entity.donkey.eat', llama: 'entity.llama.eat', trader_llama: 'entity.llama.eat', camel: 'entity.camel.eat' };
 // nourriture des villageois (Villager.FOOD_POINTS) et objets qu'ils ramassent (WANTED_ITEMS)
 export const POINTS_VILLAGEOIS = { bread: 4, potato: 1, carrot: 1, beetroot: 1 };
-const VOULUS_VILLAGEOIS = new Set(['bread', 'potato', 'carrot', 'beetroot', 'wheat', 'wheat_seeds', 'beetroot_seeds', 'torchflower_seeds', 'pitcher_pod']);
 // Parrot.MOB_SOUND_MAP : les mobs que le perroquet imite (entity.parrot.imitate.<type>)
 export { IMITES };
 // #enderman_holdable (blocs que l'enderman prend)
@@ -41,8 +40,6 @@ const PORTABLES = new Set(['grass_block', 'dirt', 'coarse_dirt', 'podzol', 'myce
 // melange de deux teintures (recettes de deux colorants : Sheep.getOffspringColor) ; sans recette : l'une des deux au hasard
 const MELANGES = { 'red+white': 'pink', 'green+white': 'lime', 'blue+white': 'light_blue', 'black+white': 'gray', 'gray+white': 'light_gray', 'blue+green': 'cyan', 'blue+red': 'purple', 'pink+purple': 'magenta', 'red+yellow': 'orange' };
 const CHEVAUX_JEU = ['white', 'creamy', 'chestnut', 'brown', 'black', 'gray', 'darkbrown'], MARQUES_JEU = ['sans', 'markings_white', 'markings_whitefield', 'markings_whitedots', 'markings_blackdots'];
-// type de villageois du biome (VillagerType.byBiome)
-const typeDuBiome = (b) => { b = String(b ?? '').replace(/^minecraft:/, ''); return /desert/.test(b) ? 'desert' : /jungle|bamboo/.test(b) ? 'jungle' : /savanna/.test(b) ? 'savanna' : /snowy|frozen|ice|grove|peaks/.test(b) ? 'snow' : /swamp|mangrove/.test(b) ? 'swamp' : /taiga/.test(b) ? 'taiga' : 'plains'; };
 const ZOMBIES = /^mob:(zombie|husk|drowned|zombie_villager)$/;
 const journal = (sim, t) => (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${t}`);
 // GossipType : poids, maximum, declin par jour, declin par transfert
@@ -71,12 +68,13 @@ export const VIE = {
     if (this.type === 'enderman' && d.porte) { this.porteEtat = 'minecraft:' + String(d.porte).replace(/^minecraft:/, ''); this.a.main = { objet: String(d.porte).replace(/^minecraft:/, ''), efficacite: 0 }; }
     if (this.type === 'villager' && d.nourriture) for (const [k, n] of Object.entries(d.nourriture)) this.a.sac.set(k, (this.a.sac.get(k) || 0) + n);
     this.faim = 0;   // Villager.foodLevel
+    if (this.type === 'villager') this.initVillageois(d);   // ia-villageois.js
   },
   installerVie(add) {
     const t = this.type, f = this.pr.fam;
     if (NOURRITURE[t] && t !== 'mule') { add(2, 'reproduit', MOVE | LOOK); if (TENTE[t]) add(3, 'tente', MOVE | LOOK); if (SUIT[t]) add(4, 'suitParent', 0); }
     if (t === 'bee') { add(1, 'entreRuche', 0); add(4, 'pollinise', MOVE); add(5, 'chercheRuche', 0); add(5, 'versRuche', MOVE); add(6, 'versFleur', MOVE); add(7, 'pousseCulture', 0); }
-    if (t === 'villager') { add(5, 'ramasseNourriture', MOVE); add(6, 'amourVillageois', MOVE | LOOK); }
+    if (t === 'villager') this.installerVillageois(add);   // temps libre, echanges, reproduction, jeu des bebes, POI (ia-villageois.js)
     if (t === 'enderman') { add(10, 'endermanPose', 0); add(11, 'endermanPrend', 0); }
     this.installerOeufs(add);   // tortue, grenouille, ocelot (ia-oeufs.js)
     void f;
@@ -604,85 +602,19 @@ export const VIE = {
     if (b) { b.appliquerEffet('nausea', 200, 0); if (this.soigneur) { b.ia.ragot(this.soigneur, 'major_positive', 20); b.ia.ragot(this.soigneur, 'minor_positive', 25); } }   // ZOMBIE_VILLAGER_CURED
   },
 
-  // ---- villageois : nourriture, reproduction (VillagerMakeLove), golem ------------------------------------------------------------
-  pointsNourriture() { let n = 0; for (const [k, v] of this.a.sac) n += (POINTS_VILLAGEOIS[k] ?? 0) * v; return n; },
-  peutSeReproduireV() { return this.faim + this.pointsNourriture() >= 12 && !this.sommeil && this.age === 0 && !this.bebe; },
+  // ---- villageois : nourriture, golem (le reste : ia-villageois.js) ---------------------------------------------------------------------
   mangerEtDigerer() {   // Villager.eatAndDigestFood : mange jusqu'a 12 points, puis en digere 12
     if (this.faim < 12) for (const [k, v] of [...this.a.sac]) { const p = POINTS_VILLAGEOIS[k]; if (!p) continue; for (let j = v; j > 0; j--) { this.faim += p; if (j - 1 > 0) this.a.sac.set(k, j - 1); else this.a.sac.delete(k); if (this.faim >= 12) break; } if (this.faim >= 12) break; }
     this.faim -= 12;
   },
   tickVillageoisVie() {
-    const a = this.a, sim = this.sim;
+    const sim = this.sim;
     if (this.sommeil && !this.dormaitAvant) this.dernierSommeil = sim.temps;   // SleepInBed : LAST_SLEPT
     if (sim.temps - (this.dernierDeclin ?? 0) >= 24000) { this.dernierDeclin = sim.temps; if (sim.temps > 0) this.declinRagots(); }   // maybeDecayGossip
     this.dormaitAvant = !!this.sommeil;
-    // Mob.aiStep : ramasse les objets voulus a portee (boite elargie de 1, 0, 1) ; Villager.wantsToPickUp
-    if (!this.sommeil && sim.entites.liste.length) {
-      const b = a.boite(), bx = [b[0] - 1, b[1], b[2] - 1, b[3] + 1, b[4], b[5] + 1];
-      for (const e of sim.entites.liste) {
-        if (e.type !== 'objet' || e.pris || e.delai > 0 || !VOULUS_VILLAGEOIS.has(e.item) || sim.entites._fini?.has(e)) continue;
-        if (e.x < bx[0] || e.x > bx[3] || e.y + 0.25 < bx[1] || e.y > bx[4] || e.z < bx[2] || e.z > bx[5]) continue;
-        e.pris = { acteur: a, k: 0, de: [e.x, e.y, e.z] }; a.sac.set(e.item, (a.sac.get(e.item) || 0) + e.n);
-        sim.son('entity.item.pickup', e.x, e.y, e.z, 0.2, (sim.hasard.flottant() - sim.hasard.flottant()) * 1.4 + 2);
-        journal(sim, `${a.nom} ramasse ${e.n} ${e.item}`);
-      }
-    }
+    this.ramasserObjets();   // Mob.aiStep : ramasse les objets voulus a portee (ia-villageois.js)
     // VillagerPanicTrigger : en panique, toutes les 100 ticks, un golem si 3 villageois le veulent
     if ((this.actifs.has(this.but('panique')) || this.actifs.has(this.but('evite'))) && sim.temps % 100 === 0) this.golemSiBesoin(3);
-  },
-  // GoToWantedItem (4 blocs, vitesse 0,5) : il va vers la nourriture au sol
-  peut_ramasseNourriture() {
-    if (this.sommeil || this.activite() === 'repos') return false;
-    const a = this.a; let best = null, bd = 16;
-    for (const e of this.sim.entites.liste) { if (e.type !== 'objet' || e.pris || !VOULUS_VILLAGEOIS.has(e.item)) continue; const d = (e.x - a.x) ** 2 + (e.y - a.y) ** 2 + (e.z - a.z) ** 2; if (d < bd) { bd = d; best = e; } }
-    this.objetVise = best; return !!best;
-  },
-  continue_ramasseNourriture() { const e = this.objetVise; return !!e && !e.pris && this.sim.entites.liste.includes(e) && !this.navFinie(); },
-  debut_ramasseNourriture() { const e = this.objetVise; this.allerVers(e.x, undefined, e.z, 0.5, { recalcul: 20, rayon: 0.4 }); },
-  tick_ramasseNourriture() {},
-  // InteractWith(BREED_TARGET) + VillagerMakeLove : temps libre, deux villageois qui peuvent se reproduire a 8 blocs ; 275 a 324 ticks ensemble
-  // (coeurs 1 fois sur 35), puis ils mangent 12 points chacun et un bebe nait s'il y a un lit libre a 48 blocs (sinon colere)
-  peut_amourVillageois() {
-    if (this.activite() !== 'libre' || !this.peutSeReproduireV() || !this.sim.regles.valeur('reproduction.actif', true)) return false;
-    if (this.partenaireV && this.partenaireV.ia?.partenaireV === this.a) return true;
-    const p = this.autres().filter((o) => o.ia?.type === 'villager' && !o.ia.bebe && o.ia.peutSeReproduireV() && !o.ia.partenaireV && this.dist2(o) < 64 && this.voit(o)).sort((p, q) => this.dist2(p) - this.dist2(q))[0];
-    if (!p) return false;
-    this.partenaireV = p; p.ia.partenaireV = this.a; this.initiateur = true; p.ia.initiateur = false;
-    return true;
-  },
-  continue_amourVillageois() { const p = this.partenaireV; return !!p && p.mort < 0 && p.ia.partenaireV === this.a && this.sim.temps <= (this.naissanceV ?? Infinity) && this.peutSeReproduireV() && p.ia.peutSeReproduireV(); },
-  debut_amourVillageois() { if (this.initiateur) { this.naissanceV = this.sim.temps + 275 + this.h.entierBorne(50); this.partenaireV.ia.naissanceV = this.naissanceV; this.stat('amoursVillageois'); journal(this.sim, `${this.a.nom} et ${this.partenaireV.nom} se plaisent`); } },
-  fin_amourVillageois() { const p = this.partenaireV; if (p?.ia?.partenaireV === this.a) p.ia.partenaireV = null; this.partenaireV = null; this.naissanceV = undefined; },
-  tick_amourVillageois() {
-    const p = this.partenaireV, sim = this.sim;
-    this.regarder(p);
-    if (this.dist2(p) > 25) return;
-    if (this.dist2(p) > 4) this.allerVers(p.x, p.y, p.z, 0.5, { recalcul: 10 }); else this.nav = null;
-    if (!this.initiateur) return;
-    if (sim.temps >= this.naissanceV) {
-      this.mangerEtDigerer(); p.ia.mangerEtDigerer();
-      const lit = this.litLibre();
-      if (!lit) { p.ia.particulesAutour('angry_villager', 5, 1); this.particulesAutour('angry_villager', 5, 1); journal(sim, `${this.a.nom} et ${p.nom} : pas de lit libre, pas de bebe`); this.stat('sansLit'); return; }
-      const a = this.a;
-      const r = this.h.reel(), mot = (ia) => lireVariante('villager', ia.variante).choix?.[0] ?? 'plains';
-      const typeV = r < 0.5 ? typeDuBiome(sim.zone.biome?.(Math.floor(a.x), Math.floor(a.y), Math.floor(a.z))) : r < 0.75 ? mot(this) : mot(p.ia);
-      this.age = 6000; p.ia.age = 6000;
-      const b = sim.acteurs.naitre({ type: 'villager', variante: `${typeV} none`, bebe: true, x: a.x, y: a.y, z: a.z, lacet: 0, modele: a.nom, raison: 'reproduction', gabaritParent: { l: a.L, h: a.H, oeil: a.O, vitesse: a.kVit }, ia: { lit, parents: [a.nom, p.nom], maison: this.maison ?? null } });
-      if (b) { b.ia.particulesAutour('heart', 5, 1); this.stat('naissances'); journal(sim, `${a.nom} et ${p.nom} ont un bebe villageois : ${b.nom} (lit ${lit.join(',')})`); }
-    } else if (this.h.entierBorne(35) === 0) { p.ia.particulesAutour('heart', 5, 1); this.particulesAutour('heart', 5, 1); }
-  },
-  // PoiManager.take(HOME, 48) : la tete d'un lit que personne n'a (champ `lit` des villageois)
-  litLibre() {
-    const sim = this.sim, a = this.a, o = [Math.floor(a.x), Math.floor(a.y), Math.floor(a.z)], d = sim.d;
-    const pris = new Set();
-    for (const v of sim.acteurs.liste) if (v.ia?.lit && v.mort < 0) { const l = v.ia.lit, e = sim.monde.etatEn(l[0], l[1], l[2]); pris.add(teteLit(sim, l, e).join()); }
-    let best = null, bd = Infinity;
-    for (let dx = -48; dx <= 48; dx++) for (let dz = -48; dz <= 48; dz++) for (let dy = -16; dy <= 16; dy++) {
-      const x = o[0] + dx, y = o[1] + dy, z = o[2] + dz, e = sim.monde.etatEn(x, y, z);
-      if (e < 0 || !d.nomBloc(e).endsWith('_bed') || d.prop(e, 'part') !== 'head' || pris.has(`${x},${y},${z}`)) continue;
-      const dd = dx * dx + dy * dy + dz * dz; if (dd <= 48 * 48 && dd < bd) { bd = dd; best = [x, y, z]; }
-    }
-    return best;
   },
   // Villager.gossip -> spawnGolemIfNeeded(5) ; wantsToSpawnGolem : a dormi depuis moins de 24000 ticks, pas de golem vu (16 blocs, 600 ticks)
   veutGolem() {
@@ -786,11 +718,6 @@ export const VIE = {
 };
 
 function estRucheBloc(sim, p) { const e = sim.monde.etatEn(p[0], p[1], p[2]); return e >= 0 && /^(beehive|bee_nest)$/.test(sim.d.nomBloc(e)); }
-function teteLit(sim, l, e) {
-  if (e < 0 || sim.d.prop(e, 'part') !== 'foot') return l;
-  const f = { north: [0, -1], south: [0, 1], west: [-1, 0], east: [1, 0] }[sim.d.prop(e, 'facing')] ?? [0, 0];
-  return [l[0] + f[0], l[1], l[2] + f[1]];
-}
 // BlockPos.withinBoxByManhattanDistance : les plus proches d'abord (distance de Manhattan), puis x, y, +z avant -z
 export function manhattan(o, rx, ry, rz) {
   const out = [];

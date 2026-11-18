@@ -11,6 +11,8 @@ export function installer(mc, regles) {
   regles.declarer('tnt.chaineMin', { def: -1, min: -1, max: 1200, entier: true, doc: 'meche minimale des TNT amorces par une explosion (-1 : formule du jeu, meche/8 a meche/8 + meche/4 - 1 = 10 a 29)' });
   regles.declarer('tnt.chaineMax', { def: -1, min: -1, max: 1200, entier: true, doc: 'meche maximale des TNT amorces par une explosion (-1 : formule du jeu)' });
   regles.declarer('explosion.resistanceBlocs', { def: 1, min: 0, max: 1000, doc: 'facteur sur la resistance des blocs aux explosions (0 : tout part ; 1 : jeu)' });
+  // ajout de film voulu par le proprietaire (docs/SIMULATION.md partie 21) : la trajectoire reste celle du jeu, seul le dessin du corps change
+  regles.declarer('explosion.ragdoll', { def: true, doc: 'corps projetes par une explosion dessines en pantin (rotation, membres ballants, rebond) ; false : le dessin du jeu (corps droit)' });
 
   mc.bloc('TntBlock').sur('utilise', (ev, monde) => {
     const o = String(ev.objet || '').replace(/^minecraft:/, '');

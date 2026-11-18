@@ -283,12 +283,12 @@ export class Personnage {
       // repere du modele (blocs), puis chaine vers le monde
       let px = m.R[0] * lx + m.R[1] * ly + m.R[2] * lz, py = m.R[3] * lx + m.R[4] * ly + m.R[5] * lz, pz = m.R[6] * lx + m.R[7] * ly + m.R[8] * lz;
       px = px / 16 + m.t[0]; py = py / 16 + m.t[1]; pz = pz / 16 + m.t[2];
-      const [wx, wy, wz] = versMonde(px, py, pz, ct, st, inc);
+      const [wx, wy, wz] = pantin(pose, versMonde(px, py, pz, ct, st, inc));
       positions[s * 3] = pose.x + wx; positions[s * 3 + 1] = pose.y + wy - BAISSE_ACCROUPI * crouch + dy; positions[s * 3 + 2] = pose.z + wz;
       // ombrage : normale tournee, puis mise au carre pour un passage doux entre les faces
       const nx = cfg.normales[s * 3], ny = cfg.normales[s * 3 + 1], nz = cfg.normales[s * 3 + 2];
       const rx = m.R[0] * nx + m.R[1] * ny + m.R[2] * nz, ry = m.R[3] * nx + m.R[4] * ny + m.R[5] * nz, rz = m.R[6] * nx + m.R[7] * ny + m.R[8] * nz;
-      const [vx, vy, vz] = versMondeDir(rx, ry, rz, ct, st, inc);
+      const [vx, vy, vz] = pantin(pose, versMondeDir(rx, ry, rz, ct, st, inc), true);
       if (brut) { couleurs[s * 3] = 1; couleurs[s * 3 + 1] = 1; couleurs[s * 3 + 2] = 1; normales[s * 3] = vx; normales[s * 3 + 1] = vy; normales[s * 3 + 2] = vz; continue; }
       const o = ombre(vx, vy, vz) * lumiere;
       couleurs[s * 3] = o * tn[0]; couleurs[s * 3 + 1] = o * tn[1]; couleurs[s * 3 + 2] = o * tn[2];
@@ -317,12 +317,12 @@ export class Personnage {
       const m = mats[ext.partie[s]];
       const lx = ext.local[s * 3], ly = ext.local[s * 3 + 1], lz = ext.local[s * 3 + 2];
       const px = (m.R[0] * lx + m.R[1] * ly + m.R[2] * lz) / 16 + m.t[0], py = (m.R[3] * lx + m.R[4] * ly + m.R[5] * lz) / 16 + m.t[1], pz = (m.R[6] * lx + m.R[7] * ly + m.R[8] * lz) / 16 + m.t[2];
-      const [wx, wy, wz] = versMonde(px, py, pz, ct, st, inc);
+      const [wx, wy, wz] = pantin(pose, versMonde(px, py, pz, ct, st, inc));
       positions[s * 3] = pose.x + wx; positions[s * 3 + 1] = pose.y + wy - BAISSE_ACCROUPI * crouch + dy; positions[s * 3 + 2] = pose.z + wz;
       const nx = ext.normales[s * 3], ny = ext.normales[s * 3 + 1], nz = ext.normales[s * 3 + 2];
       let rx = m.R[0] * nx + m.R[1] * ny + m.R[2] * nz, ry = m.R[3] * nx + m.R[4] * ny + m.R[5] * nz, rz = m.R[6] * nx + m.R[7] * ny + m.R[8] * nz;
       const l = Math.hypot(rx, ry, rz) || 1; rx /= l; ry /= l; rz /= l;   // une echelle d'objet ne change pas l'ombrage
-      const [vx, vy, vz] = versMondeDir(rx, ry, rz, ct, st, inc);
+      const [vx, vy, vz] = pantin(pose, versMondeDir(rx, ry, rz, ct, st, inc), true);
       if (brut) { couleurs[s * 3] = 1; couleurs[s * 3 + 1] = 1; couleurs[s * 3 + 2] = 1; normales[s * 3] = vx; normales[s * 3 + 1] = vy; normales[s * 3 + 2] = vz; continue; }
       const o = ombre(vx, vy, vz) * lumiere;
       couleurs[s * 3] = o * tn[0]; couleurs[s * 3 + 1] = o * tn[1]; couleurs[s * 3 + 2] = o * tn[2];
@@ -438,6 +438,15 @@ export const DESCENTE_MAX = 0.12;   // blocs : amplitude maximale de l'appui (bo
 export function compensationAppui(pose, descenteMax = DESCENTE_MAX) {
   const dy = SOL - basDesPieds(pose);
   return Math.max(-descenteMax, Math.min(0.04, dy));
+}
+
+// Pantin des explosions (film/ragdoll.js) : pose.ragdoll = { R (3x3, monde), centre (hauteur du centre du corps) } tourne tout le corps
+// autour de son centre, apres le lacet ; v : point (ou direction si dir) relatif aux pieds. Sans pose.ragdoll : v tel quel.
+function pantin(pose, v, dir = false) {
+  const g = pose.ragdoll;
+  if (!g) return v;
+  const R = g.R, c = dir ? 0 : g.centre, y = v[1] - c;
+  return [R[0] * v[0] + R[1] * y + R[2] * v[2], R[3] * v[0] + R[4] * y + R[5] * v[2] + c, R[6] * v[0] + R[7] * y + R[8] * v[2]];
 }
 
 // Repere du modele (blocs, Y bas) -> monde relatif aux pieds (blocs, Y haut).

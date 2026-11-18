@@ -66,15 +66,18 @@ export function textureEntite(kitDir, chemin) {
   return t;
 }
 const existe = (kitDir, chemin) => !!kitDir && fs.existsSync(path.join(kitDir, 'assets', 'minecraft', 'textures', 'entity', ...chemin.split('/')) + '.png');
-// texture decalee en u (couche qui defile : charge du creeper, vent du breeze) ; le rendu clampe les UV, on decale donc les pixels
-function textureDecalee(t, du) {
-  const k = ((Math.round(du * t.largeur) % t.largeur) + t.largeur) % t.largeur;
+// texture decalee en u et v (couche qui defile : charge du creeper, armure du wither, vent du breeze) ; le rendu clampe les UV, on decale
+// donc les pixels (la texture du jeu se repete : RenderType.energySwirl / breezeWind decalent la matrice de texture)
+function textureDecalee(t, du, dv = 0) {
+  const L = t.largeur, H = t.hauteur;
+  const k = ((Math.round(du * L) % L) + L) % L, kv = ((Math.round(dv * H) % H) + H) % H;
   t._dec ??= new Map();
-  if (t._dec.has(k)) return t._dec.get(k);
-  const rgba = new Uint8Array(t.rgba.length), L = t.largeur;
-  for (let y = 0; y < t.hauteur; y++) for (let x = 0; x < L; x++) { const s = (y * L + ((x + k) % L)) * 4, d = (y * L + x) * 4; rgba[d] = t.rgba[s]; rgba[d + 1] = t.rgba[s + 1]; rgba[d + 2] = t.rgba[s + 2]; rgba[d + 3] = t.rgba[s + 3]; }
-  const r = { largeur: L, hauteur: t.hauteur, rgba };
-  t._dec.set(k, r);
+  const cle = k * 65536 + kv;
+  if (t._dec.has(cle)) return t._dec.get(cle);
+  const rgba = new Uint8Array(t.rgba.length);
+  for (let y = 0; y < H; y++) for (let x = 0; x < L; x++) { const s = (((y + kv) % H) * L + ((x + k) % L)) * 4, d = (y * L + x) * 4; rgba[d] = t.rgba[s]; rgba[d + 1] = t.rgba[s + 1]; rgba[d + 2] = t.rgba[s + 2]; rgba[d + 3] = t.rgba[s + 3]; }
+  const r = { largeur: L, hauteur: H, rgba };
+  t._dec.set(cle, r);
   return r;
 }
 
@@ -201,8 +204,9 @@ export function couchesDe(o, modeles, kitDir) {
       ajoute('warden', 'main', 'warden/warden_tendrils', blanc, { emissif: true, pulse: 'vrilles' });   // getTendrilAnimation : les vrilles s'allument quand il entend une vibration
       break;
     case 'creaking': if (o.yeux !== false) ajoute('creaking', 'eyes', 'creaking/creaking_eyes', blanc, { emissif: true }); break;   // CreakingRenderer : yeux allumes (actif)
-    case 'creeper': if (o.charge) ajoute('creeper', 'armor', 'creeper/creeper_armor', [0.5, 0.5, 0.5], { emissif: true, defile: 0.01, gonfle: 2 }); break;
-    case 'wither': ajoute('wither', 'armor', 'wither/wither_armor', [0.5, 0.5, 0.5], { emissif: true, defile: 0.01, gonfle: 0.5, cond: o.charge ? null : 'armure' }); break;   // WitherArmorLayer : sous la moitie de la vie (IA) ou `charge`
+    // CreeperPowerLayer (EnergySwirlLayer) : modele gonfle de 2 (couche armor de la table), gris 0,5, ajoute, u et v qui defilent de 0,01 par tick
+    case 'creeper': if (o.charge) ajoute('creeper', 'armor', 'creeper/creeper_armor', [0.5, 0.5, 0.5], { emissif: true, defile: 0.01, defileV: 0.01, gonfle: 2 }); break;
+    case 'wither': ajoute('wither', 'armor', 'wither/wither_armor', [0.5, 0.5, 0.5], { emissif: true, defile: 0.01, defileCos: true, defileV: 0.01, gonfle: 0.5, cond: o.charge ? null : 'armure' }); break;   // WitherArmorLayer : sous la moitie de la vie (IA) ou `charge` ; u = cos(age x 0,02) x 3
     case 'ender_dragon': ajoute('ender_dragon', 'main', 'enderdragon/dragon_eyes', blanc, { emissif: true, yeux: true, cond: 'vivant' }); break;   // EnderDragonRenderer : yeux (pas pendant la mort)
     default: break;
   }
@@ -304,6 +308,10 @@ export class Creature {
     }
     const tremble = et.tremble ? Math.cos(Math.floor(pose.age ?? 0) * 3.25) * Math.PI * 0.4 : 0;   // LivingEntityRenderer.setupRotations : isShaking (conversion)
     let B = mul(T(pose.x, y, pose.z), RY((180 - lacet - tremble) * RAD));
+    if (pose.ragdoll) {   // pantin des explosions (film/ragdoll.js) : tout le corps tourne autour de son centre, apres le lacet
+      const R = pose.ragdoll.R, c = pose.ragdoll.centre;
+      B = mul(mul(mul(T(pose.x, y + c, pose.z), [R[0], R[1], R[2], 0, R[3], R[4], R[5], 0, R[6], R[7], R[8], 0, 0, 0, 0, 1]), T(0, -c, 0)), RY((180 - lacet - tremble) * RAD));
+    }
     if (et.couche) {   // couche dans un lit (LivingEntityRenderer : recul de (oeil - 0,1) vers le pied, Y(direction du lit), Z(90), Y(270))
       const r = et.couche.lacet, pas = { 90: [0, 1], 0: [-1, 0], 270: [0, -1], 180: [1, 0] }[Math.round(r)] ?? [0, 0], f = et.couche.oeil - 0.1;
       B = mul(mul(mul(T(pose.x - pas[0] * f, y, pose.z - pas[1] * f), RY(r * RAD)), RZ(Math.PI / 2)), RY(270 * RAD));
@@ -383,7 +391,9 @@ export class Creature {
       }
       if (!q) continue;
       const texEtat = et?.texEtat && c.corps ? ((this.texEtats ??= {})[et.texEtat] ??= textureEntite(this.kitDir, et.texEtat) ?? null) : null;   // abeille : en colere et/ou avec du nectar
-      let texture = c.defile ? textureDecalee(c.t, (age * c.defile) % 1) : texEtat ?? (et?.alt && c.corps && this.texAlt ? this.texAlt : c.t);   // ghast qui tire, vex qui charge, abeille en colere
+      // EnergySwirlLayer : u = xOffset(age), v = age x 0,01 (creeper : xOffset = age x 0,01 ; wither : cos(age x 0,02) x 3) ; age avec la fraction de tick
+      const ageF = et?.s?.age ?? age;
+      let texture = c.defile ? textureDecalee(c.t, (c.defileCos ? Math.cos(ageF * 0.02) * 3 : ageF * c.defile) % 1, ((c.defileV ?? 0) * ageF) % 1) : texEtat ?? (et?.alt && c.corps && this.texAlt ? this.texAlt : c.t);   // ghast qui tire, vex qui charge, abeille en colere
       if (et?.dissolution && c.corps) texture = this.dissoudre(texture, et.dissolution);   // dragon qui meurt : seuls restent les pixels ou dragon_exploding est assez opaque
       const m = { positions, uvs, couleurs, indices, texture, mode: emissif ? 'melange' : c.mode, deuxFaces: c.mode !== 'melange' || emissif, genre: 'creature', entite: this.entite };
       if (emissif) { m.additif = true; m.emissif = true; if (c.yeux) m.yeux = true; if (!c.yeux && !c.defile && !c.pulse) m.lueur = true; }   // lueur : RenderType.entityTranslucentEmissive (warden, breeze, creaking, golem de cuivre) : un vrai pack la melange (pas d'ajout), pleine lumiere   // yeux (RenderType.eyes) : programme gbuffers_spidereyes d'un vrai pack

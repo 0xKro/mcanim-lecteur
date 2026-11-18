@@ -3,7 +3,7 @@
 // `D` = { err(chemin, message), lirePiste, borner, lireTable, lireCamera, noms:Set } fournis par scene.js (evite un import circulaire).
 import { lireCouleur } from '../incrust/toile.js';
 import { casses } from '../incrust/texte.js';
-import { decouperSousTitres } from './sous-titres.js';
+import { decouperSousTitres, rythmerTexte, RYTHME } from './sous-titres.js';
 import { pileMax } from '../moteur/contenus.js';
 import { ENTREES, SORTIES, EMPHASES, NOMS_COURBES, ALIAS_TYPE } from './mouvement.js';
 
@@ -245,7 +245,8 @@ function elementLegende(D, t, texte, opt, ch, ordre) {
 }
 
 // ---------------------------------------------------------------- sousTitres : legendes mot a mot decoupees en puces de 1 a 3 mots
-// { texte, debut, fin | mots:[[t,"mot"],...], par, couleurs, accent, position, taille, style, pop }
+// { texte, debut, fin | mots:[[t,"mot"],...], par, rythme | dureePuce, couleurs, accent, position, taille, style, pop }
+// rythme (puces par seconde, defaut 1,5) ou dureePuce (secondes par puce) : seulement pour { texte, debut, fin } ; avec `mots` la voix decide.
 export function lireSousTitres(D, brut, duree) {
   const ch = 'sousTitres';
   const liste = Array.isArray(brut) ? brut : [brut];
@@ -254,12 +255,15 @@ export function lireSousTitres(D, brut, duree) {
   liste.forEach((b, i) => {
     const c = Array.isArray(brut) ? `${ch}[${i}]` : ch;
     if (!estObjet(b)) D.err(c, 'un objet est attendu, par exemple {"texte":"I know you stole it","debut":1,"fin":3.5}');
-    champsConnus(D, b, ['texte', 'debut', 'fin', 'mots', 'par', 'style', 'position', 'pop', 'calque', 'opacite', 'qui', ...CLES_STYLE, ...CLES_MOUVEMENT], c);
+    champsConnus(D, b, ['texte', 'debut', 'fin', 'mots', 'par', 'rythme', 'dureePuce', 'style', 'position', 'pop', 'calque', 'opacite', 'qui', ...CLES_STYLE, ...CLES_MOUVEMENT], c);
     // qui : l'acteur qui dit ce bloc (facultatif) : il joue la parole (tete, avant-bras sur les mots en accent), l'autre l'ecoute (montage/jeu.js)
     if (b.qui !== undefined && (typeof b.qui !== 'string' || !D.noms.has(b.qui))) D.err(`${c}.qui`, `nom de l'acteur qui parle attendu (acteurs : ${[...D.noms].join(', ')})`);
     if (typeof b.texte !== 'string' && !Array.isArray(b.mots)) D.err(c, 'il faut "texte" (avec "debut" et "fin") ou "mots": [[t, "mot"], ...]');
     const par = b.par === undefined ? 2 : b.par;
     if (!Number.isInteger(par) || par < 1 || par > 3) D.err(`${c}.par`, 'nombre de mots par puce : 1, 2 ou 3');
+    // rythme : puces par seconde (defaut 1,5, comme les references) ; dureePuce : secondes par puce (« 2 s par legende » = 2). L'un ou l'autre.
+    if (b.rythme !== undefined && b.dureePuce !== undefined) D.err(c, '"rythme" (puces par seconde) OU "dureePuce" (secondes par puce), pas les deux');
+    const rythme = b.dureePuce !== undefined ? 1 / nombreEntre(D, b.dureePuce, `${c}.dureePuce`, 0.2, 10, 1) : nombreEntre(D, b.rythme, `${c}.rythme`, 0.1, 5, RYTHME);
     let mots;
     if (Array.isArray(b.mots)) {
       if (b.mots.length > 1500) D.err(`${c}.mots`, '1500 mots au maximum');
@@ -276,11 +280,10 @@ export function lireSousTitres(D, brut, duree) {
       // la ponctuation isolee (francais : « Steve ! », « non ? », « : ») reste avec le mot d'avant : jamais de puce faite d'un seul « ! »
       const ws = b.texte.split(/\s+/).filter(Boolean).reduce((l, w) => { if (l.length && !/[\p{L}\p{N}]/u.test(w)) l[l.length - 1] += ' ' + w; else l.push(w); return l; }, []);
       if (!ws.length) D.err(`${c}.texte`, 'texte vide');
-      // sans temps par mot : repartis selon le nombre de lettres (+ une pause apres la ponctuation)
-      const poids = ws.map((w) => w.replace(/[^\p{L}\p{N}]/gu, '').length + 2 + (/[.!?]$/.test(w) ? 2 : /[,;:]$/.test(w) ? 1 : 0));
-      const total = poids.reduce((a, x) => a + x, 0);
-      let t = b.debut; mots = ws.map((w, j) => { const m = { t, mot: w }; t += (b.fin - b.debut) * poids[j] / total; return m; });
+      // sans temps par mot : puces au rythme demande (defaut 1,5 par seconde), mots places selon leurs lettres (montage/sous-titres.js)
+      mots = rythmerTexte(ws, { debut: b.debut, fin: b.fin, rythme, par: b.par ?? null, choisi: b.rythme !== undefined || b.dureePuce !== undefined });
     }
+    const texteSeul = !Array.isArray(b.mots);
     if (!mots.length) D.err(c, 'aucun mot');
     const accents = new Set(Array.isArray(b.accent) ? b.accent : Array.isArray(b.style?.accent) ? b.style.accent : []);
     // pour les gestes "@mot" et la parole de `qui` (montage/jeu.js) : bloc, fin du bloc, mot en accent
@@ -293,7 +296,9 @@ export function lireSousTitres(D, brut, duree) {
     const style = lireStyle(D, opt, c, { ...styleLegende(opt), casse: 'majuscules' });   // sous-titres : CAPITALES par defaut (references) ; "casse": "aucune" garde le texte tel quel
     const pos = lirePosition(D, opt.position, `${c}.position`), pop = lirePop(D, opt.pop, `${c}.pop`), mouv = lireMouvement(D, opt, c);
     const calque = nombreEntre(D, b.calque, `${c}.calque`, -100, 100, 50), opacite = nombreEntre(D, b.opacite, `${c}.opacite`, 0, 1, 1);
-    const puces = decouperSousTitres(mots, { par, fin: fin ?? Math.min(duree, mots[mots.length - 1].t + 0.6), accent: style.accent ?? null });
+    // bloc {texte, debut, fin} : les puces sont deja choisies (marques `coupe`, 3 mots au plus) et se suivent jusqu'a `fin`, sans trou
+    const puces = texteSeul ? decouperSousTitres(mots, { par: 3, fin, accent: style.accent ?? null, pause: Infinity })
+      : decouperSousTitres(mots, { par, fin: fin ?? Math.min(duree, mots[mots.length - 1].t + 0.6), accent: style.accent ?? null });
     puces.forEach((p, k) => sortie.push({ type: 'texte', legende: true, t: [p.debut, p.fin], texte: p.texte, ...style, accent: p.accent, ...pos, pop, ...mouv, calque, opacite, ordre: i * 10000 + k }));
   });
   return sortie;

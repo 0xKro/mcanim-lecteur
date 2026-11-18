@@ -19,6 +19,8 @@ import { METHODES_BOSS, declarerReglesBoss } from './ia-boss.js';   // wither, d
 import { METHODES_EAU } from './ia-eau.js';   // nage dirigee : poissons, bancs, calmars, dauphins, axolotls, tortues, gardiens
 import { METHODES_WARDEN } from './ia-warden.js';   // warden : vibrations, colere, flairer, rugir, onde sonique, creuser
 import { METHODES_OEUFS, declarerReglesOeufs } from './ia-oeufs.js';   // oeufs et reproductions a part : tortue, grenouille, renifleur, panda, ocelot, axolotl, poule
+import { METHODES_VILLAGEOIS } from './ia-villageois.js';   // villageois : temps libre, echanges, reproduction, jeu des bebes, lits et postes pris
+import { declarerReglesPoussee } from './poussee.js';   // les corps vivants se poussent (acteurs.poussee)
 
 const RAD = Math.PI / 180;
 const norm180 = (a) => { a = (a + 180) % 360; if (a < 0) a += 360; return a - 180; };
@@ -92,6 +94,7 @@ export function declarerRegles(regles) {
   declarerReglesBoss(regles); declarerReglesOeufs(regles);
   regles.declarer('combat.recul', { def: 1, min: 0, max: 10, doc: 'multiplicateur du recul des coups (0,4 par coup recu, + 0,5 si l\'attaquant court)' });
   declarerReglesVie(regles);
+  declarerReglesPoussee(regles);   // acteurs.poussee (moteur/poussee.js)
   regles.declarer('combat.critiques', { def: true, doc: 'coups critiques en tombant (x 1,5)' });
 }
 
@@ -442,7 +445,7 @@ export class IA {
     if (ev.annule) return;
     a.mort = 21; a.mortSansCorps = true;   // le creeper disparait (discard) : pas de chute du corps
     this.stat('explosions'); (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${a.nom} explose (puissance ${ev.puissance})`);
-    exploser(sim, a.x, a.y, a.z, { puissance: Number(ev.puissance), casseBlocs: sim.regles.valeur('ia.explosionCasse', true), source: 'creeper' });
+    exploser(sim, a.x, a.y, a.z, { puissance: Number(ev.puissance), casseBlocs: sim.regles.valeur('ia.explosionCasse', true), source: 'creeper', causeNom: a.nom });
   }
 
   // RangedBowAttackGoal (squelettes : vitesse 1,0, intervalle 40 / 20 en difficile, rayon 15) ; arbalete du pillard : charge 25 ticks
@@ -509,7 +512,7 @@ export class IA {
 
   // RandomStrollGoal : une chance sur 120 par tick, un point a 10 blocs (7 de haut) ; golem 0,6, villageois 0,5
   peut_flane() {
-    if (this.pr.fam === 'villageois') { const act = this.activite(); if ((act === 'travail' && this.travail) || (act === 'repos' && (this.lit || this.maison)) || this.sommeil) return false; }
+    if (this.pr.fam === 'villageois') { const act = this.activite(); if ((act === 'travail' && this.travail) || (act === 'repos' && (this.lit || this.maison)) || this.sommeil || (this.type === 'villager' && (act === 'libre' || act === 'jeu'))) return false; }   // villageois en temps libre ou en jeu : RunOne (ia-villageois.js)
     return !this.vol && this.h.entierBorne(120) === 0;
   }
   continue_flane() { return !this.navFinie(); }
@@ -601,4 +604,4 @@ export function coupJoueur(objet, ticksDepuis, { critique = false } = {}) {
 }
 
 // comportements des especes (vol, sorciere, enderman, blaze, cerveau du villageois) : moteur/ia-especes.js
-Object.assign(IA.prototype, METHODES, VIE, METHODES_BOSS, METHODES_EAU, METHODES_WARDEN, METHODES_OEUFS);
+Object.assign(IA.prototype, METHODES, VIE, METHODES_BOSS, METHODES_EAU, METHODES_WARDEN, METHODES_OEUFS, METHODES_VILLAGEOIS);

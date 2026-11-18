@@ -6,6 +6,7 @@
 //   - Balancement du bras : LivingEntity.swing / updateSwingTime (6 ticks, relance quand 3 ticks sont passes).
 //   - Minage : cassage.js (progression par tick, fissures 0..9, son de coup tous les 4 ticks, delai de 5 ticks entre deux blocs).
 // Port de Horizon client/game/{player_move,hand,block_breaking,interaction}.rs et world/{entity_move,living_air}.rs : MIT (ATTRIBUTIONS.md).
+import { pousserActeurs } from './poussee.js';
 import { deplacerBoite, coupe, rayonBloc, distanceCellule, boitesLocales, solSous } from './collision.js';
 import { chercherChemin, stationPourCellule, blocsOuvrables } from './navigation.js';
 import { progressionParTick, ticksPourCasser, etapeFissure } from './cassage.js';
@@ -54,6 +55,8 @@ export class Acteur {
     const gb = d.gabarit ?? null;
     this.L = gb?.l ?? LARGEUR; this.H = gb?.h ?? HAUTEUR; this.O = gb?.oeil ?? OEIL; this.kVit = gb?.vitesse ?? 1;
     this.typeCreature = d.typeCreature ?? null; this.dernierCoup = -1e9;
+    // armure portee ({ tete: "iron", ... }) et niveaux de Protection contre les explosions : comptes par les explosions (moteur/explosion.js)
+    this.armure = d.armure ?? null; this.protectionExplosion = d.protectionExplosion ?? 0;
     this.ia = d.ia ? new IA(this, d.ia) : null;
   }
 
@@ -858,7 +861,7 @@ export class Acteurs {
     sim.replay.acteurs = this.liste.map((a) => a.nom);
   }
   // les acteurs nes pendant ce tick (naitre) ne jouent qu'au tick suivant ; leur premier enregistrement est ecrit a la naissance
-  tick() { const n = this.liste.length; for (let i = 0; i < n; i++) this.liste[i].tick(); }
+  tick() { const n = this.liste.length; for (let i = 0; i < n; i++) this.liste[i].tick(); pousserActeurs(this.sim, this.liste.slice(0, n)); }   // les corps qui se touchent se poussent (moteur/poussee.js)
 
   // ---------------------------------------------------------------- entites nees pendant la simulation (docs/SIMULATION.md partie 17)
   // o : { type, variante, bebe, x, y, z, lacet, modele (acteur dont le film reprend les reglages), raison, ia (champs d'IA en plus), nom, gabaritParent }

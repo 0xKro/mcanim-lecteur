@@ -199,6 +199,8 @@ export function validerScene(s) {
       for (const [k, v] of Object.entries(a.sac)) if (!/^[a-z0-9_]{1,60}$/.test(k) || !Number.isInteger(v) || v < 0 || v > 3456) err(`${ch}.sac.${k}`, 'identifiant d objet du jeu et nombre entier de 0 a 3456 attendus');
       o.sac = a.sac;
     }
+    // Protection contre les explosions : somme des niveaux des pieces d'armure (0 a 16 ; 0,15 de recul en moins et 2 points de protection par niveau)
+    if (a.protectionExplosion !== undefined) { if (!Number.isInteger(a.protectionExplosion) || a.protectionExplosion < 0 || a.protectionExplosion > 16) err(`${ch}.protectionExplosion`, 'entier de 0 a 16 attendu (somme des niveaux de Protection contre les explosions des pieces d armure : 4 pieces niveau IV = 16)'); o.protectionExplosion = a.protectionExplosion; }
     for (const k of ['invulnerable', 'ramasse']) if (a[k] !== undefined) { if (typeof a[k] !== 'boolean') err(`${ch}.${k}`, 'true ou false attendu'); o[k] = a[k]; }
     if (a.lacet !== undefined) o.lacet = lirePiste(a.lacet, `${ch}.lacet`, { minArite: 1, maxArite: 1 });
     if (a.tete !== undefined) o.tete = borner(lirePiste(a.tete, `${ch}.tete`, { minArite: 2, maxArite: 3 }), `${ch}.tete`, -PLAFOND, PLAFOND);

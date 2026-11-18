@@ -32,7 +32,10 @@ export class Replay {
     this.naissances = []; this.croissances = [];   // noms des acteurs simules ; journal des intentions { tick, acteur, verbe, args, statut, texte }
     this.textes = []; this.avertissements = []; this.stats = {};
     this.mods = [];
+    // souffles d'explosion recus par les acteurs (pour le pantin du film, docs/SIMULATION.md partie 21) : { tick, i, v (poussee), m (moment), sol } ; rien sans eux
+    this.souffles = [];
   }
+  souffle(tick, i, v, m, sol = 0) { const r = (x) => Math.round(x * 1e5) / 1e5; this.souffles.push({ tick, i, v: v.map(r), m: m.map(r), sol }); }
   nom(n) { let i = this.nomIdx.get(n); if (i === undefined) { i = this.noms.length; this.noms.push(n); this.nomIdx.set(n, i); } return i; }
   bloc(tick, x, y, z, ancien, nouveau) { this._blocs.pousser(tick, x, y, z, ancien, nouveau); }
   son(tick, nom, x, y, z, volume = 1, hauteur = 1) { this._sons.pousser(tick, this.nom(nom), x, y, z, volume, hauteur); }
@@ -70,7 +73,7 @@ export class Replay {
 
   // octets stables du replay
   octets() {
-    const entete = Buffer.from(JSON.stringify({ moteur: this.moteur, graine: this.graine, ticks: this.ticks, ralenti: this.ralenti, palAjouts: this.palAjouts, noms: this.noms, textes: this.textes, mods: this.mods, n: [this._blocs.n, this._sons.n, this._parts.n, this._act.n, this._bev.n], ...(this.acteurs.length ? { acteurs: this.acteurs, actes: this.actes } : {}), ...(this._ent.n ? { ne: this._ent.n } : {}), ...(this._ia.n ? { ni: this._ia.n } : {}), ...(this.naissances.length ? { naissances: this.naissances } : {}), ...(this.croissances.length ? { croissances: this.croissances } : {}), ...(this._iax.n ? { nx: this._iax.n } : {}), ...(this.traits.length ? { traits: this.traits } : {}), ...(this.obscurite.length ? { obscurite: this.obscurite } : {}) }), 'utf8');
+    const entete = Buffer.from(JSON.stringify({ moteur: this.moteur, graine: this.graine, ticks: this.ticks, ralenti: this.ralenti, palAjouts: this.palAjouts, noms: this.noms, textes: this.textes, mods: this.mods, n: [this._blocs.n, this._sons.n, this._parts.n, this._act.n, this._bev.n], ...(this.acteurs.length ? { acteurs: this.acteurs, actes: this.actes } : {}), ...(this._ent.n ? { ne: this._ent.n } : {}), ...(this._ia.n ? { ni: this._ia.n } : {}), ...(this.naissances.length ? { naissances: this.naissances } : {}), ...(this.croissances.length ? { croissances: this.croissances } : {}), ...(this._iax.n ? { nx: this._iax.n } : {}), ...(this.traits.length ? { traits: this.traits } : {}), ...(this.obscurite.length ? { obscurite: this.obscurite } : {}), ...(this.souffles.length ? { souffles: this.souffles } : {}) }), 'utf8');
     const l = Buffer.alloc(4); l.writeUInt32LE(entete.length);
     const tab = (v) => Buffer.from(v.buffer, v.byteOffset, v.byteLength);
     return Buffer.concat([Buffer.from('MCR1'), l, entete, tab(this.blocs), tab(this.sons), tab(this.particules), tab(this.acteursVue), tab(this.blocsEntite), ...(this._ent.n ? [tab(this.entitesVue)] : []), ...(this._ia.n ? [tab(this.iaVue)] : []), ...(this._iax.n ? [tab(this.iaPlusVue)] : [])]);

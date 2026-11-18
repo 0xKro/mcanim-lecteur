@@ -179,17 +179,25 @@ export function descripteursActeurs(scene, types = null) {
     const premier = (a.actes ?? []).find((x) => x.verbe === 'va' || x.verbe === 'regarde' && x.cible && x.cible.x !== undefined);
     const but = premier ? (premier.verbe === 'va' ? [premier.x, premier.z] : [premier.cible.x, premier.cible.z]) : null;
     const lacet = a.lacet ? a.lacet.cles[0].v[0] : but && Math.hypot(but[0] - k.x, but[1] - k.z) > 0.5 ? Math.atan2(-(but[0] - k.x), but[1] - k.z) * 180 / Math.PI : 0;
-    return { nom: a.nom, pos: Number.isFinite(k.y) ? [k.x, k.y, k.z] : [k.x, k.z], lacet, objet: a.objetD?.cles?.[0]?.id ?? (a.creature?.ia ? ARME_IA[a.creature.type] ?? null : null), actes: a.actes ?? [], vie: a.vie, invulnerable: a.invulnerable, ramasse: a.ramasse, faim: a.faim, sac: a.sac, ...(a.creature ? { gabarit: gabaritCreature(a.creature, types), typeCreature: a.creature.type, ...(a.creature.ia ? { ia: iaDe(a, types) } : {}) } : {}) };
+    return { nom: a.nom, pos: Number.isFinite(k.y) ? [k.x, k.y, k.z] : [k.x, k.z], lacet, objet: a.objetD?.cles?.[0]?.id ?? (a.creature?.ia ? ARME_IA[a.creature.type] ?? null : null), actes: a.actes ?? [], vie: a.vie, invulnerable: a.invulnerable, ramasse: a.ramasse, faim: a.faim, sac: a.sac, ...armureMoteur(a), ...(a.creature ? { gabarit: gabaritCreature(a.creature, types), typeCreature: a.creature.type, ...(a.creature.ia ? { ia: iaDe(a, types) } : {}) } : {}) };
   });
 }
 
+
+// armure de depart (premiere cle de chaque emplacement) et Protection contre les explosions, pour les degats des explosions ; rien sans elles
+function armureMoteur(a) {
+  const o = {};
+  if (a.armure) { const arm = {}; for (const [e, p] of Object.entries(a.armure)) { const id = p.cles?.find((k) => k.t <= 0)?.id; if (id) arm[e] = id; } if (Object.keys(arm).length) o.armure = arm; }
+  if (a.protectionExplosion) o.protectionExplosion = a.protectionExplosion;
+  return o;
+}
 
 // arme en main d'une creature a IA sans objetD (Mob.populateDefaultEquipmentSlots) : arc des squelettes, arbalete du pillard, hache du vindicateur
 const ARME_IA = { skeleton: 'bow', stray: 'bow', bogged: 'bow', parched: 'bow', pillager: 'crossbow', vindicator: 'iron_axe', wither_skeleton: 'stone_sword' };
 // IA d'une creature (moteur/ia.js) : type, comportement, cible forcee, points (garde, maison, travail), creeper charge, casque, vitesse du type
 function iaDe(a, types) {
   const c = a.creature, st = statsDe(c, types);
-  return { type: c.type, comportement: c.comportement ?? null, cible: c.cible ?? null, garde: c.garde ?? null, maison: c.maison ?? null, travail: c.travail ?? null, lit: c.lit ?? null, rassemblement: c.rassemblement ?? null, epaule: c.epaule ?? null, ami: c.ami ?? null, laisse: c.laisse ?? null, variante: c.variante ?? null, bebe: !!c.bebe, charge: !!c.charge, apprivoise: !!c.apprivoise, colle: c.colle ?? null, ruche: c.ruche ?? null, nourriture: c.nourriture ?? null, porte: c.porte ?? null, centre: c.centre ?? null, perchoir: c.perchoir ?? null, emerge: !!c.emerge, genes: c.genes ?? null, confiance: !!c.confiance, aOeuf: !!c.aOeuf, enceinte: !!c.enceinte, gabaritAdulte: c.bebe ? gabaritCreature({ ...c, bebe: false }, types) : null, casque: !!a.armure?.tete?.cles?.some((k) => k.id), vitesseAttr: st?.v ?? 0.25, vie: st?.pv ?? 20 };
+  return { type: c.type, comportement: c.comportement ?? null, cible: c.cible ?? null, garde: c.garde ?? null, maison: c.maison ?? null, travail: c.travail ?? null, lit: c.lit ?? null, rassemblement: c.rassemblement ?? null, epaule: c.epaule ?? null, ami: c.ami ?? null, laisse: c.laisse ?? null, variante: c.variante ?? null, bebe: !!c.bebe, charge: !!c.charge, apprivoise: !!c.apprivoise, colle: c.colle ?? null, ruche: c.ruche ?? null, nourriture: c.nourriture ?? null, age: c.age ?? null, porte: c.porte ?? null, centre: c.centre ?? null, perchoir: c.perchoir ?? null, emerge: !!c.emerge, genes: c.genes ?? null, confiance: !!c.confiance, aOeuf: !!c.aOeuf, enceinte: !!c.enceinte, gabaritAdulte: c.bebe ? gabaritCreature({ ...c, bebe: false }, types) : null, casque: !!a.armure?.tete?.cles?.some((k) => k.id), vitesseAttr: st?.v ?? 0.25, vie: st?.pv ?? 20 };
 }
 
 // gabarit d'une creature pour le moteur : { l, h, oeil, vitesse (facteur de l'acceleration du joueur) }

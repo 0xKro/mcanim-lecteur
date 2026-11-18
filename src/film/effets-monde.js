@@ -410,11 +410,28 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
     } else if (nom.startsWith('entity_effect|')) {   // particule d'effet d'une couleur donnee (wither : 0,7 0,7 0,9 pendant la charge, 0,7 0,7 0,5 en armure)
       const col = nom.slice(14).split(',').map(Number), r1 = alea.flottant();
       out.push({ type: 'anim', pref: 'particle/effect_', n: 8, debut: tick, x, y, z, xd: (r1 - 0.5) * 0.02, yd: 0.02, zd: (alea.flottant() - 0.5) * 0.02, age: 0, duree: Math.floor(16 / (r1 * 0.8 + 0.2)), taille: 0.12 + r1 * 0.06, gravite: -0.02, friction: 0.9, sol: false, uo: 0, vo: 0, couleur: col, plein: true });
-    } else if (nom === 'explosion' || nom === 'explosion_emitter') {   // ExplosionParticle : 16 images explosion_0..15
-      const grand = nom === 'explosion_emitter', nb = grand ? 10 : Math.max(1, N);
+    } else if (nom === 'explosion' || nom === 'explosion_emitter') {
+      // HugeExplosionParticle (Horizon horizon-client-render particles.rs, MIT) : 16 images explosion_0..15 (silhouettes blanches du jeu
+      // 26.3) teintees d'un gris tire 0,4 + 0,6 x hasard, 6 a 9 ticks, demi-cote 2 x (1 - f / 2), pleine lumiere, immobile.
+      // HugeExplosionSeedParticle (emetteur) : 8 ticks, 6 boules par tick a (r - r) x 4 du centre, f = age / 8 (les dernieres plus petites).
+      const boule = (px, py, pz, f, attente) => { const c = alea.flottant() * 0.6 + 0.4; out.push({ type: 'anim', pref: 'particle/explosion_', n: 16, debut: tick, attente, x: px, y: py, z: pz, xd: 0, yd: 0, zd: 0, age: 0, duree: 6 + alea.entierBorne(4), taille: 2 * (1 - f * 0.5), gravite: 0, friction: 1, sol: false, uo: 0, vo: 0, couleur: [c, c, c], plein: true }); };
+      if (nom === 'explosion') boule(x, y, z, Number.isFinite(vx) && vx > 0 ? vx : 1, 0);
+      else for (let k = 0; k < 8; k++) for (let i = 0; i < 6; i++) boule(x + (alea.flottant() - alea.flottant()) * 4, y + (alea.flottant() - alea.flottant()) * 4, z + (alea.flottant() - alea.flottant()) * 4, k / 8, k);
+    } else if (nom === 'explosion_debris') {
+      // ClientExplosionTracker.tick : min(blocs, 512) bouffees dans la sphere de rayon = puissance (distance racine cubique), vitesse
+      // 0,5 / (d / R + 0,1) x r x r + 0,3 vers l'exterieur ; une sur deux poof (a mi-distance) ou smoke (Horizon particles.rs `tick_explosions`)
+      const R = vx, nb = Math.min(512, Math.max(0, N));
       for (let i = 0; i < nb; i++) {
-        const o = grand ? [(alea.flottant() - alea.flottant()) * 2.5, (alea.flottant() - alea.flottant()) * 1.5, (alea.flottant() - alea.flottant()) * 2.5] : [0, 0, 0];
-        out.push({ type: 'anim', pref: 'particle/explosion_', n: 16, debut: tick, x: x + o[0], y: y + o[1], z: z + o[2], xd: 0, yd: 0, zd: 0, age: 0, duree: 6 + alea.entierBorne(4), taille: grand ? 1.3 + alea.flottant() * 0.7 : 0.4, gravite: 0, friction: 1, sol: false, uo: 0, vo: 0, couleur: [1, 1, 1], plein: true });
+        let d = [alea.flottant() * 2 - 1, alea.flottant() * 2 - 1, alea.flottant() * 2 - 1]; const l = Math.hypot(...d) || 1; d = d.map((v) => v / l);
+        const dist = Math.cbrt(alea.flottant()) * R, sp = 0.5 / (dist / R + 0.1) * alea.flottant() * alea.flottant() + 0.3;
+        const v = d.map((c) => c * sp);
+        if (alea.entierBorne(2) === 0) {   // PoofParticle : gris 0,7 a 1, 0,1 x (r x r x 6 + 1), 16 / (r x 0,8 + 0,2) + 2 ticks, monte (gravite -0,1), frottement 0,9
+          const c = alea.flottant() * 0.3 + 0.7;
+          out.push({ type: 'anim', pref: 'particle/generic_', n: 8, debut: tick, x: x + d[0] * dist * 0.5, y: y + d[1] * dist * 0.5, z: z + d[2] * dist * 0.5, xd: v[0] + (alea.flottant() * 2 - 1) * 0.05, yd: v[1] + (alea.flottant() * 2 - 1) * 0.05, zd: v[2] + (alea.flottant() * 2 - 1) * 0.05, age: 0, duree: Math.floor(16 / (alea.flottant() * 0.8 + 0.2)) + 2, taille: 0.1 * (alea.flottant() * alea.flottant() * 6 + 1), gravite: -0.1, friction: 0.9, sol: false, uo: 0, vo: 0, couleur: [c, c, c], plein: true, inverse: true });
+        } else {   // SmokeParticle (BaseAshSmokeParticle) : gris fonce r x 0,3, vitesse x 0,1 + la poussee, 8 / (r x 0,8 + 0,2) ticks, monte
+          const c = alea.flottant() * 0.3;
+          out.push({ type: 'anim', pref: 'particle/generic_', n: 8, debut: tick, x: x + d[0] * dist, y: y + d[1] * dist, z: z + d[2] * dist, xd: v[0] + (alea.flottant() * 2 - 1) * 0.01, yd: v[1] + (alea.flottant() * 2 - 1) * 0.01, zd: v[2] + (alea.flottant() * 2 - 1) * 0.01, age: 0, duree: Math.max(1, Math.floor(8 / (alea.flottant() * 0.8 + 0.2))), taille: 0.075 * (alea.flottant() * 0.5 + 0.5) * 2, gravite: -0.1, friction: 0.96, sol: false, uo: 0, vo: 0, couleur: [c, c, c], plein: true, inverse: true });
+        }
       }
     }
     return out;
@@ -423,6 +440,7 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
   // avance d'un tick (Particle.tick)
   const avancer = (E) => {
     for (const p of E.liste) {
+      if (p.attente > 0) { p.attente--; continue; }   // boule d'un emetteur pas encore nee (HugeExplosionSeedParticle : une salve par tick)
       if (p.age++ >= p.duree) { p.mort = true; continue; }
       if (p.trajet) {   // vibration : position interpolee de la source a l'ecouteur (VibrationParticle), vitesse = le pas suivant
         const g = (q) => { const k = Math.min(1, q / p.duree); return p.trajet.de.map((c, i) => c + (p.trajet.vers[i] - c) * k); };
@@ -460,7 +478,9 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
       const f = [-Math.sin(ya) * Math.cos(pa), -Math.sin(pa), Math.cos(ya) * Math.cos(pa)], r = [-Math.cos(ya), 0, -Math.sin(ya)];
       const h = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]];
       const parTex = new Map(), frac = u - tick;
-      for (const p of etat.liste) { const tp = p.type === 'anim' ? p.pref + Math.min(p.n - 1, Math.floor(p.age / p.duree * p.n)) : p.tex; if (!parTex.has(tp)) parTex.set(tp, new Constructeur()); const C = parTex.get(tp);
+      for (const p of etat.liste) { if (p.attente > 0) continue;
+        const im = p.type === 'anim' ? Math.min(p.n - 1, Math.floor(p.age / p.duree * p.n)) : 0;   // SpriteSet.get(age, duree)
+        const tp = p.type === 'anim' ? p.pref + (p.inverse ? p.n - 1 - im : im) : p.tex; if (!parTex.has(tp)) parTex.set(tp, new Constructeur()); const C = parTex.get(tp);   // inverse : poof et smoke vont de generic_7 a generic_0
         const x = p.x + p.xd * frac, y = p.y + p.yd * frac, z = p.z + p.zd * frac, s = p.taille, L = p.plein ? 1 : lum(x, y, z);
         const ux = r[0] * s, uy = r[1] * s, uz = r[2] * s, vx = h[0] * s, vy = h[1] * s, vz = h[2] * s;
         const coins = [[x - ux + vx, y - uy + vy, z - uz + vz], [x + ux + vx, y + uy + vy, z + uz + vz], [x + ux - vx, y + uy - vy, z + uz - vz], [x - ux - vx, y - uy - vy, z - uz - vz]];

@@ -10,6 +10,7 @@ import { compensationAppui, descenteBascule, decalageYeux } from '../perso/model
 import { simulerActeur, creerSol, lisser01 } from './physique.js';
 import { reactionsA } from './reactions.js';
 import { creerVivant } from './acteurs-vivants.js';   // acteurs commandes par la simulation (champ `actes`) : leur trace dans le replay
+import { appliquerPantins } from './ragdoll.js';   // pantin des explosions (regle explosion.ragdoll)
 import { creerFige } from './fige.js';   // acteur fige seul : horloges propres
 import { sujetsDuPlan, masquageSujets, noteSujetCache, SEUIL_CACHE } from './sujet-visible.js';   // le sujet du plan est-il cache par un bloc ? (correction + note)
 import { notesObstruction } from './obstruction.js';   // camera : herbe, feuilles ou acteur colles a l'objectif (note, sans correction)
@@ -238,7 +239,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
         else if (vs.lueur) pose.teinte = [1.5, 1.5, 1.1];                       // effet Lueur : le corps luit (le contour du jeu n'est pas dessine)
         if (vs.invisible) { pose.y -= 1000; pose.absent = true; }               // effet Invisibilite
         if (vs.mortT >= 0) {
-          if (vs.mortT >= 20) { pose.y -= 1000; pose.absent = true; } else { const rot = Math.min(1, Math.sqrt(Math.max(0, vs.mortT) / 20 * 1.6)) * 90; pose.roulis = rot; pose.dy = (pose.dy ?? 0) + descenteBascule(0, rot); }
+          if (vs.mortT >= 20) { pose.y -= 1000; pose.absent = true; } else { const rot = Math.min(1, Math.sqrt(Math.max(0, vs.mortT) / 20 * 1.6)) * 90; pose.roulis = rot; pose._dyMort = descenteBascule(0, rot); pose.dy = (pose.dy ?? 0) + pose._dyMort; }
         }
       }
       if (a._absentAvant !== undefined || a._absentApres !== undefined) {   // entite nee (ou changee) en cours de route : rien hors de sa fenetre de ticks
@@ -303,6 +304,8 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
 
   // creatures et montures (film/creatures.js) : etat d'animation du jeu, cavaliers sur leur siege ; rien sans elles
   if (acteurs.some((a) => a.creature || a.monture)) notes.push(...appliquerCreatures(scene, parImage, { DT, terrain, types: extra.creatures?.types, replay: monde?.replay ?? null }));
+  // pantin des explosions (film/ragdoll.js) : seulement si le replay a des souffles (regle explosion.ragdoll) ; rien sinon
+  if (monde?.replay?.souffles?.length) appliquerPantins(scene, parImage, { replay: monde.replay, vivants, tm: infosImage.map((x) => x.tm), modeles: extra.creatures?.modeles ?? null });
 
   if (terrain.fin) terrain.fin();   // monde vivant : la camera planifie dans le monde de la fin de la scene (murs poses, trous faits)
 

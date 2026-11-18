@@ -116,7 +116,7 @@ export class Entites {
   // ItemEntity.mergeWithNeighbours : une pile voisine (boite elargie de 0,5 en x et z) du meme objet absorbe la plus petite
   fusionner(e) {
     for (const o of this.liste) {
-      if (o === e || o.type !== 'objet' || o.pris || o.item !== e.item || this._fini.has(o) || this._fini.has(e)) continue;
+      if (o === e || o.type !== 'objet' || o.pris || o.detruit || o.item !== e.item || this._fini.has(o) || this._fini.has(e)) continue;
       if (Math.abs(o.x - e.x) > COTE_OBJET + 0.5 || Math.abs(o.z - e.z) > COTE_OBJET + 0.5 || Math.abs(o.y - e.y) > COTE_OBJET) continue;
       if (o.n + e.n > 64) continue;
       const [gros, petit] = o.n < e.n ? [e, o] : [o, e];
@@ -129,7 +129,7 @@ export class Entites {
   ramasser(a) {
     const s = this.sim, b = a.boite(), bx = [b[0] - 1, b[1] - 0.5, b[2] - 1, b[3] + 1, b[4] + 0.5, b[5] + 1];
     for (const e of this.liste) {
-      if (e.type !== 'objet' || e.pris || e.delai > 0 || this._fini?.has(e)) continue;
+      if (e.type !== 'objet' || e.pris || e.delai > 0 || e.detruit || this._fini?.has(e)) continue;
       if (e.x + COTE_OBJET / 2 < bx[0] || e.x - COTE_OBJET / 2 > bx[3] || e.y + COTE_OBJET < bx[1] || e.y > bx[4] || e.z + COTE_OBJET / 2 < bx[2] || e.z - COTE_OBJET / 2 > bx[5]) continue;
       e.pris = { acteur: a, k: 0, de: [e.x, e.y, e.z] };
       a.sac.set(e.item, (a.sac.get(e.item) || 0) + e.n);
@@ -157,12 +157,13 @@ export class Entites {
     const s = this.sim, fini = (this._fini = new Set());
     for (const e of [...this.liste]) {
       if (fini.has(e)) continue;
+      if (e.detruit) { fini.add(e); continue; }                 // objet ou orbe detruit par une explosion (moteur/explosion.js)
       if (e.debut === s.temps) { this.ecrire(e); continue; }    // creee ce tick : elle ne bouge qu'au suivant (meche exacte)
       if (e.proj) { this.proj.tick(e); continue; }
       const vivante = e.type === 'tnt' ? this.tickTnt(e) : e.type === 'objet' ? this.tickObjet(e) : e.type === 'orbe' ? this.tickOrbe(e) : this.tickChute(e);
       if (vivante) this.ecrire(e);
     }
-    this.liste = this.liste.filter((e) => !fini.has(e));    // les entites creees pendant ce tick (chaine) restent
+    this.liste = this.liste.filter((e) => !fini.has(e) && !e.detruit);    // les entites creees pendant ce tick (chaine) restent
   }
 
   ecrire(e) { if (e.proj) { this.proj.ecrire(e); return; } this.sim.replay.entite(this.sim.temps, e.id, e.type, e.x, e.y, e.z, e.type === 'tnt' ? e.meche : e.type === 'objet' ? e.n : e.type === 'orbe' ? e.icone : 0, e.type === 'chute' ? e.pal : e.type === 'objet' ? this.sim.replay.nom(e.item) : -1); }

@@ -9,6 +9,7 @@
 // Rien n'est dessine ici : l'etat d'animation part dans replay.ia (drapeaux D.*, tangage du corps, objet tenu) et film/creatures.js le lit.
 import { coupe, deplacerBoite, rayonBloc } from './collision.js';
 import { direction } from './projectiles.js';
+import { lireVariante } from '../creatures/especes.js';
 
 const RAD = Math.PI / 180, MOVE = 1, LOOK = 2;
 const norm180 = (a) => { a = (a + 180) % 360; if (a < 0) a += 360; return a - 180; };
@@ -663,7 +664,7 @@ export const METHODES = {
 
   // ---- villageois : emploi du temps du jeu --------------------------------------------------------------------------------------------
   activite() { return activiteVillageois(this.sim.heureMonde(), this.bebe); },
-  metier() { return String(this.variante ?? '').split(/\s+/)[0] || 'none'; },
+  metier() { return lireVariante('villager', this.variante).choix?.[1] ?? 'none'; },   // le mot du metier, quel que soit l'ordre ("plains farmer", "farmer plains 2")
   pointLit() { const l = this.lit; return l ? [l[0] + 0.5, l[1], l[2] + 0.5] : null; },
   // SleepInBed : activite repos, le lit a 2 blocs au plus ; il se couche (Pose.SLEEPING) a 0,6875 au-dessus du bloc, jusqu'a la fin du repos
   peut_dort() { const p = this.pointLit(); return !!p && this.activite() === 'repos' && Math.hypot(this.a.x - p[0], this.a.z - p[2]) <= 1.6 && Math.abs(this.a.y - p[1]) < 1.5; },
@@ -714,6 +715,7 @@ export const METHODES = {
     this.regarder([t[0], t[1] + 0.5, t[2]]);
     if (sim.temps - (this.dernierTravail ?? -1e9) >= 300) {
       this.dernierTravail = sim.temps; const m = this.metier();
+      if (m === 'farmer' && /composter/.test(sim.d.nomBloc(sim.monde.etatEn(Math.floor(t[0]), Math.floor(t[1]), Math.floor(t[2]))))) this.fairePain();   // WorkAtComposter.makeBread
       if (!SANS_METIER.has(m)) { sim.son(`entity.villager.work_${m}`, t[0], t[1], t[2], 1, 1); this.stat('travaux'); (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${a.nom} travaille (${m})`); }
     }
   },
@@ -733,7 +735,8 @@ export const METHODES = {
     this.ragotAvec = o; this.ragotFin = this.sim.temps + 60 + this.h.entierBorne(40); return true;
   },
   continue_ragot() { return !!this.ragotAvec && this.sim.temps < this.ragotFin && this.ragotAvec.mort < 0; },
-  debut_ragot() { this.bavarder?.(this.ragotAvec); this.stat('ragots'); (this.sim.stats.iaJournal ??= []).push(`${(this.sim.temps / 20).toFixed(2)} ${this.a.nom} parle avec ${this.ragotAvec.nom}`); },
+  debut_ragot() { this.cibleInteraction = this.ragotAvec; this.stat('ragots');   // INTERACTION_TARGET : TradeWithVillager fait le ragot et partage la nourriture (ia-villageois.js)
+    (this.sim.stats.iaJournal ??= []).push(`${(this.sim.temps / 20).toFixed(2)} ${this.a.nom} parle avec ${this.ragotAvec.nom}`); },
   tick_ragot() { this.regarder(this.ragotAvec); },
   // Villager.mobInteract : pas d'echanges (sans metier, idiot, bebe) -> il secoue la tete 40 ticks et dit "no" ; sinon il echange
   interagir(joueur, duree) {
@@ -817,6 +820,7 @@ export const METHODES = {
     if (f === 'perroquet' && !this.surEpaule && this.volFini() && !this.vol.plane) this.gravite = true;
     if (f === 'wither') this.tickWither();
     this.apresEau(); this.apresWarden();
+    if (this.type === 'villager') this.apresVillageois();   // regard verrouille sur l'autre villageois (ia-villageois.js)
   },
   drapeauxEspece() {
     let d = 0;

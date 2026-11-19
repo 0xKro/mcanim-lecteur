@@ -453,7 +453,7 @@ async function commandeSon(argv) {
 async function commandeSimuler(argv) {
   const { pos } = lireArgs(argv);
   if (pos.length !== 1) throw new Usage('usage : mcanim simuler <scene.json>');
-  const { scene } = lireScene(lireTexte(pos[0]));
+  const { scene } = lireScene(lireTexte(pos[0]), { sansCamera: true });   // la simulation n'a pas besoin de camera
   if (!scene.monde) return dire("la scene n'a pas de champ monde : rien a simuler (le rendu est le meme qu'avant)");
   const baseDir = path.dirname(path.resolve(pos[0]));
   verifierFichiers(scene, baseDir);

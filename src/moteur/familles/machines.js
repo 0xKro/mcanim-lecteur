@@ -154,6 +154,16 @@ export function installer(mc, regles) {
     if (monde.estDans(b[0], b[1], b[2], '#minecraft:enables_bubble_column_drag_down') || monde.estDans(b[0], b[1], b[2], '#minecraft:enables_bubble_column_push_up')) monde.planifier(ev.pos[0], ev.pos[1], ev.pos[2], 20);
     return undefined;
   });
+  // LiquidBlock.onPlace / neighborChanged (Horizon level/fluids.rs liquid_block_changed) : une source pleine posee (seau, eau qui devient source,
+  // bloc retire puis eau qui coule et se fait source) ou dont un voisin change, sur sable des ames ou magma : colonne 20 ticks plus tard
+  const essayer = (ev, monde) => {
+    if (!monde.regle('bulles.actif', true) || !doitOccuper(monde, ev.pos)) return undefined;
+    const p = ev.pos;
+    if (monde.estDans(p[0], p[1] - 1, p[2], '#minecraft:enables_bubble_column_drag_down') || monde.estDans(p[0], p[1] - 1, p[2], '#minecraft:enables_bubble_column_push_up')) monde.planifier(p[0], p[1], p[2], 20);
+    return undefined;
+  };
+  mc.bloc('water').sur('pose', essayer);
+  mc.bloc('water').sur('voisin', essayer);
   mc.bloc('water').sur('tick', (ev, monde) => { if (monde.regle('bulles.actif', true) && doitOccuper(monde, ev.pos)) majColonne(monde, ev.pos); });
   mc.bloc('BubbleColumnBlock').sur('tick', (ev, monde) => majColonne(monde, ev.pos));
   mc.bloc('BubbleColumnBlock').sur('survit', (ev, monde) => {

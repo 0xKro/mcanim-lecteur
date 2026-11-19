@@ -18,7 +18,9 @@ import { armureDe } from './explosion.js';
 import { effetsPotion } from './potions.js';
 
 const court = (s) => String(s ?? '').replace(/^minecraft:/, '');
+export const f2 = (v) => String(Math.round(v * 100) / 100).replace('.', ',');   // nombre du journal de `mcanim simuler` (2 decimales, virgule)
 export const EMP_ARMURE = ['tete', 'torse', 'jambes', 'pieds'];
+const VITESSE_ATTRIBUT = 0.1;   // attribut movement_speed du joueur (valeur de base 0,1 : VITESSE_MARCHE d'acteurs.js), pour Player.isSweepAttack
 const PIECE = { tete: 'helmet', torse: 'chestplate', jambes: 'leggings', pieds: 'boots' };
 // armure donnee par materiau ("diamond", champ armure des scenes) ou par objet ("diamond_helmet[protection=4]") : l'objet du jeu de l'emplacement
 export function idArmure(d, texte, emp) {
@@ -50,6 +52,7 @@ export function installerInventaire(Acteur, EchecActe) {
     this.niveauXp = d.niveaux ?? 0; this.progresXp = 0; this.xp = 0;
     this.gauche = d.gauche ? canon(d.gauche) : null;
     if (this.armure) for (const k of Object.keys(this.armure)) if (this.armure[k]) this.armure[k] = canon(this.armure[k]);
+    this.armureDepart = this.armure ? { ...this.armure } : null;   // pieces du depart (rapport : piece cassee)
     // le sac garde les piles par texte canonique ; l'objet tenu au depart y est (survie : il doit y etre, sinon il y est ajoute)
     const s = new Map();
     for (const [k, v] of this.sac) { const c = canon(k); s.set(c, (s.get(c) ?? 0) + v); }
@@ -106,9 +109,10 @@ export function installerInventaire(Acteur, EchecActe) {
 
   // ---------------------------------------------------------------- usure (ItemStack.hurtAndBreak / processDurabilityChange)
   // emp : 'main' | 'gauche' | 'tete' | 'torse' | 'jambes' | 'pieds' ; n : usure brute (Solidite la reduit) ; rend vrai si l'objet a casse
-  P.userPile = function (emp, n = 1) {
+  // horsInfini : l'usure compte aussi en main infinie (armure : partie 32) ; seul le creatif l'empeche
+  P.userPile = function (emp, n = 1, { horsInfini = false } = {}) {
     const sim = this.sim;
-    if (this.infini || n <= 0 || !sim.regles.valeur('objets.usure', true)) return false;
+    if ((horsInfini ? this.creatif : this.infini) || n <= 0 || !sim.regles.valeur('objets.usure', true)) return false;
     const texte = emp === 'main' ? this.main.objet : emp === 'gauche' ? this.gauche : this.armure?.[emp];
     if (!texte) return false;
     const p = lirePile(texte), idJeu = EMP_ARMURE.includes(emp) ? idArmure(sim.d, texte, emp) : p.id, max = composants(sim.d, idJeu).usureMax;
@@ -178,22 +182,41 @@ export function installerInventaire(Acteur, EchecActe) {
   P.coupArme = function (o, depuis, critique) {
     const sim = this.sim, arme = this.main.objet;
     const periode = 20 / this.vitesseAttaque(), s = Math.max(0, Math.min(1, (depuis + 0.5) / periode));
+    // ordre de Player.attack (Horizon melee.rs melee_damage) : bonus d'enchantement pris sur l'attribut AVANT la recharge ; base x (0,2 + 0,8 s^2),
+    // bonus x s ; PUIS Item.getAttackDamageBonus (coup ecrasant de la masse : NON multiplie par la recharge) ; PUIS le critique (s > 0,9) x 1,5 sur
+    // base + ecrasant ; enfin + le bonus d'enchantement
     let f = this.attributAttaque();
+    const base = f, facteur = 0.2 + s * s * 0.8;
     const ctx = { type: 'player_attack', direct: true, ceci: o, attaquant: this, directAttaquant: this, outil: idDe(arme) };
     let bonus = arme && sim.objetsJeu ? sim.enchant.valeurPile(arme, 'damage', ctx, f) - f : 0;
     f *= 0.2 + s * s * 0.8; bonus *= s;
     // masse : coup ecrasant (MaceItem.getAttackDamageBonus) apres une chute de plus de 1,5 bloc
-    let ecrasant = 0;
+    let ecrasant = 0, chute = 0, ecrasantChute = 0, densite = 0;
     if (idDe(arme) === 'mace' && this.distanceChute > 1.5 && !this.planeur) {
-      const h = this.distanceChute;
-      ecrasant = h <= 3 ? 4 * h : h <= 8 ? 12 + 2 * (h - 3) : 22 + h - 8;
-      if (sim.objetsJeu) ecrasant += sim.enchant.valeurPile(arme, 'smash_damage_per_fallen_block', ctx, 0) * h;
+      const h = chute = this.distanceChute;
+      ecrasant = ecrasantChute = h <= 3 ? 4 * h : h <= 8 ? 12 + 2 * (h - 3) : 22 + h - 8;
+      if (sim.objetsJeu) { densite = sim.enchant.valeurPile(arme, 'smash_damage_per_fallen_block', ctx, 0) * h; ecrasant += densite; }
     }
+    const baseCharge = f;
     f += ecrasant;
+    const avantCritique = f;
     const crit = critique && s > 0.9;
     if (crit) f *= 1.5;
     let recul = arme && sim.objetsJeu ? sim.enchant.valeurPile(arme, 'knockback', ctx, 0) : 0;
-    return { degats: f + bonus, recharge: s, critique: crit, recul, ecrasant, periode };
+    return { degats: f + bonus, recharge: s, critique: crit, recul, ecrasant, periode, balayage: this.estBalayage(s, crit), detail: { base, facteur, baseCharge, bonus, chute, ecrasantChute, densite, avantCritique, apresCritique: f } };
+  };
+  // une ligne du journal : le calcul du coup, pas a pas (rien n'est recalcule : les valeurs de coupArme et des protections de la victime)
+  P.detailCoup = function (o, c, dd) {
+    const x = c.detail, L = [`coup ${this.nom}>${o.nom} recharge ${f2(c.recharge * 100)} % : base ${f2(x.base)} x ${f2(x.facteur)} = ${f2(x.baseCharge)}`];
+    if (x.ecrasantChute) L.push(`masse +${f2(x.ecrasantChute)} (chute ${f2(x.chute)})`);
+    if (x.densite) L.push(`Densite +${f2(x.densite)}`);
+    if (c.critique) L.push(`critique x 1,5 -> ${f2(x.apresCritique)}`);
+    if (x.bonus) L.push(`enchantement +${f2(x.bonus)}`);
+    L.push(`= ${f2(c.degats)}`);
+    if (dd.partiel) L.push(`invulnerable : ecart ${f2(dd.entree)}`);
+    for (const e of dd.etapes ?? []) L.push(e);
+    L.push(`final ${f2(dd.final)}`);
+    return L.join(' ; ');
   };
   // apres un coup qui a porte : recul du jeu, effets d'enchantement, masse, usure, epuisement
   P.apresCoup = function (o, c, ok) {
@@ -201,6 +224,7 @@ export function installerInventaire(Acteur, EchecActe) {
     if (ok) {
       let kb = c.recul + (this.course && c.recharge > 0.9 ? 1 : 0);
       if (kb > 0) { o.recul(kb * 0.5 * R, this.x - o.x, this.z - o.z); this.vx *= 0.6; this.vz *= 0.6; if (this.course && c.recharge > 0.9) sim.son('entity.player.attack.knockback', this.x, this.y, this.z, 1, 1); }
+      if (c.balayage) this.balayer(o, c);
       // Player.itemAttackInteraction (Horizon mace.rs weapon_hit) : MaceItem.hurtEnemy (la chute s'arrete : vitesse verticale 0,01, recul autour),
       // PUIS les post_attack de l'arme (Rafale de vent : l'explosion a ses pieds le relance, la chute compte encore pour sa condition), PUIS
       // MaceItem.postHurtEnemy (chute remise a zero)
@@ -211,6 +235,43 @@ export function installerInventaire(Acteur, EchecActe) {
       if (arme) { const u = composants(sim.d, arme).usureCoup; this.userPile('main', u >= 0 ? u : composants(sim.d, arme).usureMax ? 2 : 0); }
     }
     this.epuiser(0.1);
+  };
+  // Player.isSweepAttack (Horizon motion.rs is_sweep_attack) : recharge > 0,9, pas critique, pas en course, au sol, vitesse horizontale au carre
+  // sous (movement_speed x 2,5)^2, une epee (#swords) en main
+  P.estBalayage = function (s, critique) {
+    const arme = this.main.objet, oj = this.sim.objetsJeu;
+    if (this.typeCreature || !(s > 0.9) || critique || this.course || !this.auSol || !arme || !oj) return false;
+    const lim = VITESSE_ATTRIBUT * (this.facteurVitesse?.() ?? 1) * 2.5;
+    return this.vx * this.vx + this.vz * this.vz < lim * lim && oj.etiquette('item', 'swords').has(idDe(arme));
+  };
+  // Player.doSweepAttack (Horizon mace.rs sweep_damage) : son, puis chaque autre vivant dans la boite de la cible elargie de (1 ; 0,25 ; 1) et a
+  // moins de 3 blocs du joueur (distance au carre < 9) prend getEnchantedDamage(1 + sweeping_damage_ratio x attaque x (0,2 + 0,8 s^2)) x s,
+  // recule de 0,4 dans le sens du regard, puis les post_attack de l'arme. La cible et l'attaquant sont epargnes.
+  P.balayer = function (o, c) {
+    const sim = this.sim, arme = this.main.objet, R = sim.regles.valeur('combat.recul', 1), s = c.recharge;
+    sim.son('entity.player.attack.sweep', this.x, this.y, this.z, 1, 1);
+    const B = o.boite(), zone = [B[0] - 1, B[1] - 0.25, B[2] - 1, B[3] + 1, B[4] + 0.25, B[5] + 1];
+    const ratio = Math.max(0, Math.min(1, this.bonusAttribut('sweeping_damage_ratio')));
+    const base = 1 + ratio * this.attributAttaque() * (0.2 + s * s * 0.8);
+    const a = this.lacetTete * Math.PI / 180, kx = Math.sin(a), kz = -Math.cos(a);   // LivingEntity.knockback(0,4 ; sin(yRot) ; -cos(yRot))
+    for (const v of [...this.g.liste]) {
+      if (v === this || v === o || v.mort >= 0 || v.veh) continue;
+      const b = v.boite();
+      if (!(b[0] < zone[3] && b[3] > zone[0] && b[1] < zone[4] && b[4] > zone[1] && b[2] < zone[5] && b[5] > zone[2])) continue;
+      if ((v.x - this.x) ** 2 + (v.y - this.y) ** 2 + (v.z - this.z) ** 2 >= 9) continue;
+      const ctx = { type: 'player_attack', direct: true, ceci: v, attaquant: this, directAttaquant: this, outil: idDe(arme) };
+      const q = (sim.objetsJeu ? sim.enchant.valeurPile(arme, 'damage', ctx, base) : base) * s;
+      v.attaquantCourant = this;
+      const ok = v.frappe(q, 'joueur:' + this.nom, kx, kz, 0.4 * R);
+      v.attaquantCourant = null;
+      if (!ok) continue;
+      v.ia?.blesse(this); v.dernierFrappeur = this;
+      sim.enchant.apresAttaque(v, this, { type: 'player_attack', direct: true, directAttaquant: this, arme, attaquantSeul: true });
+      (sim.stats.balayages ??= []).push(`${(sim.temps / 20).toFixed(2)} ${this.nom} balaie ${v.nom} ${+q.toFixed(2)}`);
+    }
+    // Player.sweepAttack : l'arc devant le joueur, sendParticles(SWEEP_ATTACK, x - sin(lacet), y + hauteur / 2, z + cos(lacet), 0, -sin, 0, cos)
+    const dx = -Math.sin(a), dz = Math.cos(a);
+    sim.particule('sweep_attack', this.x + dx, this.y + this.H * 0.5, this.z + dz, dx, 0, dz, 1);
   };
   // MaceItem.hurtEnemy (Horizon mace.rs) : vitesse verticale 0,01, son au sol (lourd au-dela de 5 blocs) ou en l'air, chute ignoree, puis
   // MaceItem.knockback : chaque vivant a 3,5 blocs de la cible (sauf l'attaquant et la cible) pousse de (3,5 - d) x 0,7 x (2 si lourd) x
@@ -240,7 +301,7 @@ export function installerInventaire(Acteur, EchecActe) {
   // LivingEntity.actuallyHurt : getDamageAfterArmorAbsorb (armure + robustesse, usure des pieces), getDamageAfterMagicAbsorb (Resistance, puis les
   // protections d'enchantement : somme des damage_protection plafonnee a 20, x (1 - epf / 25)), puis l'absorption.
   P.degatsApresProtections = function (q, source, { contourneArmure, attaquant = null } = {}) {
-    const sim = this.sim, type = typeDegats(source);
+    const sim = this.sim, type = typeDegats(source), E = this.etapesProtection = [];   // etapes notees pour le journal (acteurs.js detailCoup)
     // armure (LivingEntity.getDamageAfterArmorAbsorb : hurtArmor AVANT la reduction, avec les degats bruts)
     if (!contourneArmure) {
       if (!this.typeCreature) this.userArmure(q, type);   // Player.hurtArmor ; un mob n'use pas son armure (LivingEntity.hurtArmor est vide)
@@ -254,19 +315,20 @@ export function installerInventaire(Acteur, EchecActe) {
         if (arme && sim.objetsJeu) eff = Math.max(0, sim.enchant.valeurPile(arme, 'armor_effectiveness', { outil: idDe(arme) }, 1));
         const f = 2 + rob / 4, g = Math.min(20, Math.max(pts * 0.2, pts - q / f)) * eff;
         q *= 1 - g / 25;
+        E.push(`armure ${pts} robustesse ${rob}${eff !== 1 ? ' efficacite ' + f2(eff) : ''} -> ${f2(q)}`);
       }
     }
     // Resistance : 5 x niveau sur 25 (pas pour le vide)
     const res = this.niveauEffet('resistance');
-    if (res > 0 && type !== 'out_of_world') q = Math.max(0, q * (25 - res * 5) / 25);
+    if (res > 0 && type !== 'out_of_world') { q = Math.max(0, q * (25 - res * 5) / 25); E.push(`Resistance ${res} -> ${f2(q)}`); }
     // protections d'enchantement (pas pour les degats qui ignorent les enchantements)
     let epf = 0;
     if (sim.objetsJeu && !sim.objetsJeu.etiquette('damage_type', 'bypasses_enchantments').has(type)) epf = sim.enchant.valeurEquipement(this, 'damage_protection', { type, direct: estDirect(source), ceci: this, attaquant }, 0);
     epf += 2 * (/^(explosion|fusee)/.test(source) ? this.protectionExplosion ?? 0 : 0);   // ancien champ protectionExplosion (somme des niveaux)
     epf = Math.min(20, Math.max(0, epf));
-    if (epf > 0) q *= 1 - epf / 25;
+    if (epf > 0) { q *= 1 - epf / 25; E.push(`Protection EPF ${f2(epf)} -> ${f2(q)}`); }
     // absorption
-    if (this.absorption > 0) { const a = Math.min(this.absorption, q); this.absorption -= a; q -= a; }
+    if (this.absorption > 0) { const a = Math.min(this.absorption, q); this.absorption -= a; q -= a; E.push(`absorption -${f2(a)}`); }
     return q;
   };
   // armure portee : points et robustesse des composants du jeu (attribute_modifiers de `objets`)
@@ -276,7 +338,7 @@ export function installerInventaire(Acteur, EchecActe) {
     return { points, robustesse };
   };
   // LivingEntity.doHurtEquipment : (int) max(1, degats / 4) a chaque piece portee qui s'use (pieds, jambes, torse, tete : l'ordre du jeu, celui des
-  // tirages de Solidite) ; une piece qui resiste au feu (netherite : damage_resistant #is_fire) ne s'use pas sous des degats de feu
+  // tirages de Solidite), dans tous les modes sauf le creatif ; une piece qui resiste au feu (netherite : damage_resistant #is_fire) ne s'use pas sous des degats de feu
   P.userArmure = function (degats, type = 'generic') {
     if (!(degats > 0) || !this.armure) return;
     const sim = this.sim, n = Math.trunc(Math.max(1, degats / 4));
@@ -285,7 +347,10 @@ export function installerInventaire(Acteur, EchecActe) {
       const t = this.armure[e]; if (!t) continue;
       const c = composants(sim.d, idArmure(sim.d, t, e));
       if (!c.usureMax || (feu && c.resiste === '#is_fire')) continue;
-      this.userPile(e, n);
+      // tous les modes sauf le creatif : dans le jeu un joueur creatif ne prend aucun degat (Player.isInvulnerableTo : abilities.invulnerable) et
+      // ItemStack.hurtAndBreak n'use rien chez un joueur aux materiaux infinis (Horizon horizon-world item_durability.rs) ; la « main infinie »
+      // des scenes sans sac est un choix du lecteur (consommation), pas un mode du jeu : l'armure y s'use comme en survie
+      this.userPile(e, n, { horsInfini: true });
     }
   };
 

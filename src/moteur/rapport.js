@@ -1,6 +1,12 @@
-// Rapport COURT de `mcanim simuler` (1 Ko au plus ; une ligne compacte "monde" pour explosions, chutes, fluides, objets et morts) : ce qui s'est passe, pour decider avant de payer le rendu.
+// Rapport COURT de `mcanim simuler` (2 Ko au plus ; une ligne compacte "monde" pour explosions, chutes, fluides, objets et morts) : ce qui s'est passe, pour decider avant de payer le rendu.
+// 2 Ko depuis la partie 32 (avant : 1 Ko) : le detail de chaque coup, la solidite de l'armure et une ligne par intention n'y tenaient pas.
+import { idArmure, composants } from './inventaire.js';
+import { lirePile } from './pile.js';
 const fr = (n, d = 1) => n.toFixed(d).replace('.', ',');
-export const MAX_OCTETS = 1024;
+const PIECES = { tete: 'casque', torse: 'plastron', jambes: 'jambieres', pieds: 'bottes' };
+// textes du journal : les longs nombres (57.917812579071516) ecrits a 2 decimales (le replay garde la valeur entiere)
+const court2 = (t) => t.replace(/-?\d+\.\d{4,}/g, (m) => String(Math.round(Number(m) * 100) / 100));
+export const MAX_OCTETS = 2048;
 
 export function texteRapport({ sim, replay, duree }) {
   const secondes = replay.stats.ms / 1000;
@@ -33,10 +39,19 @@ export function texteRapport({ sim, replay, duree }) {
   if (S.coupsEcrasants?.length) C.push(`ecrasants ${S.coupsEcrasants.length} (${S.coupsEcrasants.slice(0, 3).map((l) => l.split(' ').slice(1).join(' ')).join(', ')})`);
   if (S.relances?.length) C.push(`relances ${S.relances.slice(0, 3).join(', ')}`);
   if (S.objetsCasses?.length) C.push(`casses ${S.objetsCasses.slice(0, 2).map((l) => l.split(' ').slice(1).join(' ')).join(', ')}`);
-  // usure de l'armure portee (survie) a la fin : tete/torse/jambes/pieds
-  const usees = (sim.acteurs?.liste ?? []).filter((x) => x.armure && !x.infini && Object.values(x.armure).some((t) => t && /usure=/.test(t))).slice(0, 2);
-  if (usees.length) C.push('armure usee ' + usees.map((x) => `${x.nom} ${['tete', 'torse', 'jambes', 'pieds'].map((e) => (x.armure[e] ? (/usure=(\d+)/.exec(x.armure[e])?.[1] ?? '0') : '-')).join('/')}`).join(', '));
   if (C.length) L.push('combat : ' + C.join(' ; '));
+  // solidite qui reste a chaque piece d'armure des acteurs touches (tous les modes sauf le creatif : inventaire.js userArmure), une ligne par acteur
+  for (const x of (sim.acteurs?.liste ?? []).filter((v) => v.armure && v.touche && !v.typeCreature).slice(0, 3)) {
+    const P = [];
+    for (const e of ['tete', 'torse', 'jambes', 'pieds']) {
+      const t = x.armure[e]; if (!t) continue;
+      const id = idArmure(sim.d, t, e), max = composants(sim.d, id).usureMax;
+      if (!max) continue;
+      P.push(`${PIECES[e]} ${id.replace(/_(helmet|chestplate|leggings|boots)$/, '')} ${max - lirePile(t).usure}/${max}`);
+    }
+    for (const e of ['tete', 'torse', 'jambes', 'pieds']) if (!x.armure[e] && x.armureDepart?.[e]) P.push(`${PIECES[e]} cassee`);
+    if (P.length) L.push(`armure ${x.nom} : ${P.join(', ')}`);
+  }
   // IA des creatures : une ligne de compteurs, puis les evenements (attaques, tirs, explosions, morts, brulures) en abrege
   if (S.ia || S.iaJournal || S.coups) {
     const I = S.ia || {};
@@ -59,17 +74,20 @@ export function texteRapport({ sim, replay, duree }) {
   const ev = (replay.sons.length / 7) | 0, pa = (replay.particules.length / 9) | 0;
   if (ev || pa) L.push(`sons ${ev}, particules ${pa} ; voisins mis a jour ${sim.stats.voisins}, ticks planifies ${sim.stats.ticks}, aleatoires ${sim.stats.aleatoires}`);
   const rl = replay.ralenti;
-  for (const [tick, t] of replay.textes.slice(0, 8)) L.push(`t=${fr(tick / 20 / rl, 2)} ${t}`);
+  for (const [tick, t] of replay.textes.slice(0, 8)) L.push(`t=${fr(tick / 20 / rl, 2)} ${court2(t)}`);
   for (const w of replay.avertissements) L.push('avert: ' + w);
-  // intentions des acteurs : les echecs et interruptions d'abord (ils comptent), puis les reussites, tant que ca tient dans la limite
-  const A = replay.actes.filter((a) => !['regarde', 'tient', 'accroupi', 'saute'].includes(a.verbe) || a.statut !== 'ok');
-  const ligneActe = (a) => `${a.statut === 'ok' ? '' : '! '}t=${fr(a.tick / 20 / rl, 1)} ${a.acteur} ${a.args}${a.statut === 'ok' ? (a.texte ? ' : ' + a.texte : '') : ` ${a.statut === 'echec' ? 'ECHEC' : 'interrompu'}${a.texte ? ' : ' + a.texte : ''}`}`;
-  const actes = A.map((a, i) => ({ i, s: ligneActe(a), mal: a.statut !== 'ok' }));
+  // intentions des acteurs : UNE ligne chacune (fait / interrompu par ... / ECHEC : raison) ; les echecs et interruptions d'abord (ils comptent),
+  // puis les reussites, puis les verbes d'etat reussis (regarde, tient, accroupi, saute), tant que ca tient dans la limite
+  const A = replay.actes;
+  const ligneActe = (a) => `${a.statut === 'ok' ? '' : '! '}t=${fr(a.tick / 20 / rl, 1)} ${a.acteur} ${a.args} ${a.statut === 'ok' ? 'fait' : a.statut === 'echec' ? 'ECHEC' : 'interrompu'}${a.texte ? (a.statut === 'interrompu' && /^par /.test(a.texte) ? ' ' : ' : ') + a.texte : ''}`;
+  const etat = (a) => a.statut === 'ok' && ['regarde', 'tient', 'accroupi', 'saute'].includes(a.verbe);
+  const actes = A.map((a, i) => ({ i, s: ligneActe(a), mal: a.statut !== 'ok', etat: etat(a) }));
   const base = Buffer.byteLength(L.join('\n'));
-  let budget = MAX_OCTETS - base - 12;
+  let budget = MAX_OCTETS - base - 40;   // place pour la ligne « (+ n intentions non affichees) »
   const gardes = new Set();
   for (const a of actes.filter((x) => x.mal)) { const o = Buffer.byteLength(a.s.slice(0, 150)) + 1; if (budget - o >= 0) { gardes.add(a.i); budget -= o; } }
-  for (const a of actes.filter((x) => !x.mal)) { const o = Buffer.byteLength(a.s.slice(0, 110)) + 1; if (budget - o >= 0) { gardes.add(a.i); budget -= o; } }
+  for (const a of actes.filter((x) => !x.mal && !x.etat)) { const o = Buffer.byteLength(a.s.slice(0, 110)) + 1; if (budget - o >= 0) { gardes.add(a.i); budget -= o; } }
+  for (const a of actes.filter((x) => x.etat)) { const o = Buffer.byteLength(a.s.slice(0, 110)) + 1; if (budget - o >= 0) { gardes.add(a.i); budget -= o; } }
   const nonAffiches = actes.length - gardes.size;
   for (const a of actes) if (gardes.has(a.i)) L.push(a.s.slice(0, a.mal ? 150 : 110));
   if (nonAffiches > 0) L.push(`(+ ${nonAffiches} intentions non affichees)`);

@@ -39,7 +39,7 @@ const OPTIONS = {
   pose: ['va', 'ouvrePortes', 'face', 'max'],
   casse: ['va', 'ouvrePortes', 'max'],
   tient: ['eff'],
-  frappe: ['coups', 'critique', 'max', 'objet', 'ecrase'],
+  frappe: ['coups', 'critique', 'max', 'objet', 'ecrase', 'recharge'],
   plane: ['tangage', 'lacet'],
 };
 const estNombre = (x) => typeof x === 'number' && Number.isFinite(x);
@@ -70,7 +70,8 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
       if (o === 'niveau' && !(Number.isInteger(v) && v >= 1 && v <= 10)) erreur(`${c}.${o}`, 'niveau entier de 1 a 10 attendu (1 = Vitesse I)');
       if (o === 'secondes' && !(estNombre(v) && v > 0 && v <= 3600)) erreur(`${c}.${o}`, 'duree de l effet en secondes (0 a 3600) attendue');
       if (o === 'charge' && !(estNombre(v) && v >= 0.05 && v <= 10)) erreur(`${c}.${o}`, 'duree de tension en secondes (0,05 a 10) attendue ; 1 s = puissance pleine');
-      if (o === 'coups' && !(Number.isInteger(v) && v >= 1 && v <= 100)) erreur(`${c}.${o}`, 'nombre de coups entier de 1 a 100 attendu (defaut : jusqu a la mort de la cible)');
+      if (o === 'recharge' && !(estNombre(v) && v > 0 && v <= 1)) erreur(`${c}.${o}`, 'recharge de l attaque (0 a 1) attendue : 1 = arme pleinement rechargee (defaut), 0.9 = frappe des 90 %');
+      if (o === 'coups' &&!(Number.isInteger(v) && v >= 1 && v <= 100)) erreur(`${c}.${o}`, 'nombre de coups entier de 1 a 100 attendu (defaut : jusqu a la mort de la cible)');
       if (['predit', 'strict', 'critique', 'ecrase', 'ferre'].includes(o) && typeof v !== 'boolean') erreur(`${c}.${o}`, 'true ou false attendu');
       if (o === 'fente' && !['entree', 'combustible', 'sortie', 'bouteille', 'ingredient', 'carburant'].includes(v)) erreur(`${c}.${o}`, '"entree", "combustible" ou "sortie" (four) ; "bouteille", "ingredient" ou "carburant" (alambic) attendu');
       if (o === 'table' && !(Array.isArray(v) && v.length === 3 && v.every(Number.isInteger))) erreur(`${c}.${o}`, '[x, y, z] du poste (etabli, tailleur de pierre, table de forgeron) attendu');
@@ -165,7 +166,7 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
         a.resume = `${verbe} ${a.cible === null ? (a.opts.tangage !== undefined ? `tangage ${a.opts.tangage}` : 'devant') : a.cible.acteur ?? a.cible.x + ',' + a.cible.y + ',' + a.cible.z}`;
         break;
       }
-      case 'frappe': {   // coup d'epee (Player.attack) : s'approche a 3 blocs, frappe quand l'arme est rechargee, jusqu'a la mort de la cible ou {coups}
+      case 'frappe': {   // coup d'epee (Player.attack) : poursuit la cible, frappe a 3 blocs quand l'arme est rechargee ({recharge} : seuil, defaut 1), jusqu'a la mort de la cible ou {coups}
         if (!(args.length === 1 && typeof args[0] === 'string')) erreur(c, 'frappe : nom de l acteur vise attendu, par exemple [1, "frappe", "zombie", {"coups": 3, "critique": true}]');
         if (args[0] === 'boule_feu' && !noms.has('boule_feu')) { a.cible = { acteur: 'boule_feu' }; a.resume = 'frappe boule_feu'; break; }   // renvoie la prochaine boule de feu qui passe a portee
         if (!noms.has(args[0])) erreur(`${c}[2]`, `acteur inconnu ${JSON.stringify(args[0])} (acteurs : ${[...noms].join(', ')})`);

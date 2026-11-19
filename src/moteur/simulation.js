@@ -864,6 +864,7 @@ export class Simulation {
       this._tick();
       if (performance.now() - t0 > (cfg.plafondMs ?? 60000)) { this.avertir(`simulation arretee au tick ${this.temps} : plus de ${(cfg.plafondMs ?? 60000) / 1000} s de calcul`); break; }
     }
+    this.acteurs?.finScene(n);   // une ligne par intention : celles en cours ou jamais commencees aussi (moteur/acteurs.js)
     this.replay.palAjouts = this.monde.palette.slice(this.zone.palette.length);
     this.replay.avertissements = this.avertissements;
     this.replay.stats = { ...this.stats, ms: performance.now() - t0, agrandissements: this.monde.agrandissements };

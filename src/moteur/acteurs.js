@@ -133,7 +133,7 @@ export class Acteur {
     if (v === 'accroupi') { this.accroupi = !!a.valeur; this.note(a, 'ok', ''); return; }
     if (v === 'tient') { try { this.tenir(a.objet, a.opts?.eff ?? 0); } catch (e) { if (e instanceof EchecActe) { this.note(a, 'echec', e.message); return; } throw e; } this.note(a, 'ok', a.objet ? '' : 'main vide'); return; }
     // taches : la nouvelle interrompt la precedente
-    if (this.tache) this.finirTache('interrompu', this.tache.msgInterrompu?.() ?? '');
+    if (this.tache) { const m = this.tache.msgInterrompu?.() ?? ''; this.finirTache('interrompu', `par ${a.resume ?? v}${m ? ' (' + m + ')' : ''}`); }
     const T = { acte: a, debut: this.sim.temps, etat: 'init', n: 0 };
     this.tache = T;
     try { this['debut_' + v](T, a); } catch (e) { if (e instanceof EchecActe) { this.finirTache('echec', e.message); return; } throw e; }
@@ -147,6 +147,17 @@ export class Acteur {
     if (T.accroupiAvant !== undefined) this.accroupi = T.accroupiAvant;
     this.course = false; this.entree.avance = 0;
     this.note(T.acte, statut, texte, T.debut);
+  }
+
+  // fin de la simulation : chaque intention laisse UNE ligne (fait / interrompu par ... / ECHEC raison). La tache en cours est interrompue par la
+  // fin de la scene ; celles qui n'ont jamais commence disent pourquoi (acteur mort, apres la fin, acteur qui ne joue pas ses intentions)
+  finScene(n) {
+    if (this.tache) this.finirTache('interrompu', 'par la fin de la scene');
+    for (; this.iActe < this.actes.length; this.iActe++) {
+      const a = this.actes[this.iActe];
+      const raison = this.mort >= 0 ? `${this.nom} est mort avant` : a.tick >= n ? 'apres la fin de la scene' : this.veh ? 'un vehicule ne joue pas d intentions' : 'jamais commencee';
+      this.note(a, 'echec', raison, a.tick);
+    }
   }
 
   tickTache() {
@@ -199,8 +210,10 @@ export class Acteur {
     if (d > 2.6) { const cap = Math.atan2(-(o.x - this.x), o.z - this.z) / RAD; this.entree = { avance: 1, cap, saute: false }; if (this.auSol && this.bute && this.marcheSautable(cap)) this.saut = true; }
     // {ecrase} (masse) : au sol, il marche vers la cible (il quitte un perchoir) et saute tout pres ; il frappe en retombant de plus de 1,5 bloc
     if (T.acte.opts.ecrase && this.auSol) { const cap = Math.atan2(-(o.x - this.x), o.z - this.z) / RAD; this.entree = { avance: 1, cap, saute: false }; if (d < 1.6) this.saut = true; return; }
+    // recharge de l'arme (Player.getAttackStrengthScale(0,5)) : le joueur peut frapper a tout moment ; {recharge} (defaut 1) est le seuil choisi
+    // par la scene : il frappe des que la recharge l'atteint ET que la cible est a portee (3 blocs, de l'oeil a la boite de la cible)
     const depuis = sim.temps - this.dernierCoup, c0 = this.coupArme(o, depuis, false);
-    if (d > 3 || c0.recharge < 1) return;
+    if (d > 3 || c0.recharge < (T.acte.opts.recharge ?? 1)) return;
     if ((T.critique || T.acte.opts.ecrase) && this.auSol) { this.saut = true; return; }   // coup critique (ou masse) : sauter, frapper en retombant
     if (T.critique && !(this.vy < 0)) return;
     if (T.acte.opts.ecrase && !(this.vy < 0 && this.distanceChute > 1.5)) return;
@@ -212,12 +225,15 @@ export class Acteur {
     const ea = this.evEntite('attaque', { cible: o.nom, degats: c.degats });   // gestionnaires d'entite : ev.degats modifiable, ev.annuler()
     if (ea?.annule) return;
     if (ea) c.degats = Number(ea.degats) || 0;
+    o.detailDegats = null;
     const ok = o.frappe(c.degats, 'joueur:' + this.nom, this.x - o.x, this.z - o.z, 0.4 * R);
     o.attaquantCourant = null;
     if (ok) { o.ia?.blesse(this); o.dernierFrappeur = this; }
+    if (ok && o.detailDegats) sim.dire(this.detailCoup(o, c, o.detailDegats));   // le calcul du jeu, pas a pas (journal de `mcanim simuler`)
     this.apresCoup(o, c, ok);   // recul (Recul, course), Aura de feu, Epines, Vent violent, coup ecrasant, usure, epuisement
     void coupJoueur;
-    sim.son(c.critique ? 'entity.player.attack.crit' : c.recharge > 0.9 ? 'entity.player.attack.strong' : 'entity.player.attack.weak', this.x, this.y, this.z, 1, 1);
+    // Player.attack : critique -> son crit ; sinon, sans balayage (qui a son propre son), fort au-dela de 0,9 de recharge, faible en dessous
+    if (c.critique || !(ok && c.balayage)) sim.son(c.critique ? 'entity.player.attack.crit' : c.recharge > 0.9 ? 'entity.player.attack.strong' : 'entity.player.attack.weak', this.x, this.y, this.z, 1, 1);
     if (c.critique) for (let i = 0; i < 6; i++) sim.particule('crit', o.x, o.y + o.H * 0.6, o.z, (sim.hasard.flottant() - 0.5), 0.2, (sim.hasard.flottant() - 0.5), 1);
     (sim.stats.coups ??= []).push(`${(sim.temps / 20).toFixed(2)} ${this.nom} frappe ${o.nom} ${+c.degats.toFixed(1)}${c.critique ? ' critique' : ''}${ok ? '' : ' (sans effet)'}`);
     if (++T.n >= T.coups) this.finirTache('ok', `${T.n} coup(s)`);
@@ -919,7 +935,10 @@ export class Acteur {
       if (q <= this.derniereBlessure) return false;
       const reste = q - this.derniereBlessure; this.derniereBlessure = q; q = reste; nouveau = false;
     } else { this.derniereBlessure = q; this.invulTemps = 20; this.hurtTime = 10; }
+    const entree = q; this.etapesProtection = null;
     q = apresArmure(this, q, source);   // LivingEntity.actuallyHurt : armure (sauf #bypasses_armor), Resistance, protections d'enchantement, absorption
+    this.detailDegats = { entree, etapes: this.etapesProtection, final: q, partiel: !nouveau };   // pour le journal (rien n'est recalcule)
+    this.touche = (this.touche ?? 0) + 1;
     this.epuiser?.(this.epuisementDegats(source));   // DamageSource.getFoodExhaustion (0,1 pour la plupart des types)
     this.vie = Math.max(0, this.vie - q);
     sim.dire(`${this.nom} perd ${q} (${source}) : ${this.vie}/${this.vieMax}`);
@@ -957,7 +976,7 @@ export class Acteur {
     if (this.ia) (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${this.nom} meurt (${source})`);
     sim.dire(`${this.nom} meurt (${source})`);
     (sim.stats.mortsListe ??= []).push(`${this.nom} t=${(sim.temps / 20 / sim.replay.ralenti).toFixed(1).replace('.', ',')} ${source}`);
-    if (this.tache) this.finirTache('interrompu', 'mort');
+    if (this.tache) this.finirTache('interrompu', 'par la mort');
     this.regard = null; this.entree = { avance: 0, cap: this.lacet, saute: false }; this.saut = false;
     sim.api.evenement('acteur.meurt', { acteur: this.nom, source, pos: [this.x, this.y, this.z] });
   }
@@ -1139,6 +1158,7 @@ export class Acteurs {
     pousserActeurs(sim, this.liste.slice(0, n).filter((a) => !a.veh && !a.monte));
     pousserWagonnets(sim, this.liste.slice(0, n));   // AbstractMinecart.push : les vivants poussent les wagonnets
   }
+  finScene(n) { for (const a of this.liste) a.finScene(n); }
   // montures de la scene (champ `monture` du cavalier : nom, ou piste [{ t, v }]) : chaque cle joue une fois, a son tick
   montures() {
     const sim = this.sim;

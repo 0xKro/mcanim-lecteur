@@ -147,7 +147,8 @@ export function poidsBoucle(b, t) {
 // Controle et normalise un objet de scene. Retourne la scene prete a animer (pistes lues).
 // Notes sur les formes courtes acceptees pendant la lecture de la scene en cours (voir lireCamera).
 let notesSaisie = [];
-export function validerScene(s) {
+// sansCamera : la simulation seule (`mcanim simuler`) n'a besoin d'aucune camera ; le rendu et l'apercu, si (ils lisent la scene sans cette option)
+export function validerScene(s, { sansCamera = false } = {}) {
   notesSaisie = [];
   if (!estObjet(s)) err('', 'un objet JSON est attendu');
   if (s.v !== undefined && s.v !== 1) err('v', `version ${JSON.stringify(s.v)} non geree (seule la version 1 existe)`);
@@ -247,8 +248,8 @@ export function validerScene(s) {
   const montage = lireMontage(D, s, s.duree, Math.round(s.duree * IMAGES_PAR_SECONDE));
   if (s.jeu !== undefined && typeof s.jeu !== 'boolean') err('jeu', 'true ou false attendu (vie des acteurs au repos : respiration, regard ; defaut : active si la scene a des champs de montage)');
   resoudreGestes(acteurs, D.mots, err);   // "@mot" -> instant du mot dans les sous-titres
-  const camera = s.camera === undefined && montage.plans ? null : lireCamera(s.camera, noms);
-  if (!camera) {   // les plans doivent couvrir toute la scene : pas de camera de repli
+  const camera = s.camera === undefined && (montage.plans || sansCamera) ? null : lireCamera(s.camera, noms);
+  if (!camera && montage.plans) {   // les plans doivent couvrir toute la scene : pas de camera de repli
     let fin = 0;
     for (const p of montage.plans) { if (p.de > fin + 1e-6) err('plans', `trou entre ${fin} et ${p.de} s : sans "camera" a la racine, les plans doivent couvrir toute la scene`); fin = p.a; }
     if (fin < s.duree - 1e-6) err('plans', `les plans s'arretent a ${fin} s, la scene dure ${s.duree} s : sans "camera" a la racine, ils doivent la couvrir entierement`);
@@ -608,9 +609,9 @@ function lireCamera(c, noms, base = 'camera') {
 }
 
 // Lit un texte de scene : retourne { brut, scene }. `brut` sert a l'empreinte.
-export function lireScene(texte) {
+export function lireScene(texte, options = {}) {
   const brut = lireJson(texte);
-  return { brut, scene: validerScene(brut) };
+  return { brut, scene: validerScene(brut, options) };
 }
 
 export { animer } from './anim.js';

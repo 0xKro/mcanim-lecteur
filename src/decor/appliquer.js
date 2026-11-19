@@ -6,7 +6,7 @@ import { Grille, ErreurDecor, LIMITES } from './grille.js';
 import { Classes } from './etats.js';
 import { lireDecor, lireDecorTexte } from './lire.js';
 import { Exec } from './ops.js';
-import { passeLiaisons, passeNettoyage, passeDevoilement } from './liaisons.js';
+import { passeLiaisons, passeNettoyage, passeDevoilement, passeBulles } from './liaisons.js';
 import { rapportDecor } from './rapport.js';
 
 // Entrees de `scene.decor` (chemins relatifs a la scene, ou objets en ligne) -> decors lus et controles.
@@ -52,6 +52,7 @@ export function appliquerDecors(zone, decors, { donnees: d, cls = new Classes(d)
       // finalisation : nettoyage, liaisons, cellules cachees, hauteurs
       const net = passeNettoyage(g, d, cls, g.differences());
       const lia = passeLiaisons(g, d, cls, g.differences());
+      lia.bulles = passeBulles(g, d, g.differences());   // eau sur sable des ames / magma : colonne de bulles (BubbleColumnBlock)
       const diffDecor = g.differences();
       const comble = passeDevoilement(g, d, cls, diffDecor);
       g.recalculerHauteurs();

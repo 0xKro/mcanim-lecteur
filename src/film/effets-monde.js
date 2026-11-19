@@ -431,6 +431,12 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
         else if (nom === 'current_down') out.push({ ...base, type: 'tex', tex: 'particle/bubble', xd: 0, yd: -0.05, zd: 0, duree: Math.floor(r1 * 60) + 30, taille: 0.1 * (r2 * 0.6 + 0.2), gravite: 0.002, friction: 1, courant: true, angle: 0 });
         else out.push({ ...base, type: 'anim', pref: 'particle/bubble_pop_', n: 5, xd: P[idx * 9 + 5], yd: P[idx * 9 + 6], zd: P[idx * 9 + 7], duree: 4, taille: 0.1 * (r1 * 0.5 + 0.5) * 2 / 2, gravite: 0.008 / 0.04, friction: 1 });
       }
+    } else if (nom === 'sweep_attack') {
+      // AttackSweepParticle (Horizon horizon-client-render particles.rs `T::SweepAttack`, MIT) : 4 ticks, gris 0,4 + 0,6 x hasard, taille
+      // 1 - xd x 0,5 (xd : premier nombre envoye par Player.sweepAttack, -sin(lacet) ; la taille depend donc du sens, comme dans le jeu),
+      // pleine lumiere, immobile, images sweep_0..7 choisies par l'age (SpriteSet.get)
+      const c = alea.flottant() * 0.6 + 0.4;
+      out.push({ type: 'anim', pref: 'particle/sweep_', n: 8, jeu: true, debut: tick, x, y, z, xd: 0, yd: 0, zd: 0, age: 0, duree: 4, taille: 1 - vx * 0.5, gravite: 0, friction: 1, sol: false, uo: 0, vo: 0, couleur: [c, c, c], plein: true, fixe: true });
     } else if (nom === 'crit') {   // CritParticle : petites etoiles qui retombent vite (friction 0,7, gravite 0,5)
       const r1 = alea.flottant(), r2 = alea.flottant(), r3 = alea.flottant();
       out.push({ type: 'tex', tex: 'particle/critical_hit', debut: tick, x, y, z, xd: P[idx * 9 + 5] * 0.1 + (r1 - r2) * 0.05, yd: P[idx * 9 + 6] * 0.1 + (r2 - r3) * 0.05, zd: P[idx * 9 + 7] * 0.1 + (r3 - r1) * 0.05, age: 0, duree: Math.floor(6 / (r1 * 0.8 + 0.6)), taille: 0.09 + r2 * 0.05, gravite: 0.5, friction: 0.7, sol: false, uo: 0, vo: 0, couleur: [1, 1, 1], plein: true });

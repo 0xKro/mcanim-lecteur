@@ -199,6 +199,38 @@ export function passeLiaisons(g, d, cls, cellules) {
   return { modifs, compte: L.compte };
 }
 
+// ---- colonnes de bulles (BubbleColumnBlock.updateColumn, Horizon horizon-world level/tick.rs bubble_column_update_for) : de l'eau source pleine
+// au-dessus du sable des ames (#enables_bubble_column_push_up) devient bubble_column[drag=false] sur toute sa hauteur, au-dessus du magma
+// (#enables_bubble_column_drag_down) bubble_column[drag=true] ; une colonne dont la base ne convient plus redevient de l'eau. Le jeu le fait
+// 20 ticks apres la pose (LiquidBlock.onPlace) ; le decor est le monde AVANT le film : l'etat stable est pose tout de suite. Rend le nombre de cellules changees.
+export function passeBulles(g, d, cellules) {
+  const haut = d.etiquette('enables_bubble_column_push_up'), bas = d.etiquette('enables_bubble_column_drag_down');
+  const colonne = d.idBloc('bubble_column'), eau = d.idBloc('water');
+  const monte = d.etatId('minecraft:bubble_column[drag=false]'), descend = d.etatId('minecraft:bubble_column[drag=true]'), source = d.etatId('minecraft:water[level=0]');
+  if (colonne < 0 || eau < 0 || monte < 0 || descend < 0 || source < 0) return 0;
+  // BubbleColumnBlock.canOccupy : une colonne, ou de l'eau source pleine (water level 0)
+  const occupe = (e) => e >= 0 && (d.blocDe(e) === colonne || (d.blocDe(e) === eau && d.prop(e, 'level') === '0'));
+  const bases = new Map();
+  for (const i of cellules) {
+    const [x, y, z] = g.xyz(i);
+    let yb = y;
+    while (g.dans(x, yb, z) && occupe(g.etat(x, yb, z))) yb--;   // la base : le premier bloc sous l'eau
+    bases.set(`${x},${yb},${z}`, [x, yb, z]);
+  }
+  let n = 0;
+  for (const [x, yb, z] of bases.values()) {
+    if (!g.dans(x, yb + 1, z) || !occupe(g.etat(x, yb + 1, z))) continue;
+    const b = g.dans(x, yb, z) ? g.bloc(x, yb, z) : -1;
+    const etat = haut.has(b) ? monte : bas.has(b) ? descend : source;
+    for (let y = yb + 1; g.dans(x, y, z) && occupe(g.etat(x, y, z)); y++) {
+      const e = g.etat(x, y, z);
+      if (etat === source && d.blocDe(e) === eau) continue;   // de l'eau sans colonne reste telle quelle
+      if (e !== etat) { g.poserEtat(x, y, z, etat); n++; }
+    }
+  }
+  return n;
+}
+
 // ---- nettoyage : plantes sans appui, feuilles sans tronc (comme le jeu les casse ou les laisse mourir)
 export function passeNettoyage(g, d, cls, cellules) {
   let plantes = 0, feuilles = 0;

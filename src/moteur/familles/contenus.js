@@ -18,7 +18,8 @@ export function installer(mc, regles) {
   regles.declarer('contenus.delaiDistributeur', { def: 4, min: 1, max: 200, entier: true, doc: 'ticks entre le signal et le tir d\'un dropper ou distributeur (jeu : 4)' });
   regles.declarer('contenus.projectiles', { def: 'tire', choix: ['tire', 'lache', 'garde'], doc: 'distributeur : "tire" lance fleches, boules de neige, oeufs, potions, fusees, charges de feu et de vent comme le jeu (ProjectileDispenseBehavior) ; "lache" les depose comme un dropper ; "garde" ne fait rien' });
 
-  const entonnoirs = new Map();                      // 'x,y,z' -> ticks de pause restants
+  const entonnoirs = new Map();                      // 'x,y,z' -> { c : ticks de pause restants (cooldownTime), t : dernier tick ou il a tourne (tickedGameTime) }
+  const etatEntonnoir = (k) => { let s = entonnoirs.get(k); if (!s) { s = { c: -1, t: -Infinity }; entonnoirs.set(k, s); } return s; };
   const cle = (p) => p.join(',');
   const dirDe = (monde, p) => FR[monde.prop(p[0], p[1], p[2], 'facing')];
   const set = (monde, p, modifs, flags) => monde.poser(p[0], p[1], p[2], monde.etatAvec(p[0], p[1], p[2], modifs), flags);
@@ -61,7 +62,7 @@ export function installer(mc, regles) {
 
   // ------------------------------------------------------------ entonnoir
   mc.bloc('HopperBlock').sur('pose', (ev, monde) => {
-    entonnoirs.set(cle(ev.pos), 0);
+    if (!ev.memeBloc || !entonnoirs.has(cle(ev.pos))) entonnoirs.set(cle(ev.pos), { c: -1, t: -Infinity });   // nouveau bloc a entite : cooldownTime -1, n'a jamais tourne (un changement d'etat garde le sien)
     if (!ev.memeBloc) set(monde, ev.pos, { enabled: String(!monde.aSignalVoisin(...ev.pos)) }, 2);
   });
   mc.bloc('HopperBlock').sur('voisin', (ev, monde) => {
@@ -76,11 +77,14 @@ export function installer(mc, regles) {
     monde.contenuRetirer(depuis[0], depuis[1], depuis[2], i, 1);
     return true;
   };
-  function tickEntonnoir(monde, p) {
+  // HopperBlockEntity.pushItemsTick : --cooldownTime ; tickedGameTime = maintenant ; rien tant que cooldownTime > 0
+  function tickEntonnoir(monde, p, tick) {
     const k = cle(p);
-    let c = (entonnoirs.get(k) ?? 0) - 1;
-    entonnoirs.set(k, c);
-    if (c > 0 || monde.prop(...p, 'enabled') !== 'true') return;
+    const s = etatEntonnoir(k);
+    s.c -= 1; s.t = tick;
+    if (s.c > 0) return;
+    s.c = 0;
+    if (monde.prop(...p, 'enabled') !== 'true') return;
     let fait = false;
     const dir = dirDe(monde, p);
     // 1. pousser un objet vers le conteneur devant
@@ -88,7 +92,15 @@ export function installer(mc, regles) {
       const d = rel(p, dir);
       if (monde.contenuTaille(...d) && !monde.contenuPlein(...d)) {
         const liste = monde.contenuListe(...p);
-        for (let i = 0; i < liste.length && !fait; i++) if (liste[i] && pousser1(monde, p, i, d)) { fait = true; if (entonnoirs.has(cle(d))) entonnoirs.set(cle(d), Math.max(entonnoirs.get(cle(d)), monde.regle('contenus.delaiEntonnoir', 8))); notifie(monde, d); notifie(monde, p); }
+        const videAvant = monde.contenuVide(...d);
+        for (let i = 0; i < liste.length && !fait; i++) if (liste[i] && pousser1(monde, p, i, d)) {
+          fait = true;
+          // tryMoveInItem : un entonnoir VIDE qui recoit un objet attend 8 ticks (7 s'il a deja tourne a ce tick-ci : tickedGameTime >= celui de la
+          // source), sauf s'il est deja sur une attente plus longue que 8 (isOnCustomCooldown). Horizon machines.rs try_move_in_item.
+          const cd = entonnoirs.get(cle(d));
+          if (videAvant && cd && cd.c <= 8) cd.c = monde.regle('contenus.delaiEntonnoir', 8) - (cd.t >= s.t ? 1 : 0);
+          notifie(monde, d); notifie(monde, p);
+        }
       } else if (!monde.contenuTaille(...d)) {   // HopperBlockEntity.getEntityContainer : un wagonnet a coffre ou a entonnoir dans la cellule devant
         const w = monde.wagonCases(...d), liste = monde.contenuListe(...p);
         if (w) for (let i = 0; i < liste.length && !fait; i++) if (liste[i] && w.ajouter(liste[i].item, 1) === 0) { monde.contenuRetirer(p[0], p[1], p[2], i, 1); fait = true; notifie(monde, p); }
@@ -110,17 +122,16 @@ export function installer(mc, regles) {
         if (pris) { fait = true; notifie(monde, p); }
       }
     }
-    if (fait) entonnoirs.set(k, monde.regle('contenus.delaiEntonnoir', 8));
-    else entonnoirs.set(k, 0);
+    if (fait) s.c = monde.regle('contenus.delaiEntonnoir', 8);
   }
   mc.monde.sur('tickBlocsEntites', (ev, monde) => {
     for (const k of [...entonnoirs.keys()]) {
       const p = k.split(',').map(Number);
       if (monde.nom(...p) !== 'hopper') { entonnoirs.delete(k); continue; }
-      tickEntonnoir(monde, p);
+      tickEntonnoir(monde, p, ev.tick);
     }
   });
-  mc.monde.sur('debutTick', (ev, monde) => { if (ev.tick === 0) for (const p of monde.entonnoirsInitiaux()) if (!entonnoirs.has(cle(p))) entonnoirs.set(cle(p), 0); });
+  mc.monde.sur('debutTick', (ev, monde) => { if (ev.tick === 0) for (const p of monde.entonnoirsInitiaux()) etatEntonnoir(cle(p)); });
 
   // ------------------------------------------------------------ dropper et distributeur
   mc.bloc('DispenserBlock').sur('voisin', (ev, monde) => {

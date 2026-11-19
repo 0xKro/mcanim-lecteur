@@ -751,6 +751,8 @@ export class Simulation {
       else if (k.tipo === 'explose') this.exploser(k.x + 0.5, k.y + 0.5, k.z + 0.5, { puissance: k.bloc });
       else this.poser(k.x, k.y, k.z, k.bloc, F.TOUS);
     }
+    // contenu de depart d'un conteneur que la scene pose elle-meme a t = 0 (monde.blocs) : rempli juste apres sa pose
+    if (this.contenusEnAttente) { const l = this.contenusEnAttente; this.contenusEnAttente = null; this.contenus.initial(l); }
   }
 
   _aleatoires() {
@@ -836,7 +838,12 @@ export class Simulation {
     this._calculerRegion();
     this.reg.figer();
     this.redstone.hookSignal = this.reg.aMonde('redstone.signal');
-    this.contenus.initial(cfg.contenus);
+    // un conteneur pose par monde.blocs a t = 0 n'existe pas encore : son contenu attend la pose (_commandes, tick 0)
+    const poseA0 = new Set(this.cmds.filter((k) => k.tick === 0 && !k.tipo).map((k) => `${k.x},${k.y},${k.z}`));
+    const contenus = cfg.contenus || [];
+    this.contenusEnAttente = contenus.filter(([x, y, z]) => poseA0.has(`${x},${y},${z}`));
+    if (!this.contenusEnAttente.length) this.contenusEnAttente = null;
+    this.contenus.initial(contenus.filter(([x, y, z]) => !poseA0.has(`${x},${y},${z}`)));
     for (const [x, y, z, livre, pages, page] of cfg.pupitres ?? []) {   // pupitres de depart : le livre pose (has_book) et sa page
       if (this.monde.etatEn(x, y, z) < 0 || this.d.nomBloc(this.monde.etatEn(x, y, z)) !== 'lectern') { this.avertir(`monde.pupitres : pas de pupitre en ${x},${y},${z}`); continue; }
       this.evenementPerso('pupitre.livre', { pos: [x, y, z], livre: String(livre).replace(/^minecraft:/, ''), pages, page: page ?? 0 });

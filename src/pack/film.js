@@ -245,6 +245,7 @@ export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {
       dernierFrame += n;
     };
 
+    const totemEcran = sim ? (await import('../film/totem-ecran.js')).creerTotemEcran({ scene, replay: sim.replay, kit }) : null;
     // Une image du film, a la taille de la scene (agrandie si echelle < 1), post-traitement `image` et couleur selective compris
     const dessiner = async (i, { largeur = W, hauteur = H, copie = true, apresChauffe = true } = {}) => {
       const im = anim.images[i];
@@ -267,6 +268,7 @@ export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {
         rgba = new Uint8Array(px.buffer);
       }
       const sortie = agrandir(rgba, rw, rh, largeur, hauteur);
+      if (totemEcran) totemEcran(sortie, largeur, hauteur, im);   // totem d'immortalite a l'ecran du joueur sauve (film/totem-ecran.js), avant l'interface
       dessiner.dernier = rep;
       dessiner.profondeur = veutProf && rep.profBrut ? profondeurDeChamp(rep.profBrut, rw, rh, largeur, hauteur) : null;
       stats.nodeMs += Date.now() - t0 - (rep.temps?.total ?? 0) - (rep.transfert_ms ?? 0);

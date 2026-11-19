@@ -463,6 +463,20 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
         yd *= 0.2; xd *= d; yd = (yd - 0.1) * d + 0.1; zd *= d;
         out.push({ type: 'anim', pref, n: 8, debut: tick, x: x + Math.cos(ang) * d * 0.1, y: y + 0.3, z: z + Math.sin(ang) * d * 0.1, xd, yd, zd, age: 0, duree: Math.floor(8 / (alea.flottant() * 0.8 + 0.2)), taille: 0.1 * (alea.flottant() * 0.5 + 0.5) * 2 * 0.75, gravite: -0.1, friction: 0.96, sol: false, uo: 0, vo: 0, couleur: [c[0] * k, c[1] * k, c[2] * k], plein: true });
       }
+    } else if (nom === 'totem_of_undying') {
+      // evenement 35 du totem (Horizon particles.rs : TrackingEmitter.tick et TotemParticle, MIT) : 16 essais par tick, direction (r x 2 - 1) dans la
+      // boule unite, depart a pieds + largeur x a / 4, hauteur x (0,5 + b / 4), vitesse (a, b + 0,2, c) ; SimpleAnimatedParticle : 60 + [0, 12[ ticks,
+      // gravite 1,25, frottement 0,6, taille x 0,75, pleine lumiere, images glitter_7 -> glitter_0 ; couleur : 1 sur 4 jaune-vert (0,6..0,8 ;
+      // 0,6..0,9 ; 0..0,2), sinon vert (0,1..0,3 ; 0,4..0,7 ; 0..0,2) ; la seconde moitie de sa vie l'alpha baisse de 1 a 0,5
+      const L = P[idx * 9 + 5], Hh = P[idx * 9 + 6];
+      for (let i = 0; i < Math.max(1, N); i++) {
+        const xa = alea.flottant() * 2 - 1, ya = alea.flottant() * 2 - 1, za = alea.flottant() * 2 - 1;
+        if (xa * xa + ya * ya + za * za > 1) continue;
+        alea.flottant();   // Particle(level, x, y, z) : duree tiree puis remplacee
+        const taille = 0.1 * (alea.flottant() * 0.5 + 0.5) * 2 * 0.75, duree = 60 + alea.entierBorne(12);
+        const couleur = alea.entierBorne(4) === 0 ? [0.6 + alea.flottant() * 0.2, 0.6 + alea.flottant() * 0.3, alea.flottant() * 0.2] : [0.1 + alea.flottant() * 0.2, 0.4 + alea.flottant() * 0.3, alea.flottant() * 0.2];
+        out.push({ type: 'anim', pref: 'particle/glitter_', n: 8, jeu: true, inverse: true, debut: tick, x: x + L * (xa / 4), y: y + Hh * (0.5 + ya / 4), z: z + L * (za / 4), xd: xa, yd: ya + 0.2, zd: za, age: 0, duree, taille, gravite: 1.25, friction: 0.6, sol: false, uo: 0, vo: 0, couleur, plein: true, fondu: true });
+      }
     } else if (nom === 'happy_villager') {   // HappyVillagerParticle : des etincelles vertes qui montent (farine d'os)
       const r1 = alea.flottant(), r2 = alea.flottant();
       out.push({ type: 'anim', pref: 'particle/glitter_', n: 8, debut: tick, x, y, z, xd: (r1 - 0.5) * 0.02, yd: 0.02 + r2 * 0.03, zd: (r2 - 0.5) * 0.02, age: 0, duree: 14 + Math.floor(r1 * 12), taille: 0.1 + r2 * 0.05, gravite: 0, friction: 0.95, sol: false, uo: 0, vo: 0, couleur: [0.35, 1, 0.35], plein: true });
@@ -615,6 +629,7 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
       if (p.type === 'note' && dy === 0 && p.yd !== 0) { p.xd *= 1.1; p.zd *= 1.1; }
       p.xd *= p.friction; p.yd *= p.friction; p.zd *= p.friction;
       if (p.sol) { p.xd *= 0.7; p.zd *= 0.7; }
+      if (p.fondu && p.age > Math.floor(p.duree / 2)) p.alpha = 1 - (p.age - Math.floor(p.duree / 2)) / p.duree;   // SimpleAnimatedParticle.tick
       if (p.dansEau && horsEau()) p.mort = true;   // BubbleColumnUpParticle : disparait hors de l'eau
     }
     E.liste = E.liste.filter((p) => !p.mort);
@@ -643,7 +658,7 @@ function creerParticules({ rs, replay, kit, donnees, terrain, texOf, lum, notes 
         let alpha = p.alpha ?? 1, s = p.taille;
         if (p.type === 'flash') { const ag = p.age + frac - 1; s = 7.1 * Math.sin(ag * 0.25 * Math.PI); alpha = 0.6 - ag * 0.25 * 0.5; if (s <= 0 || alpha <= 0) continue; }
         const im = p.type === 'anim' ? (p.jeu ? Math.min(p.n - 1, Math.floor(p.age * (p.n - 1) / p.duree)) : Math.min(p.n - 1, Math.floor(p.age / p.duree * p.n))) : 0;   // SpriteSet.get(age, duree)
-        const tp0 = p.type === 'anim' ? p.pref + (p.inverse ? p.n - 1 - im : im) : p.tex, qa = p.etincelle || p.type === 'flash' ? Math.max(1, Math.round(alpha * 16)) : 0;
+        const tp0 = p.type === 'anim' ? p.pref + (p.inverse ? p.n - 1 - im : im) : p.tex, qa = p.etincelle || p.type === 'flash' || (p.fondu && alpha < 1) ? Math.max(1, Math.round(alpha * 16)) : 0;
         const tp = qa ? tp0 + '@' + qa : tp0;   // translucide (etincelles, eclair) : texture a l'alpha reduit (16 paliers), dessinee en melange
         if (!parTex.has(tp)) parTex.set(tp, new Constructeur()); const C = parTex.get(tp);   // inverse : poof et smoke vont de generic_7 a generic_0
         const x = p.x + p.xd * frac, y = p.y + p.yd * frac, z = p.z + p.zd * frac, L = p.plein ? 1 : lum(x, y, z);

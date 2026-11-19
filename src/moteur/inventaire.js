@@ -28,6 +28,9 @@ export function idArmure(d, texte, emp) {
   return d.j.objets?.[c] ? c : id;
 }
 const SLOT_JEU = { tete: 'head', torse: 'chest', jambes: 'legs', pieds: 'feet' };
+// objets a composant death_protection et leurs death_effects apres clear_all_effects (items.json du jeu 26.3 : seul le totem l'a) :
+// [effet, ticks, amplificateur]
+export const TOTEM_EFFETS = { totem_of_undying: [['regeneration', 900, 1], ['absorption', 100, 1], ['fire_resistance', 800, 0]] };
 
 // composants d'objet de nos tables (outils/extraire-donnees-jeu.mjs, `objets`)
 export function composants(d, id) {
@@ -57,6 +60,9 @@ export function installerInventaire(Acteur, EchecActe) {
     let hsh = 0; for (const ch of String(this.nom)) hsh = (Math.imul(hsh, 31) + ch.charCodeAt(0)) | 0;
     this.graineEnchant = hsh ^ (this.sim.config?.graine ?? 1);
     if (d.saturation !== undefined) this.satur = Math.min(this.faim, d.saturation);
+    // les enchantements agissent dans TOUS les modes (survie, creatif, main infinie : seuls la consommation et l'usure en dependent) ; sans les
+    // fichiers du jeu ils ne peuvent pas agir : on le dit au lieu de les ignorer en silence
+    if (!this.sim.objetsJeu && [this.main.objet, this.gauche, ...Object.values(this.armure ?? {}), ...this.sac.keys()].some((t) => t && Object.keys(lirePile(t).ench).length)) this.sim.avertir(`${this.nom} : enchantements sans effet (donnees du jeu absentes : groupe de kit "recettes" ou MCANIM_OBJETS_JEU)`);
   };
 
   // ---------------------------------------------------------------- piles du sac
@@ -105,9 +111,10 @@ export function installerInventaire(Acteur, EchecActe) {
     if (this.infini || n <= 0 || !sim.regles.valeur('objets.usure', true)) return false;
     const texte = emp === 'main' ? this.main.objet : emp === 'gauche' ? this.gauche : this.armure?.[emp];
     if (!texte) return false;
-    const p = lirePile(texte), max = composants(sim.d, EMP_ARMURE.includes(emp) ? idArmure(sim.d, texte, emp) : p.id).usureMax;
+    const p = lirePile(texte), idJeu = EMP_ARMURE.includes(emp) ? idArmure(sim.d, texte, emp) : p.id, max = composants(sim.d, idJeu).usureMax;
     if (!max) return false;
-    if (Object.keys(p.ench).length) n = Math.max(0, Math.trunc(sim.enchant.valeurPile(texte, 'item_damage', { outil: p.id }, n)));
+    // Solidite (remove_binomial) : armure (#enchantable/armor) gardee avec la chance 0,6 + 0,4 / (n + 1), le reste 1 / (n + 1)
+    if (Object.keys(p.ench).length && sim.objetsJeu) n = Math.max(0, Math.trunc(sim.enchant.valeurPile(texte, 'item_damage', { outil: idJeu }, n)));
     if (n <= 0) return false;
     const usure = p.usure + n;
     const ancien = texte;
@@ -194,8 +201,12 @@ export function installerInventaire(Acteur, EchecActe) {
     if (ok) {
       let kb = c.recul + (this.course && c.recharge > 0.9 ? 1 : 0);
       if (kb > 0) { o.recul(kb * 0.5 * R, this.x - o.x, this.z - o.z); this.vx *= 0.6; this.vz *= 0.6; if (this.course && c.recharge > 0.9) sim.son('entity.player.attack.knockback', this.x, this.y, this.z, 1, 1); }
-      if (sim.objetsJeu && (arme || o.armure)) sim.enchant.apresAttaque(o, this, { type: 'player_attack', direct: true, directAttaquant: this, arme, attaquantSeul: true });   // l'armure de la victime : dans degats (acteurs.js)
+      // Player.itemAttackInteraction (Horizon mace.rs weapon_hit) : MaceItem.hurtEnemy (la chute s'arrete : vitesse verticale 0,01, recul autour),
+      // PUIS les post_attack de l'arme (Rafale de vent : l'explosion a ses pieds le relance, la chute compte encore pour sa condition), PUIS
+      // MaceItem.postHurtEnemy (chute remise a zero)
       if (c.ecrasant > 0) this.ecraser(o, c);
+      if (sim.objetsJeu && (arme || o.armure)) sim.enchant.apresAttaque(o, this, { type: 'player_attack', direct: true, directAttaquant: this, arme, attaquantSeul: true });   // l'armure de la victime : dans degats (acteurs.js)
+      if (c.ecrasant > 0) { this.distanceChute = 0; if (this.vy > 0.02) this.relance = { y0: this.y, t: sim.temps }; }   // relance (Rafale de vent) : hauteur notee au sommet (acteurs.js)
       // MaceItem.postHurtEnemy et l'arme : usure item_damage_per_attack (epee 1, hache 2) ; un outil sans composant weapon : 2 (Item.hurtEnemy)
       if (arme) { const u = composants(sim.d, arme).usureCoup; this.userPile('main', u >= 0 ? u : composants(sim.d, arme).usureMax ? 2 : 0); }
     }
@@ -208,8 +219,10 @@ export function installerInventaire(Acteur, EchecActe) {
     const sim = this.sim;
     const lourd = this.distanceChute > 5;
     this.vy = Math.fround(0.01);
+    // calculateImpactPosition + setIgnoreFallDamageFromCurrentImpulse(true) : la chute ne comptera que sous le point du coup (40 ticks de grace)
+    if (!this.typeCreature) this.impulsion = { y: this.impulsion && this.impulsion.y <= this.y ? this.impulsion.y : this.y, grace: 40 };
     sim.son(o.auSol ? (lourd ? 'item.mace.smash_ground_heavy' : 'item.mace.smash_ground') : 'item.mace.smash_air', this.x, this.y, this.z, 1, 1);
-    this.distanceChute = 0; this.ecrasement = sim.temps;
+    this.ecrasement = sim.temps;   // la chute est remise a zero apres les post_attack (apresCoup)
     for (const v of this.g.liste) {
       if (v === this || v === o || v.mort >= 0) continue;
       const d = [v.x - o.x, v.y - o.y, v.z - o.z], L = Math.hypot(...d);
@@ -228,8 +241,9 @@ export function installerInventaire(Acteur, EchecActe) {
   // protections d'enchantement : somme des damage_protection plafonnee a 20, x (1 - epf / 25)), puis l'absorption.
   P.degatsApresProtections = function (q, source, { contourneArmure, attaquant = null } = {}) {
     const sim = this.sim, type = typeDegats(source);
-    // armure
+    // armure (LivingEntity.getDamageAfterArmorAbsorb : hurtArmor AVANT la reduction, avec les degats bruts)
     if (!contourneArmure) {
+      if (!this.typeCreature) this.userArmure(q, type);   // Player.hurtArmor ; un mob n'use pas son armure (LivingEntity.hurtArmor est vide)
       let pts = 0, rob = 0;
       const arm = this.armureDu?.() ?? null;
       if (arm) { pts = arm.points; rob = arm.robustesse; }
@@ -240,7 +254,6 @@ export function installerInventaire(Acteur, EchecActe) {
         if (arme && sim.objetsJeu) eff = Math.max(0, sim.enchant.valeurPile(arme, 'armor_effectiveness', { outil: idDe(arme) }, 1));
         const f = 2 + rob / 4, g = Math.min(20, Math.max(pts * 0.2, pts - q / f)) * eff;
         q *= 1 - g / 25;
-        this.userArmure(Math.max(1, Math.floor(q / 4)));   // Player.hurtArmor : max(1, degats / 4) a chaque piece
       }
     }
     // Resistance : 5 x niveau sur 25 (pas pour le vide)
@@ -262,7 +275,19 @@ export function installerInventaire(Acteur, EchecActe) {
     for (const e of EMP_ARMURE) { const t = this.armure?.[e]; if (!t) continue; const c = composants(this.sim.d, idArmure(this.sim.d, t, e)); points += c.armure; robustesse += c.robustesse; }
     return { points, robustesse };
   };
-  P.userArmure = function (n) { for (const e of EMP_ARMURE) if (this.armure?.[e] && composants(this.sim.d, idArmure(this.sim.d, this.armure[e], e)).usureMax) this.userPile(e, n); };
+  // LivingEntity.doHurtEquipment : (int) max(1, degats / 4) a chaque piece portee qui s'use (pieds, jambes, torse, tete : l'ordre du jeu, celui des
+  // tirages de Solidite) ; une piece qui resiste au feu (netherite : damage_resistant #is_fire) ne s'use pas sous des degats de feu
+  P.userArmure = function (degats, type = 'generic') {
+    if (!(degats > 0) || !this.armure) return;
+    const sim = this.sim, n = Math.trunc(Math.max(1, degats / 4));
+    const feu = sim.objetsJeu ? sim.objetsJeu.etiquette('damage_type', 'is_fire').has(type) : /^(on_fire|in_fire|lava|hot_floor|fireball|campfire|unattributed_fireball)$/.test(type);
+    for (const e of ['pieds', 'jambes', 'torse', 'tete']) {
+      const t = this.armure[e]; if (!t) continue;
+      const c = composants(sim.d, idArmure(sim.d, t, e));
+      if (!c.usureMax || (feu && c.resiste === '#is_fire')) continue;
+      this.userPile(e, n);
+    }
+  };
 
   // ---------------------------------------------------------------- attributs des enchantements de l'equipement (EnchantmentHelper.forEachModifier)
   P.bonusAttribut = function (nom) { return this.sim.objetsJeu && (this.armure || this.main.objet) ? this.sim.enchant.attribut(this, nom) : 0; };
@@ -314,6 +339,42 @@ export function installerInventaire(Acteur, EchecActe) {
         sim.enchant.effetEntite(x.effect, n, this, { porteur: this, emplacement: 'feet', pile: t, ceci: this });
       }
     }
+  };
+
+  // ---------------------------------------------------------------- Totem d'immortalite (LivingEntity.checkTotemDeathProtection, jeu 26.3 ;
+  // Horizon game/totem.rs et mobs.rs use_death_protection, MIT) : un coup mortel qui n'est pas dans #bypasses_invulnerability (le vide, /kill)
+  // est pris par la premiere main (principale, puis secondaire) qui tient un objet a composant death_protection (le totem : items.json du jeu).
+  // La pile perd un objet dans TOUS les modes (itemStack.shrink(1), creatif compris), la vie passe a 1, puis les death_effects du composant :
+  // clear_all_effects, Regeneration II 900 ticks, Absorption II 100 ticks, Resistance au feu 800 ticks. Evenement 35 : emetteur de particules
+  // totem_of_undying (30 ticks, l'entite suivie), son item.totem.use, et l'animation de l'objet a l'ecran du joueur (film/totem-ecran.js).
+  P.totemSauve = function (source) {
+    const sim = this.sim, type = typeDegats(source);
+    const contourne = sim.objetsJeu ? sim.objetsJeu.etiquette('damage_type', 'bypasses_invulnerability') : new Set(['out_of_world', 'generic_kill']);
+    if (contourne.has(type)) return false;
+    const emp = [['main', this.main?.objet], ['gauche', this.gauche]].find(([, t]) => t && TOTEM_EFFETS[idDe(t)]);
+    if (!emp) return false;
+    const [main, pile] = emp, effets = TOTEM_EFFETS[idDe(pile)];
+    const k = this.sac.get(pile) ?? 0;   // la pile du sac (survie) perd un objet ; la main se vide (pile de 1 : max_stack_size du totem)
+    if (k > 1) this.sac.set(pile, k - 1); else if (k === 1) this.sac.delete(pile);
+    if (main === 'main') this.main = { objet: null, efficacite: 0 }; else this.gauche = null;
+    this.vie = 1;
+    // DeathProtection.applyEffects : clear_all_effects (les vues de Cecite, Nausee, Obscurite, Vision nocturne du film s'arretent aussi), puis les effets
+    for (const id of [...this.effets.keys()]) this.retirerEffet(id);
+    for (const l of [sim.replay.visions, sim.replay.obscurite, sim.replay.visionNuit]) for (const v of l ?? []) if (v.acteur === this.nom && v.fin > sim.temps) v.fin = sim.temps;
+    for (const [id, ticks, niveau] of effets) this.appliquerEffet(id, ticks, niveau);
+    sim.son('item.totem.use', this.x, this.y, this.z, 1, 1);
+    this.totemEmetteur = 30; this.tickTotem();   // ParticleEngine.createTrackingEmitter(entite, TOTEM_OF_UNDYING, 30) : une salve tout de suite
+    (sim.replay.totems ??= []).push({ tick: sim.temps, acteur: this.nom, main, objet: idDe(pile) });   // le film : animation a l'ecran, objet retire de la main
+    const texte = `${this.nom} : totem d'immortalite (${main === 'main' ? 'main principale' : 'main secondaire'}) contre ${source} : vie 1, Regeneration II 45 s, Absorption II 5 s, Resistance au feu 40 s`;
+    sim.dire(texte);
+    (sim.stats.totems ??= []).push(`${(sim.temps / 20).toFixed(2)} ${texte}`);
+    return true;
+  };
+  // TrackingEmitter.tick : 16 essais par tick dans un quart de la boite de l'entite (le film tire les positions : film/effets-monde.js)
+  P.tickTotem = function () {
+    if (!(this.totemEmetteur > 0)) return;
+    this.totemEmetteur--;
+    this.sim.particule('totem_of_undying', this.x, this.y, this.z, this.L, this.posePlane ? 0.6 : this.accroupi ? 1.5 : this.H, 0, 16);
   };
 
   // degats ignores : creatif (sauf le vide), Resistance au feu (#is_fire), enchantements a damage_immunity (Marche givree sur le magma)

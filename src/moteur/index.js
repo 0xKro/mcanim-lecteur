@@ -26,8 +26,10 @@ import { rafale, RAFALE } from './vent.js';
 // Objets du jeu dans la simulation (docs/SIMULATION.md partie 26) : donnees du kit (recettes, enchantements ; null sans le groupe `recettes`),
 // enchanteur, alambics, nuages ; crochets que les enchantements et les effets appellent (feu, foudre, rafale, hasard d'une graine)
 // Donnees d'objets du kit de la scene (groupe `recettes`), sinon une copie locale du jeu (MCANIM_OBJETS_JEU, dossier prepare) ; null sinon
-export function objetsDuKit(kitDir) {
+// racine : dossier deja trouve par le processus du lecteur (le fils des mods ne lit que ce qu'on lui permet : moteur/isolement.js)
+export function objetsDuKit(kitDir, racine = null) {
   try { if (kitDir) return chargerObjetsJeu(kitDir); } catch { /* kit sans le groupe recettes */ }
+  try { if (racine) return chargerObjetsJeu(racine); } catch { /* dossier illisible */ }
   try { const r = racineObjetsLocale(); return r ? chargerObjetsJeu(r) : null; } catch { return null; }   // processus fils : lecture refusee hors du kit
 }
 export function installerObjetsJeu(sim, objetsJeu) {
@@ -89,7 +91,7 @@ export function preparer({ zone, donnees, monde = {}, mods = [], acteurs = [], o
     kitDir: options.kitDir ?? null,      // kit de l'utilisateur : caracteristiques du jeu (arbres, champignons geants : caracteristiques.js)
   };
   const sim = new Simulation({ zone, donnees, config, monde: options.monde });
-  installerObjetsJeu(sim, options.objetsJeu !== undefined ? options.objetsJeu : objetsDuKit(options.kitDir));   // recettes, enchantements, alambics, nuages de potion (partie 26)
+  installerObjetsJeu(sim, options.objetsJeu !== undefined ? options.objetsJeu : objetsDuKit(options.kitDir, options.racineObjets ?? null));   // recettes, enchantements, alambics, nuages de potion (partie 26)
   sim.persoEntites = definitions.entites; sim.definitions = definitions;
   if (definitions.blocs.length || definitions.entites.length) sim.replay.perso = definitions;   // le rendu en a besoin (modeles, textures, echelle)
   declarerReglesMonde(sim.regles);

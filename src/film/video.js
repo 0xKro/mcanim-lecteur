@@ -176,6 +176,7 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
     const effets = sim ? (await import('./effets-monde.js')).creerEffetsMonde({ rs, scene, sim, kit, donnees: sim.donnees, terrain, creatures }) : null;
     const lumVue = sim ? (await import('./lumiere-vue.js')).creerLumiereVue({ scene, anim, replay: sim.replay }) : null;   // null sans vision nocturne ni wither
     const vueFx = sim ? await import('./vue-effets.js') : null, vueEffets = vueFx ? vueFx.creerVueEffets({ scene, replay: sim.replay }) : null;   // Cecite, Nausee (partie 26)
+    const totemEcran = sim ? (await import('./totem-ecran.js')).creerTotemEcran({ scene, replay: sim.replay, kit }) : null;   // totem d'immortalite a l'ecran du joueur sauve
     if (scene.monde?.dimension) rs.dimension = scene.monde.dimension;   // monde de l'End : lumiere et ciel de l'End (rendu/scene.js, ciel-vanille.js)
     if (effets) notes.push(...effets.notes);
     // particules d'ambiance des blocs (ClientLevel.animateTick : flammes des torches, fumee, poudre de redstone, portail, feuilles qui tombent...) :
@@ -253,6 +254,7 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
         ...(vx && !fond && vx.brume ? { ciel: vx.ciel, soleil: false, cielFixe: true, brume: vx.brume } : {}),   // Cecite : brume noire a 5 blocs
       });
       if (vx?.nausee && !fond) vueFx.deformerNausee(rgbaRendu, largeur, hauteur, (carte ? imC.camera : im.camera).fov ?? 70, vx.nausee);   // Nausee : image deformee
+      if (totemEcran && !fond) totemEcran(rgbaRendu, largeur, hauteur, im);   // ScreenEffectRenderer.renderItemActivationAnimation : apres le monde, avant l'interface
       if (comp && carteBrute && !carte) { melangerCouleur(rgbaRendu, carteBrute.fond, uFond); comp.finaliser(i, rgbaRendu, largeur, hauteur, null, { el: carteBrute, im }); }
       else if (comp) comp.finaliser(i, rgbaRendu, largeur, hauteur, veutProf ? rs.profondeurDerniere : null, carte ? { el: carte, im: imC } : null);
       return rgbaRendu;

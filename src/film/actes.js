@@ -8,8 +8,9 @@
 //   pose x y z "bloc" ["face"] [{va, face}]                                       pose un bloc dans la cellule (regles de pose du jeu), contre un bloc voisin
 //   casse x y z [{va, max}]                                                       casse un bloc : duree selon l'outil tenu ; fissures, son, particules
 //   utilise ["objet"] [{effet, niveau, secondes}]                                  sans bloc : manger (32 ticks), boire une potion, lancer devant soi ; avec bone_meal, houe, graines : sur un bloc (utilise x y z)
-//   lance [x y z | "acteur"] [{objet, effet, niveau, secondes, predit}]            boule de neige, oeuf, perle d'ender, potion jetee, trident : vise (angle balistique), lance
-//   tire [x y z | "acteur"] [{charge, objet, predit}]                              arc (tension `charge` secondes : puissance du jeu) ou arbalete (25 ticks) ; la fleche part a 3 x puissance
+//   lance [x y z | "acteur"] [{objet, predit, tangage, lacet}]          boule de neige, oeuf, perle, potion, fiole, trident, charge de vent : vise le point (arc bas,
+//                                                                                 tout angle, droit en bas compris), lance ; ou {tangage, lacet} : dans ce regard (90 = droit en bas)
+//   tire [x y z | "acteur"] [{charge, objet, predit, tangage, lacet}]              arc (tension `charge` secondes : puissance du jeu) ou arbalete (25 ticks) ; la fleche part a 3 x puissance
 //   jette [n] [{objet}]                                                           laisse tomber n objets devant soi (vitesse du jeu, ramassables apres 40 ticks)
 //   prend|depose x y z ["objet"] [n] [{va, fente}]                                  transfert avec un coffre, un tonneau, un entonnoir, un four (fente : entree, combustible, sortie)
 //   plane [x y z] [{tangage, lacet}]                                              vol plane aux elytres (armure.torse "elytra") : saut puis appui en l'air ; le regard dirige le vol
@@ -30,8 +31,8 @@ const OPTIONS = {
   fabrique: ['table', 'recette', 'va', 'ouvrePortes', 'duree', 'max', 'poudre'],
   enchante: ['va', 'ouvrePortes', 'max'],
   forge: ['va', 'ouvrePortes', 'max', 'nom'],
-  lance: ['objet', 'effet', 'niveau', 'secondes', 'predit', 'max'],
-  tire: ['objet', 'charge', 'predit', 'max', 'fusee', 'fleche'],
+  lance: ['objet', 'effet', 'niveau', 'secondes', 'predit', 'max', 'lacet', 'tangage'],
+  tire: ['objet', 'charge', 'predit', 'max', 'fusee', 'fleche', 'lacet', 'tangage'],
   jette: ['objet'],
   prend: ['va', 'ouvrePortes', 'max', 'strict'],
   depose: ['va', 'ouvrePortes', 'max', 'fente'],
@@ -159,7 +160,9 @@ export function lireActes(brut, ch, erreur, { noms, duree }) {
           if (!noms.has(args[0])) erreur(`${c}[2]`, `acteur inconnu ${JSON.stringify(args[0])} (acteurs : ${[...noms].join(', ')})`);
           a.cible = { acteur: args[0] };
         } else { const [x, y, z] = nombres(3, 'x, y, z du point vise'); a.cible = { x, y, z }; }
-        a.resume = `${verbe} ${a.cible === null ? 'devant' : a.cible.acteur ?? a.cible.x + ',' + a.cible.y + ',' + a.cible.z}`;
+        if (a.cible !== null && (a.opts.tangage !== undefined || a.opts.lacet !== undefined)) erreur(c, `${verbe} : un point (x, y, z ou un acteur) OU des angles {tangage, lacet}, pas les deux`);
+        if (a.opts.lacet !== undefined && a.opts.tangage === undefined) erreur(c, `${verbe} : {lacet} demande aussi {tangage} (90 = droit en bas, 0 = droit devant, -90 = droit en haut)`);
+        a.resume = `${verbe} ${a.cible === null ? (a.opts.tangage !== undefined ? `tangage ${a.opts.tangage}` : 'devant') : a.cible.acteur ?? a.cible.x + ',' + a.cible.y + ',' + a.cible.z}`;
         break;
       }
       case 'frappe': {   // coup d'epee (Player.attack) : s'approche a 3 blocs, frappe quand l'arme est rechargee, jusqu'a la mort de la cible ou {coups}
@@ -216,7 +219,7 @@ export function descripteursActeurs(scene, types = null) {
     const premier = (a.actes ?? []).find((x) => x.verbe === 'va' || x.verbe === 'regarde' && x.cible && x.cible.x !== undefined);
     const but = premier ? (premier.verbe === 'va' ? [premier.x, premier.z] : [premier.cible.x, premier.cible.z]) : null;
     const lacet = a.lacet ? a.lacet.cles[0].v[0] : but && Math.hypot(but[0] - k.x, but[1] - k.z) > 0.5 ? Math.atan2(-(but[0] - k.x), but[1] - k.z) * 180 / Math.PI : 0;
-    return { nom: a.nom, pos: Number.isFinite(k.y) ? [k.x, k.y, k.z] : [k.x, k.z], lacet, objet: (a.objetD?.cles?.[0]?.pile ?? a.objetD?.cles?.[0]?.id) ?? (a.creature?.ia ? ARME_IA[a.creature.type] ?? null : null), actes: a.actes ?? [], vie: a.vie, invulnerable: a.invulnerable, ramasse: a.ramasse, faim: a.faim, sac: a.sac, mode: a.mode, niveaux: a.niveaux, saturation: a.saturation, ...(a.mod ? { perso: a.mod } : {}), ...armureMoteur(a), ...(a.creature ? { gabarit: gabaritCreature(a.creature, types), typeCreature: a.creature.type, ...(a.creature.ia ? { ia: iaDe(a, types) } : {}) } : {}), ...(monteSim(a) ? { monture: a.monture.map((k) => ({ t: k.t, v: k.v })) } : {}), ...(vehSim.has(a.nom) ? { wagon: { contenu: Object.entries(a.sac ?? {}) } } : {}) };
+    return { nom: a.nom, pos: Number.isFinite(k.y) ? [k.x, k.y, k.z] : [k.x, k.z], lacet, objet: (a.objetD?.cles?.[0]?.pile ?? a.objetD?.cles?.[0]?.id) ?? (a.creature?.ia ? ARME_IA[a.creature.type] ?? null : null), actes: a.actes ?? [], ...((a.objetG?.cles?.[0]?.pile ?? a.objetG?.cles?.[0]?.id) ? { gauche: a.objetG.cles[0].pile ?? a.objetG.cles[0].id } : {}), vie: a.vie, invulnerable: a.invulnerable, ramasse: a.ramasse, faim: a.faim, sac: a.sac, mode: a.mode, niveaux: a.niveaux, saturation: a.saturation, ...(a.mod ? { perso: a.mod } : {}), ...armureMoteur(a), ...(a.creature ? { gabarit: gabaritCreature(a.creature, types), typeCreature: a.creature.type, ...(a.creature.ia ? { ia: iaDe(a, types) } : {}) } : {}), ...(monteSim(a) ? { monture: a.monture.map((k) => ({ t: k.t, v: k.v })) } : {}), ...(vehSim.has(a.nom) ? { wagon: { contenu: Object.entries(a.sac ?? {}) } } : {}) };
   });
 }
 

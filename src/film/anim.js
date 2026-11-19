@@ -316,7 +316,13 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
       if (a.horsImage) pose.horsImage = evaluer(a.horsImage, T('horsImage'))[0] >= 0.5;
       if (a.lueur) pose.lueur = evaluer(a.lueur, T('lueur'))[0];
       // objets tenus et armure (champs facultatifs : rien n'est ajoute sans eux)
-      for (const [champ, piste] of [['objetD', a.objetD], ['objetG', a.objetG]]) { const id = piste ? valeurObjet(piste, T(champ)) : null; if (id) { pose[champ] = id; if (aReflet(pileObjet(piste, T(champ)), monde?.replay?.refletsForces)) pose['reflet' + champ.slice(-1)] = true; } }   // enchante : reflet (objets/reflet.js)
+      for (const [champ, piste] of [['objetD', a.objetD], ['objetG', a.objetG]]) { const id = piste ? valeurObjet(piste, T(champ)) : null; if (id) { pose[champ] = id; if (aReflet(pileObjet(piste, T(champ)), monde?.replay?.refletsForces)) pose['reflet' + champ.slice(-1)] = true; } }
+      // totem d'immortalite utilise (moteur/inventaire.js totemSauve) : il quitte la main a l'evenement, jusqu'a une cle de piste posterieure
+      for (const tt of monde?.replay?.totems ?? []) {
+        if (tt.acteur !== a.nom || tt.tick > tmA * 20 * (monde.replay.ralenti || 1) + 1e-6) continue;
+        const champ = tt.main === 'gauche' ? 'objetG' : 'objetD', piste = a[champ], tEv = tt.tick / 20 / (monde.replay.ralenti || 1);
+        if (pose[champ] === tt.objet && !(piste?.cles ?? []).some((c) => c.t > tEv && c.t <= T(champ))) { delete pose[champ]; delete pose['reflet' + champ.slice(-1)]; }
+      }   // enchante : reflet (objets/reflet.js)
       if (a.armure) { let arm = null; for (const [e, piste] of Object.entries(a.armure)) { const id = valeurObjet(piste, T('armure')); if (id) { (arm ??= {})[e] = id; const pl = pileObjet(piste, T('armure')); if (aReflet(pl)) (pose.refletArmure ??= {})[e] = true; const gl = galonDe(pl); if (gl) (pose.galonArmure ??= {})[e] = gl; } } if (arm) pose.armure = arm; }
       if (vs?.armures) { const arm = { ...(pose.armure ?? {}) }; pose.refletArmure = { ...(pose.refletArmure ?? {}) }; for (const [e, p] of Object.entries(vs.armures)) { if (p) { arm[e] = p.replace(/\[[^\]]*\]/, ''); pose.refletArmure[e] = aReflet(p); const gl = galonDe(p); if (gl) (pose.galonArmure ??= {})[e] = gl; else if (pose.galonArmure) delete pose.galonArmure[e]; } else { delete arm[e]; delete pose.refletArmure[e]; if (pose.galonArmure) delete pose.galonArmure[e]; } } pose.armure = arm; }   // armure changee par la simulation (cassee, enchantee)
       // montage : vie au repos (respiration, regard) et gestes sur mots cles, ajoutes a la pose (rien sans `jeu` ni `gestes`)
@@ -347,7 +353,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
     return [p.x + ox, p.y + oy, p.z + oz];
   };
   const pos = new Array(n), cible = new Array(n);
-  const fovPar = new Array(n);
+  const fovPar = new Array(n), suitPar = new Array(n).fill(null);   // suitPar : l'acteur que la camera suit (son ecran : totem, film/totem-ecran.js)
   let corrigee = new Array(n).fill(false);
   let statCamera = null;
   const cumuler = (st) => { if (!st) return; statCamera = statCamera ?? {}; for (const [k, v] of Object.entries(st)) statCamera[k] = (statCamera[k] ?? 0) + v; };
@@ -423,6 +429,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
       controlerSujet(seg, true);
     }
     for (let i = i0; i < i1; i++) fovPar[i] = evaluer(c.fov, i * DT - dec)[0];
+    if (c.mode === 'suit') for (let i = i0; i < i1; i++) suitPar[i] = c.suit;
   }
 
   if (terrain.vivant && terrain.fin) terrain.fin();   // apres la camera planifiee instant par instant : le monde de la fin (notes d'obstruction)
@@ -438,7 +445,7 @@ export function animer(scene, terrain = {}, monde = null, extra = {}) {   // ext
       tangageCam = Math.atan2(-dy, h) / RAD;
     }
     if (corrigee[i]) corrections++;
-    images.push({ t, fige: infosImage[i].fige, tm: infosImage[i].tm, acteurs: parImage[i], camera: { x: pos[i][0], y: pos[i][1], z: pos[i][2], lacet: lacetCam, tangage: tangageCam, fov: fovPar[i] }, corrigee: corrigee[i] });
+    images.push({ t, fige: infosImage[i].fige, tm: infosImage[i].tm, acteurs: parImage[i], camera: { x: pos[i][0], y: pos[i][1], z: pos[i][2], lacet: lacetCam, tangage: tangageCam, fov: fovPar[i], ...(suitPar[i] ? { suit: suitPar[i] } : {}) }, corrigee: corrigee[i] });
   }
   if (terrain.bloc && terrain.solide) notes.push(...notesObstruction(scene, images, terrain));   // seulement avec un vrai terrain
   if (effetsDeScene(scene)) appliquerMontage(scene, images);   // secousse, coup de zoom, roulis, flous, profondeur de champ, transitions (rien sans ces champs)

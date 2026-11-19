@@ -212,7 +212,7 @@ async function terrainDeScene(scene, { telecharger, baseDir = process.cwd() }) {
   const cache = path.join(dossierCache(), 'zones', `${scene.zone}.mcz`);
   if (!telecharger && !fs.existsSync(cache)) return null;
   const zone = await obtenirZone(scene.zone);
-  const kit = await trouverKit(scene.monde ? { groupes: ['worldgen'] } : {});   // monde : les caracteristiques du jeu (arbres, champignons geants)
+  const kit = await trouverKit(scene.monde ? { groupes: ['worldgen', 'recettes'] } : {});   // monde : les caracteristiques du jeu (arbres, champignons geants), recettes et enchantements
   const { chargerScene } = await import('../src/rendu/scene.js');
   if (scene.monde) {   // scene avec simulation : le terrain est le monde VIVANT (blocs poses, portes ouvertes) ; les acteurs a `actes` viennent du replay
     const { simulerScene } = await import('../src/film/video.js');
@@ -458,6 +458,9 @@ async function commandeSimuler(argv) {
   const baseDir = path.dirname(path.resolve(pos[0]));
   verifierFichiers(scene, baseDir);
   const zone = await obtenirZone(scene.zone);
+  // donnees du jeu de la simulation (kit) : recettes, enchantements, etiquettes (groupe `recettes`) et caracteristiques du monde (`worldgen`).
+  // Sans elles, une scene avec un objet enchante echouait (« enchantements : donnees du jeu absentes ») : simuler ne demandait jamais le groupe.
+  const kitDir = await trouverKit({ groupes: ['worldgen', 'recettes'] });
   const { lireZone } = await import('../src/rendu/zone.js');
   const { simuler, ErreurMonde } = await import('../src/moteur/index.js');
   const { donneesDuJeu } = await import('../src/moteur/chargeur.js');
@@ -471,7 +474,7 @@ async function commandeSimuler(argv) {
     void simuler; void evaluer;
     // les mods tournent dans un processus fils a permissions (src/moteur/isolement.js)
     const { simulerIsole } = await import('../src/moteur/isolement.js');
-    const r = await simulerIsole({ zone: zoneS, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene, typesC), baseDir, duree: scene.duree, options: { meteo: scene.ciel?.meteo ?? null }, contexte: { heurePiste: hp ?? null, typesC } });
+    const r = await simulerIsole({ zone: zoneS, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene, typesC), baseDir, duree: scene.duree, options: { meteo: scene.ciel?.meteo ?? null, kitDir }, contexte: { heurePiste: hp ?? null, typesC } });
     dire(r.rapport);
   } catch (e) { if (e instanceof ErreurMonde) throw new Usage(e.message); throw e; }
 }

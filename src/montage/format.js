@@ -325,7 +325,7 @@ const PAR_TYPE = {
   inventaire: ['cases', 'colonnes', 'surligner', 'selection', 'style'],
   coffre: ['titre', 'cases', 'contenu', 'rangees', 'joueur'],
   marchand: ['titre', 'offres', 'selection'],
-  hud: ['coeurs', 'faim', 'xp', 'niveau', 'cases', 'selection', 'viseur', 'joueur'],
+  hud: ['coeurs', 'faim', 'xp', 'niveau', 'cases', 'selection', 'viseur', 'joueur', 'totem'],
   poste: ['joueur'],   // ecran du poste ouvert par un acteur simule (etabli, table d'enchantement, enclume, alambic, tailleur, forge : partie 26)
   image: ['fichier'],
   carte: ['fond', 'acteurs', 'vue', 'incrustations', 'lumiere'],
@@ -526,6 +526,8 @@ function lireContenu(D, e, o, ch, duree) {
       o.viseur = e.viseur !== false;
       // relie a un acteur simule (docs/SIMULATION.md partie 26) : vie, faim, experience, armure, air et objet tenu suivent la simulation
       if (e.joueur !== undefined) { if (typeof e.joueur !== 'string' || !e.joueur) D.err(`${ch}.joueur`, 'nom d un acteur a intentions (actes) attendu'); o.joueur = e.joueur; }
+      // totem : true : c'est l'ecran de ce joueur ; son totem d'immortalite y vole devant la camera comme dans le jeu (film/totem-ecran.js)
+      if (e.totem !== undefined) { if (typeof e.totem !== 'boolean') D.err(`${ch}.totem`, 'true ou false attendu'); if (e.totem && !o.joueur) D.err(`${ch}.totem`, 'demande "joueur" (l acteur dont c est l ecran)'); o.totem = e.totem; }
       if (e.cases !== undefined) { if (!Array.isArray(e.cases) || e.cases.length > 9) D.err(`${ch}.cases`, '9 cases au plus'); o.cases = e.cases.map((c) => (c === null ? null : typeof c === 'string' ? { objet: c } : { objet: c[0], nombre: c[1], barre: c[2] })); }
       break;
     case 'carte':

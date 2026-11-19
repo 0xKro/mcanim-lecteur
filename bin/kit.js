@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Usage: node bin/kit.js [--route auto|mojang|git|github|archive|npm] [--cache DIR] [--version 26.3]
+// Usage: node bin/kit.js [--route auto|mojang|git|github|raw|archive|npm] [--cache DIR] [--version 26.3]
 //        [--archive kit.zip] [--groups a,b,c] [--worldgen] [--verbose]
 // Affiche le rapport en JSON sur la sortie standard (une ligne).
 import { ensureKit, DEFAULT_GROUPS } from '../src/index.js';

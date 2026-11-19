@@ -149,6 +149,8 @@ export function evenementsDeScene(scene) {
   for (const s of scene.sons?.liste ?? []) if (typeof s.nom === 'string' && !SOUND_EVENTS.includes(s.nom)) ev.add(s.nom);
   // juke-box : la musique des disques utilises par les acteurs (music_disc.<nom>, a la demande)
   for (const a of scene.acteurs) for (const x of a.actes ?? []) { const o = String(x.objet ?? x.opts?.objet ?? ''); const m = /^music_disc_(.+)$/.exec(o); if (m) ev.add('music_disc.' + m[1]); }
+  // totem d'immortalite tenu (main, main gauche, sac, intentions) : son de l'evenement 35 (moteur/inventaire.js totemSauve)
+  if (/totem_of_undying/.test(JSON.stringify(scene.acteurs.map((a) => [a.objetD ?? null, a.objetG ?? null, a.objet ?? null, a.sac ?? null, a.actes ?? null])))) ev.add('item.totem.use');
   // creatures qui naissent d'un bloc ou d'un objet sans etre dans la scene : wither invoque (crane de wither squelette), bebes tortues
   // (oeuf de tortue), tetards (frai), renifleur (oeuf), poussin (oeuf lance) : leurs sons
   const texte = JSON.stringify([scene.decor ?? null, scene.acteurs.map((a) => a.actes ?? null), scene.monde?.blocs ?? null]);

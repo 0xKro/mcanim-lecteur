@@ -6,7 +6,7 @@
 //   boire  : meme duree, son `entity.generic.drink`, effet de la potion ; `{effet, niveau, duree}` choisissent l'effet (speed, slowness, jump_boost, invisibility, glowing...)
 //   arc    : puissance (f x f + 2 f) / 3 avec f = ticks / 20, au plus 1 ; fleche a 3 x puissance ; sous 0,1 rien ne part
 //   arbalete : 25 ticks de chargement, fleche critique a 3,15 ; lancer : boule de neige, oeuf, perle d'ender, potion jetee, trident
-import { LANCABLES, VITESSE_LANCE, TANGAGE_LANCE, TYPES, puissanceArc, tangageBalistique, direction } from './projectiles.js';
+import { LANCABLES, VITESSE_LANCE, TANGAGE_LANCE, TYPES, puissanceArc, tangageBalistique } from './projectiles.js';
 import { lireFusee, nouvelleFusee } from './fusees.js';
 import { lirePile, idDe, textePile } from './pile.js';
 import { effetsPotion } from './potions.js';
@@ -116,16 +116,22 @@ export function installerUtilisation(Acteur, EchecActe) {
     }
     return [cible.x, cible.y, cible.z];
   };
-  // Point que la tete doit regarder pour que le projectile (vitesse v, gravite g) atteigne `but` : on releve la ligne de visee de l'angle balistique
-  P.viseBalistique = function (but, v, g, offset = 0) {
-    const [ex, ey, ez] = [this.x, this.oeil()[1] - 0.1, this.z];
-    const dh = Math.hypot(but[0] - ex, but[2] - ez), dy = but[1] - ey;
-    const ang = tangageBalistique(dh, dy, v, g);
-    const yaw = Math.atan2(-(but[0] - ex), but[2] - ez);
-    const tang = (ang === null ? -45 : ang) - offset;      // hors de portee : on tire a 45 degres (le plus loin) ; `offset` : angle ajoute par le jeu au lancer (potion : -20)
-    const d = direction(yaw / RAD, tang);
-    return { point: [ex + d[0] * 30, ey + d[1] * 30, ez + d[2] * 30], horsPortee: ang === null, dh };
+  // Angles de la tete (lacet, tangage du jeu, -90..90) pour que le projectile (vitesse v, gravite g, trainee c, vol `ordre` : "jete" ou
+  // "fleche") parti de `depart` sous les yeux atteigne `but` : le tir tendu (arc bas) ; `offset` : angle que le jeu ajoute au lancer (potion,
+  // fiole : -20). Hors de portee : on vise droit sur le point (horsPortee). Droit en dessous ou au-dessus : le lacet de la tete ne change pas.
+  P.viseBalistique = function (but, v, g, offset = 0, { ordre = 'fleche', c = 0.99, depart = 0.1 } = {}) {
+    const [ex, ey, ez] = [this.x, this.oeil()[1] - depart, this.z];
+    const dx = but[0] - ex, dz = but[2] - ez, dh = Math.hypot(dx, dz), dy = but[1] - ey;
+    const min = -90 + offset, max = 90 + offset;         // le projectile part a tangage de la tete + offset
+    let ang = tangageBalistique(dh, dy, v, g, c, { ordre, min, max });
+    const horsPortee = ang === null;
+    if (horsPortee) ang = Math.max(min, Math.min(max, -Math.atan2(dy, dh) / RAD));
+    const tangage = Math.max(-90, Math.min(90, ang - offset));
+    const lacet = dh > 1e-6 ? Math.atan2(-dx, dz) / RAD : this.lacetTete;
+    return { lacet, tangage, horsPortee, dh };
   };
+  // ecart (degres) entre le regard et les angles voulus
+  P.ecartAngles = function (lacet, tangage) { return Math.hypot(((lacet - this.lacetTete) % 360 + 540) % 360 - 180, tangage - this.tangage); };
 
   // ---------------------------------------------------------------- utilise (sans bloc) : manger, boire, lancer devant soi
   P.debutObjet = function (T, a) {
@@ -241,15 +247,20 @@ export function installerUtilisation(Acteur, EchecActe) {
     if (T.etat === 'vise') {
       const v = (VITESSE_LANCE[T.type] ?? 1.5) * R.valeur('projectiles.vitesse', 1), g = TYPES[T.type].g * R.valeur('projectiles.gravite', 1);
       let tvol = 0, vise = null;
-      if (a.cible) {
-        for (let i = 0; i < 3; i++) {                 // une estimation du temps de vol corrige la position future de la cible
-          const but = this.pointVise(a.cible, a.opts.predit === false ? 0 : tvol);
-          vise = this.viseBalistique(but, v, g, TANGAGE_LANCE[T.type] ?? 0);
-          tvol = Math.max(1, vise.dh / (v * 0.92));
-        }
-        this.regardTache = { x: vise.point[0], y: vise.point[1], z: vise.point[2] };
+      if (a.cible || a.opts.tangage !== undefined) {
+        if (a.cible) {
+          // le jeu lance dans le regard (tous les angles, droit en bas compris) : on cherche le regard qui envoie l'objet sur le point
+          const jete = !!TYPES[T.type].jete, opt = { ordre: jete ? 'jete' : 'fleche', c: TYPES[T.type].vent ? 1 : 0.99, depart: T.type === 'vent' ? 0 : 0.1 };
+          for (let i = 0; i < 3; i++) {                 // une estimation du temps de vol corrige la position future de la cible
+            const but = this.pointVise(a.cible, a.opts.predit === false ? 0 : tvol);
+            vise = this.viseBalistique(but, v, g, TANGAGE_LANCE[T.type] ?? 0, opt);
+            tvol = Math.max(1, vise.dh / (v * 0.92));
+          }
+        } else vise = { lacet: a.opts.lacet ?? this.lacetTete, tangage: a.opts.tangage, horsPortee: false };   // angles donnes : {tangage: 90} = droit en bas
+        this.regardTache = { fixe: [vise.lacet, vise.tangage] };
         T.horsPortee = vise.horsPortee;
-        if (!this.viseTache(T, vise.point)) return;
+        T.vise = (T.vise ?? 0) + 1;
+        if (this.ecartAngles(vise.lacet, vise.tangage) > 0.02 && T.vise < 24) return;   // la tete arrive sur les angles (a 0,02 degre ; au plus 24 ticks)
       } else if (T.vise++ < 2) return;
       this.balancer();
       lancerObjet.call(this, T.objet, this.lacetTete, this.tangage, a.opts);
@@ -329,6 +340,7 @@ export function installerUtilisation(Acteur, EchecActe) {
     T.vitesse = T.arbalete ? R.valeur('arcs.arbaleteVitesse', 3.15) : 3.0 * T.puissance * R.valeur('projectiles.vitesse', 1);
     T.vitesse0 = T.arbalete ? R.valeur('arcs.arbaleteVitesse', 3.15) : 3.0 * T.puissance;
     T.cible = a.cible ?? null;
+    T.angles = a.opts?.tangage !== undefined ? [a.opts.lacet, a.opts.tangage] : null;   // {lacet, tangage} : tirer dans ce regard (90 : droit en bas)
     // arbalete chargee d'une fusee d'artifice (CrossbowItem : fusee de biais a 1,6, 0,15 sous les yeux)
     T.fusee = T.arbalete && a.opts.fusee !== undefined ? (() => { try { return lireFusee(a.opts.fusee); } catch (err) { throw new EchecActe(err.message); } })() : null;
     if (T.fusee) { T.vitesse = 1.6; T.vitesse0 = 1.6; }
@@ -339,11 +351,17 @@ export function installerUtilisation(Acteur, EchecActe) {
   function tickTir(T) {
     const sim = this.sim, R = sim.regles, g = TYPES.fleche.g * R.valeur('projectiles.gravite', 1);
     // tout au long de la tension la tete suit la cible, avec l'angle balistique de la puissance finale
-    if (T.cible && T.etat !== 'apres') {
+    // (ou les angles donnes {lacet, tangage} : tout le regard du jeu, -90 droit en haut a 90 droit en bas)
+    if ((T.cible || T.angles) && T.etat !== 'apres') {
       const v = T.vitesse;
       let tvol = 0, vise = null;
-      for (let i = 0; i < 3; i++) { const but = this.pointVise(T.cible, T.acte.opts.predit === false ? 0 : tvol); vise = this.viseBalistique(but, v, g); tvol = Math.max(1, vise.dh / (v * 0.9)); }
-      this.regardTache = { x: vise.point[0], y: vise.point[1], z: vise.point[2] };
+      if (T.cible) {
+        // fusee d'arbalete : vol droit (sans gravite ni trainee : moteur/fusees.js) ; fleche : AbstractArrow ; la fleche part 0,1 sous les yeux, la fusee 0,15
+        const opt = T.fusee ? { ordre: 'fleche', c: 1, depart: 0.15 } : { ordre: 'fleche', c: 0.99, depart: 0.1 };
+        for (let i = 0; i < 3; i++) { const but = this.pointVise(T.cible, T.acte.opts.predit === false ? 0 : tvol); vise = this.viseBalistique(but, v, T.fusee ? 0 : g, 0, opt); tvol = Math.max(1, vise.dh / (v * 0.9)); }
+      } else vise = { lacet: T.angles[0] ?? this.lacetTete, tangage: T.angles[1], horsPortee: false };
+      this.regardTache = { fixe: [vise.lacet, vise.tangage] };
+      T.viseAngles = [vise.lacet, vise.tangage];
       T.horsPortee = vise.horsPortee;
     }
     if (T.etat === 'tend') {
@@ -352,7 +370,7 @@ export function installerUtilisation(Acteur, EchecActe) {
       if (T.arbalete && T.k === Math.floor(T.ticksCharge / 2)) sim.son('item.crossbow.loading_middle', this.x, this.oeil()[1], this.z, 1, 1);
       if (T.k < T.ticksCharge) return;
       // la tete doit etre sur la cible au moment du tir (au plus 6 ticks d'attente supplementaires)
-      if (T.cible && this.regardTache && T.k < T.ticksCharge + 6 && this.ecartRegard([this.regardTache.x, this.regardTache.y, this.regardTache.z]) > 3) return;
+      if (T.viseAngles && T.k < T.ticksCharge + 16 && this.ecartAngles(...T.viseAngles) > 0.02) return;
       if (T.arbalete) { sim.son('item.crossbow.loading_end', this.x, this.oeil()[1], this.z, 1, 1); this.usage = { type: 5, ticks: 0 }; T.etat = 'tenu'; T.attente = 3; return; }
       return tirer.call(this, T);
     }

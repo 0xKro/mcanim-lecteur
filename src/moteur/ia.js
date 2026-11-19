@@ -23,6 +23,8 @@ import { METHODES_BREEZE } from './ia-breeze.js';   // breeze : cerveau, tir de 
 import { METHODES_OEUFS, declarerReglesOeufs } from './ia-oeufs.js';   // oeufs et reproductions a part : tortue, grenouille, renifleur, panda, ocelot, axolotl, poule
 import { METHODES_VILLAGEOIS } from './ia-villageois.js';   // villageois : temps libre, echanges, reproduction, jeu des bebes, lits et postes pris
 import { declarerReglesPoussee } from './poussee.js';   // les corps vivants se poussent (acteurs.poussee)
+import { composants } from './inventaire.js';   // attaque de l'arme tenue (attribute_modifiers des objets du jeu)
+import { idDe } from './pile.js';
 
 const RAD = Math.PI / 180;
 const norm180 = (a) => { a = (a + 180) % 360; if (a < 0) a += 360; return a - 180; };
@@ -39,7 +41,7 @@ export const PROFILS = {
   husk: P('zombie', { degats: 3, suivi: 35, portes: true }), drowned: P('zombie', { degats: 3, suivi: 35, soleil: true }),
   skeleton: P('squelette', { degats: 2, soleil: true, arc: true }), stray: P('squelette', { degats: 2, soleil: true, arc: true }),
   bogged: P('squelette', { degats: 2, soleil: true, arc: true, intervalle: [50, 30] }), parched: P('squelette', { degats: 2, arc: true }),
-  wither_skeleton: P('zombie', { degats: 5 }),
+  wither_skeleton: P('zombie', { degats: 4 }),   // WitherSkeleton.finalizeSpawn : attack_damage 4 (2 par defaut) ; l'epee en pierre tenue ajoute 4 (degatsMelee) : 8
   creeper: P('creeper'), spider: P('araignee', { degats: 2 }), cave_spider: P('araignee', { degats: 2 }),
   iron_golem: P('golem', { degats: 15, antiRecul: 1 }), snow_golem: P('neige'),
   rabbit: P('lapin', { panique: 2.2 }), cow: P('passif', { panique: 2.0 }), mooshroom: P('passif', { panique: 2.0 }), pig: P('passif', { panique: 1.25 }),
@@ -389,9 +391,19 @@ export class IA {
     return A[0] - m <= B[3] && A[3] + m >= B[0] && A[2] - m <= B[5] && A[5] + m >= B[2] && A[1] <= B[4] && A[4] >= B[1];
   }
   // Mob.doHurtTarget : attack_damage (golem : d / 2 + [0, d[), degats selon la difficulte si la cible est un joueur, recul 0,4
+  // attack_damage du type + modificateur de l'arme tenue (attribute_modifiers, emplacement mainhand), puis EnchantmentHelper.modifyDamage
+  // (Tranchant, Chatiment...) : Mob.doHurtTarget du jeu, sans mode de jeu (un mob n'en a pas)
+  degatsMelee(o) {
+    const a = this.a, sim = this.sim, arme = a.main?.objet ?? null;
+    let q = this.pr.degats;
+    if (!arme) return q;
+    q += composants(sim.d, arme).attaque;
+    if (sim.objetsJeu) q = sim.enchant.valeurPile(arme, 'damage', { type: 'mob_attack', direct: true, ceci: o, attaquant: a, directAttaquant: a, outil: idDe(arme) }, q);
+    return q;
+  }
   frapper(o) {
     const a = this.a, sim = this.sim, h = this.h;
-    let q = this.pr.degats;
+    let q = this.degatsMelee(o);
     if (this.pr.fam === 'golem') q = q / 2 + h.entierBorne(Math.floor(q));
     if (this.typeDe(o) === 'joueur') q = degatsJoueur(q, this.difficulte());
     q *= sim.regles.valeur('ia.degats', 1);
@@ -404,6 +416,12 @@ export class IA {
     const ok = q > 0 ? o.frappe(q, 'mob:' + this.type, a.x - o.x, a.z - o.z, 0.4 * sim.regles.valeur('combat.recul', 1)) : false;
     if (ok) {
       o.ia?.blesse(a); o.dernierFrappeur = a;
+      const arme = a.main?.objet ?? null;   // Mob.doHurtTarget : recul de l'arme (Recul), puis les effets d'apres l'attaque (Aura de feu...)
+      if (arme && sim.objetsJeu) {
+        const kb = sim.enchant.valeurPile(arme, 'knockback', { type: 'mob_attack', direct: true, ceci: o, attaquant: a, directAttaquant: a, outil: idDe(arme) }, 0);
+        if (kb > 0) o.recul(kb * 0.5 * sim.regles.valeur('combat.recul', 1), a.x - o.x, a.z - o.z);
+        sim.enchant.apresAttaque(o, a, { type: 'mob_attack', direct: true, directAttaquant: a, arme, attaquantSeul: true });
+      }
       if (this.pr.fam === 'golem') { o.vy += 0.4; sim.son('entity.iron_golem.attack', a.x, a.y, a.z, 1, 1); }
       this.stat('attaques'); (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${a.nom} frappe ${o.nom} ${+q.toFixed(1)}`);
     }

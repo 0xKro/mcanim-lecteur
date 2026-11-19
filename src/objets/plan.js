@@ -6,6 +6,7 @@ import { idsDeScene } from '../film/objets-scene.js';
 import { evenementsDeScene } from '../creatures/scene.js';
 import { listeObjets, groupePresent } from './fichiers.js';
 import { objetPourNotes } from './habillage.js';
+import { idRendu } from './reflet.js';
 import { nomMateriau, couleurArmure, couchesTexture, materiauxDuKit, EMPLACEMENTS } from './armure.js';
 
 // Groupes a la demande (kit.js) dont la scene a besoin : ['objets'], ['armures'], les deux ou [].
@@ -56,7 +57,7 @@ export function proches(kit, id, n = 5) {
 export function planifier(scene, kit) {
   const mains = new Map();   // id -> Set('D'|'G')
   for (const a of scene.acteurs) for (const [c, p] of [['D', a.objetD], ['G', a.objetG]]) for (const k of p?.cles ?? []) if (k.id) (mains.get(k.id) ?? mains.set(k.id, new Set()).get(k.id)).add(c);
-  for (const a of scene.acteurs) for (const x of a.actes ?? []) if (x.verbe === 'tient' && x.objet) (mains.get(x.objet) ?? mains.set(x.objet, new Set()).get(x.objet)).add('D');   // objets tenus par les intentions : controles comme `objet`
+  for (const a of scene.acteurs) for (const x of a.actes ?? []) if (x.verbe === 'tient' && x.objet) { const id = idRendu(x.objet); (mains.get(id) ?? mains.set(id, new Set()).get(id)).add('D'); }   // objets tenus par les intentions : controles comme `objet` (une pile enchantee `diamond_sword[sharpness=5]` : l'objet dessine)
   const { armures } = idsDeScene(scene);
   const plats = [], blocs = [], plaques = [], vides = [], autres = [];
   if (mains.size && !groupePresent(kit, 'objets')) return { erreur: 'les fichiers d\'objets du jeu manquent dans ce kit (groupe "objets") : relance sans MCANIM_KIT, ils seront recuperes', note: null };

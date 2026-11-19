@@ -87,7 +87,7 @@ function copier(ctx, dir, groupes) {
   return n;
 }
 
-async function sonsParRaw(ctx, version, events = ctx.opts.soundEvents || SOUND_EVENTS, tolerant = false) {
+export async function sonsParRaw(ctx, version, events = ctx.opts.soundEvents || SOUND_EVENTS, tolerant = false) {
   const { net } = ctx;
   const raw = (p) => `${RAW}/${version}-assets/assets/minecraft/${p}`;
   const sj = (await net.buffer(raw('sounds.json'))).body;

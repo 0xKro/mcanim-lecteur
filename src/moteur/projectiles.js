@@ -6,6 +6,9 @@
 //   boule, oeuf, perle : gravite 0,03, trainee 0,99, vitesse 1,5 ; la perle teleporte son lanceur et lui fait 5 de degats ; la boule et l'oeuf ne blessent pas
 //   potion jetee : gravite 0,05, vitesse 0,5 (tir 20 degres plus haut), effets dans 4 x 2 x 4 autour, force 1 - sqrt(d2) / 4 si d2 < 16
 //   trident : gravite 0,05, vitesse 2,5, degats 8
+//   eau (la boite touche l'eau au tick d'avant) : objets jetes x 0,8F au lieu de 0,99F, fleche 0,6F, trident 0,99F, 4 bulles ; ils continuent ;
+//   colonnes de bulles (Projectile.onInsideBubbleColumn / onAboveBubbleColumn, sans borne) : +0,06 dedans, +0,1 a la surface, -0,03 descendante :
+//   une perle y reste en suspens (stase) jusqu'a ce qu'un bloc la touche (trappe qui se ferme : elle est DANS la forme, VoxelShape.clip)
 // Le hasard vient du monde (moteur/aleatoire.js) : meme graine, memes tirs.
 import { boitesLocales } from './collision.js';
 import { exploser } from './explosion.js';
@@ -13,6 +16,7 @@ import { tickFusee } from './fusees.js';
 import { toucheVent } from './vent.js';
 import { lirePile } from './pile.js';
 import { couleurPotion } from './potions.js';
+import { descendre } from './vehicules.js';
 
 const RAD = Math.PI / 180;
 const CUBE = [[0, 0, 0, 1, 1, 1]];
@@ -82,13 +86,25 @@ export function coupeBlocs(lec, p0, p1) {
   const y0 = Math.floor(Math.min(p0[1], p1[1]) - 1e-6) - 1, y1 = Math.floor(Math.max(p0[1], p1[1]) + 1e-6);
   const z0 = Math.floor(Math.min(p0[2], p1[2]) - 1e-6), z1 = Math.floor(Math.max(p0[2], p1[2]) + 1e-6);
   const d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+  if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 1e-7) return null;   // VoxelShape.clip : un deplacement de moins de 1e-7 (au carre) ne touche rien
   let meilleur = null;
   for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
     const L = boitesLocales(lec, x, y, z);
     for (let i = 0; i < L.length; i++) {
-      const k = L[i], r = tranche([k[0] + x, k[1] + y, k[2] + z, k[3] + x, k[4] + y, k[5] + z], p0, d);
+      const k = L[i], bb = [k[0] + x, k[1] + y, k[2] + z, k[3] + x, k[4] + y, k[5] + z], r = tranche(bb, p0, d);
+      if (r && r.t === 0 && !r.face) {   // depart sur ou dans la boite : ne compte que si le point avance de 0,001 x d est dedans (VoxelShape.clip)
+        const q = [p0[0] + d[0] * 0.001, p0[1] + d[1] * 0.001, p0[2] + d[2] * 0.001];
+        if (!(q[0] >= bb[0] && q[0] < bb[3] && q[1] >= bb[1] && q[1] < bb[4] && q[2] >= bb[2] && q[2] < bb[5])) continue;
+      }
       if (r && (!meilleur || r.t < meilleur.t)) meilleur = { ...r, cellule: [x, y, z] };
     }
+  }
+  if (meilleur && meilleur.t === 0 && !meilleur.face) {
+    // VoxelShape.clip, depart DANS la forme (un bloc pose sur le projectile : trappe qui se ferme sur une perle en stase) : touche au point
+    // avance de 0,001 x le deplacement, face = l'oppose de la direction dominante (Direction.getApproximateNearest)
+    meilleur.t = 0.001;
+    const a = Math.abs(d[0]) >= Math.abs(d[1]) && Math.abs(d[0]) >= Math.abs(d[2]) ? 0 : Math.abs(d[1]) >= Math.abs(d[2]) ? 1 : 2;
+    meilleur.face = [0, 0, 0]; meilleur.face[a] = -Math.sign(d[a]); meilleur.dedans = true;
   }
   if (meilleur) meilleur.pos = [p0[0] + d[0] * meilleur.t, p0[1] + d[1] * meilleur.t, p0[2] + d[2] * meilleur.t];
   return meilleur;
@@ -109,31 +125,121 @@ export function tranche(b, p0, d) {
 }
 
 // Angle de tir (tangage, degres, > 0 vers le bas) pour qu'un projectile lance a la vitesse v atteigne la hauteur `dy` a la distance horizontale `dh`
-// (gravite g, trainee c) : on essaie les angles du plus bas au plus haut et on garde le premier tir direct ; null si hors de portee.
-export function tangageBalistique(dh, dy, v, g, c = 0.99) {
-  const hauteurA = (ang) => {      // ang : degres vers le haut ; hauteur en dh, ou NaN si la portee est insuffisante
-    let x = 0, y = 0, vx = v * Math.cos(ang * RAD), vy = v * Math.sin(ang * RAD);
-    for (let i = 0; i < 400; i++) {
+// (gravite g, trainee c), tous les angles du jeu permis (-90 droit en haut .. 90 droit en bas ; `min`, `max` : bornes du projectile, une potion
+// part 20 degres au-dessus du regard). Le vol est celui du jeu : `ordre` "fleche" (AbstractArrow : deplacement, puis trainee et gravite) ou
+// "jete" (ThrowableProjectile : gravite et trainee, puis deplacement). On balaie du plus bas (droit en bas) au plus haut et on garde le premier
+// angle qui atteint le point : le tir tendu (l'arc bas) ; null si aucun angle ne l'atteint.
+export function tangageBalistique(dh, dy, v, g, c = 0.99, { ordre = 'fleche', min = -90, max = 90 } = {}) {
+  dh = Math.max(dh, 1e-3);   // droit en dessous ou au-dessus : un millieme de bloc a cote (le balayage trouve alors l'angle vertical)
+  const reste = c < 1 ? c / (1 - c) : Infinity;   // portee horizontale qui reste : vx x (c + c^2 + ...)
+  const hauteurA = (tang) => {                     // hauteur atteinte a la distance dh, ou -Infinity (retombe avant, ou n'y arrive jamais)
+    const a = -tang * RAD;
+    let x = 0, y = 0, vx = v * Math.cos(a), vy = v * Math.sin(a);
+    if (!(vx > 1e-9)) return -Infinity;
+    for (let i = 0; i < 4000; i++) {
+      if (ordre === 'jete') { vy -= g; vx *= c; vy *= c; }
       const nx = x + vx, ny = y + vy;
-      if (nx >= dh) { return y + (ny - y) * ((dh - x) / (nx - x || 1)); }
-      x = nx; y = ny; vy = vy * c - g; vx *= c;
-      if (y < dy - 80) return NaN;
+      if (nx >= dh) return y + (ny - y) * ((dh - x) / (nx - x));
+      x = nx; y = ny;
+      if (ordre !== 'jete') { vx *= c; vy = vy * c - g; }
+      if ((y < dy && vy <= 0) || x + vx * reste < dh) return -Infinity;
     }
-    return NaN;
+    return -Infinity;
   };
-  let prec = null, precAng = null;
-  for (let a = -60; a <= 70; a += 0.5) {
-    const h = hauteurA(a);
-    if (Number.isNaN(h)) { prec = null; continue; }
-    const f = h - dy;
-    if (prec !== null && prec < 0 && f >= 0) {            // le tir direct : on affine
-      let lo = precAng, hi = a;
-      for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if (hauteurA(m) - dy < 0) lo = m; else hi = m; }
-      return -(lo + hi) / 2;
+  let prec = -Infinity, precT = max;
+  for (let t = max; t >= min - 1e-9; t -= 0.25) {
+    const f = hauteurA(t) - dy;
+    if (prec < 0 && f >= 0) {                      // premier angle qui passe au-dessus du point : on affine entre les deux
+      let lo = precT, hi = t;
+      for (let i = 0; i < 50; i++) { const m = (lo + hi) / 2; if (hauteurA(m) - dy < 0) lo = m; else hi = m; }
+      return hi;
     }
-    prec = f; precAng = a;
+    prec = f; precT = t;
   }
   return null;
+}
+
+// ------------------------------------------------------------ l'eau et les colonnes de bulles autour d'un projectile
+// Boite d'un projectile (cote `l`, pieds en y) : celle du jeu (EntityDimensions : 0,25 pour les objets jetes, 0,5 fleche et trident)
+const boiteProj = (x, y, z, l) => [x - l / 2, y, z - l / 2, x + l / 2, y + l, z + l / 2];
+// Entity.updateFluidInteraction (updateFluidHeightAndDoFluidPushing) : la boite (reduite de 0,001) touche de l'eau dont la surface
+// (y + 1 si de l'eau est au-dessus, sinon niveau / 9) atteint son bas ; le courant moyen, normalise (pas un joueur), x 0,014, au moins
+// 0,0045 si l'entite est presque arretee (FlowingFluid.getFlow, `sim.courant`) ; vrai : l'entite est dans l'eau.
+export function eauEtCourant(s, e, l, pousse = true, bas = 0) {
+  const b = boiteProj(e.x, e.y + bas, e.z, l), m = 0.001, base = b[1];
+  let dans = false, haut = 0, n = 0;
+  const acc = [0, 0, 0];
+  for (let x = Math.floor(b[0] + m); x <= Math.ceil(b[3] - m) - 1; x++) for (let y = Math.floor(b[1] + m); y <= Math.ceil(b[4] - m) - 1; y++) for (let z = Math.floor(b[2] + m); z <= Math.ceil(b[5] - m) - 1; z++) {
+    const f = s.fluide(x, y, z);
+    if (f.type !== 'water') continue;
+    const surface = y + (s.fluide(x, y + 1, z).type === 'water' ? 1 : f.quantite / 9);
+    if (surface < b[1] + m) continue;
+    dans = true; haut = Math.max(haut, surface - base);
+    let c = s.courant(x, y, z);
+    if (haut < 0.4) c = c.map((q) => q * haut);
+    acc[0] += c[0]; acc[1] += c[1]; acc[2] += c[2]; n++;
+  }
+  const L2 = acc[0] ** 2 + acc[1] ** 2 + acc[2] ** 2;
+  if (pousse && n && L2 >= Math.fround(1e-5)) {
+    const L = Math.sqrt(L2);
+    let w = acc.map((q) => q / L * 0.014);
+    if (Math.abs(e.vx) < 0.003 && Math.abs(e.vz) < 0.003 && Math.hypot(...w) < 0.0045000000000000005) { const k = Math.hypot(...w); w = w.map((q) => q / k * 0.0045000000000000005); }
+    e.vx += w[0]; e.vy += w[1]; e.vz += w[2];
+  }
+  return dans;
+}
+// BubbleColumnBlock.entityInside pour la cellule (x, y, z) : { drag, surface } ou null (surface : au-dessus, ni boite de collision ni fluide)
+export function colonneBulleEn(s, x, y, z) {
+  const k = s.monde.etatEn(x, y, z);
+  if (k < 0 || s.d.nomBloc(k) !== 'bubble_column') return null;
+  const dessus = s.monde.etatEn(x, y + 1, z);
+  return { drag: s.d.prop(k, 'drag') === 'true', surface: dessus >= 0 && s.d.boites(dessus).length === 0 && !s.d.fluide(dessus) };
+}
+// Projectile.onAboveBubbleColumn / onInsideBubbleColumn : SANS les bornes des autres entites ; descendante (magma) -0,03, montante +0,06 dedans,
+// +0,1 a la surface (et les eclaboussures de la surface : Entity.sendBubbleColumnParticles, 2 splash et 2 bulles)
+function pousseeBulleProj(s, e, c, x, y, z) {
+  if (c.surface) {
+    const h = s.hasard;
+    for (let i = 0; i < 2; i++) {
+      s.replay.particule(s.temps, 'splash', x + h.reel(), y + 1, z + h.reel(), 0, 0, 0, 1);
+      s.replay.particule(s.temps, 'bubble', x + h.reel(), y + 1, z + h.reel(), h.gaussien() * 0.2, h.gaussien() * 0.2, h.gaussien() * 0.2, 1);
+    }
+  }
+  e.vy += c.drag ? -0.03 : c.surface ? 0.1 : 0.06;
+  s.stats.poussesBulles = (s.stats.poussesBulles || 0) + 1;
+}
+// ThrowableProjectile.handleFirstTickBubbleColumn : au premier tick, chaque colonne de la boite (cellules de ses deux coins) pousse avant la gravite
+function bullesPremierTick(s, e, l) {
+  const b = boiteProj(e.x, e.y, e.z, l);
+  for (let x = Math.floor(b[0]); x <= Math.floor(b[3]); x++) for (let y = Math.floor(b[1]); y <= Math.floor(b[4]); y++) for (let z = Math.floor(b[2]); z <= Math.floor(b[5]); z++) {
+    const c = colonneBulleEn(s, x, y, z);
+    if (c) pousseeBulleProj(s, e, c, x, y, z);
+  }
+}
+// Entity.applyEffectsFromBlocks (checkInsideBlocks) apres le deplacement de `de` a la position : les cellules balayees par la boite (reduite
+// de 1e-5F), chacune une fois ; une colonne pousse si le deplacement depasse presque un bloc ou si la boite d'arrivee est dedans
+function bullesLeLong(s, e, de, l, bas = 0) {
+  const eps = Math.fround(1e-5), a = [e.x, e.y + bas, e.z], d = [e.x - de[0], e.y - de[1], e.z - de[2]], L = Math.hypot(...d);
+  const loin = L * L > 0.9999900000002526 * 0.9999900000002526;
+  const n = Math.min(64, Math.max(1, Math.ceil(L / (l / 2)))), vues = new Set(), cellules = [];
+  for (let i = 0; i <= n; i++) {
+    const p = [de[0] + d[0] * i / n, de[1] + bas + d[1] * i / n, de[2] + d[2] * i / n], b = boiteProj(p[0], p[1], p[2], l);
+    for (let x = Math.floor(b[0] + eps); x <= Math.floor(b[3] - eps); x++) for (let y = Math.floor(b[1] + eps); y <= Math.floor(b[4] - eps); y++) for (let z = Math.floor(b[2] + eps); z <= Math.floor(b[5] - eps); z++) {
+      const k = `${x},${y},${z}`;
+      if (!vues.has(k)) { vues.add(k); cellules.push([x, y, z]); }
+    }
+  }
+  const f = boiteProj(a[0], a[1], a[2], l);
+  for (const [x, y, z] of cellules) {
+    const c = colonneBulleEn(s, x, y, z);
+    if (!c) continue;
+    const dedans = f[3] - eps > x && f[0] + eps < x + 1 && f[4] - eps > y && f[1] + eps < y + 1 && f[5] - eps > z && f[2] + eps < z + 1;
+    if (loin || dedans) pousseeBulleProj(s, e, c, x, y, z);
+  }
+}
+// 4 bulles en pos - v x 0,25, de vitesse v (ThrowableProjectile / AbstractHurtingProjectile.applyInertia, AbstractArrow.tick dans l'eau)
+function bullesSillage(s, x, y, z, v) {
+  for (let i = 0; i < 4; i++) s.replay.particule(s.temps, 'bubble', x - v[0] * 0.25, y - v[1] * 0.25, z - v[2] * 0.25, v[0], v[1], v[2], 1);
 }
 
 export class Projectiles {
@@ -208,9 +314,18 @@ export class Projectiles {
     if (P.fusee) { const vit = tickFusee(this, e); if (vit) this.ecrire(e); else this.E._fini.add(e); return vit; }
     if (P.vent) return this.tickVent(e);
     const g = P.g * R.valeur('projectiles.gravite', 1);
-    if (P.jete) {   // ThrowableProjectile.tick : applyGravity puis applyInertia (dans l'eau du tick d'avant : 0,8F), avant le contact et le deplacement
+    // ThrownEnderpearl.tick : la perle d'un joueur mort disparait (regle du jeu enderPearlsVanishOnDeath, `perle.disparaitMort`)
+    if (e.type === 'perle' && R.valeur('perle.disparaitMort', true)) {
+      const o = s.acteurs?.parNom.get(e.proprietaire);
+      if (o && !o.typeCreature && o.mort >= 0) { s.dire(`la perle de ${o.nom} disparait (lanceur mort)`); this.E._fini.add(e); return false; }
+    }
+    const l = P.boite;
+    if (P.jete) {   // ThrowableProjectile.tick : colonnes du premier tick, applyGravity puis applyInertia (dans l'eau au tick d'avant : 0,8F, et 4 bulles)
+      if (e.age === 1) bullesPremierTick(s, e, l);
+      e.vy -= g;
+      if (e.dansEau) bullesSillage(s, e.x, e.y, e.z, [e.vx, e.vy, e.vz]);
       const c = Math.fround(e.dansEau ? P.eau : 0.99);
-      e.vy -= g; e.vx *= c; e.vy *= c; e.vz *= c;
+      e.vx *= c; e.vy *= c; e.vz *= c;
     }
     const p0 = [e.x, e.y, e.z], p1 = [e.x + e.vx, e.y + e.vy, e.z + e.vz];
     // blocs puis acteurs : le plus proche des deux
@@ -227,18 +342,22 @@ export class Projectiles {
     if (cible && estBreeze(cible.acteur)) { renvoyerBreeze(s, e, cible.acteur); this.ecrire(e); return true; }   // renvoyee sans avancer (le contact n'est pas un deplacement)
     if (cible) { if (this.toucheActeur(e, cible)) return false; }
     else if (bloc) return this.toucheBloc(e, bloc);
-    // deplacement, puis trainee et gravite (AbstractArrow.tick : setPos, puis x inertie, puis gravite)
+    // deplacement. Fleche, trident (AbstractArrow.tick) : la vitesse du tick d'avant deplace ; dans l'eau (au tick d'avant) elle est
+    // multipliee par getWaterInertia (fleche 0,6F, trident 0,99F) et laisse 4 bulles, sinon par 0,99F ; puis la gravite.
+    if (e.type === 'fleche' && e.crit) for (let i = 0; i < 4; i++) s.replay.particule(s.temps, 'crit', p0[0] + e.vx * i / 4, p0[1] + e.vy * i / 4, p0[2] + e.vz * i / 4, -e.vx, -e.vy + 0.2, -e.vz, 1);
     e.x = p1[0]; e.y = p1[1]; e.z = p1[2];
-    const fl = s.fluide(Math.floor(e.x), Math.floor(e.y), Math.floor(e.z));
-    const eau = fl.type === 'water';
-    let c = eau ? P.eau : 0.99;
-    if (eau && e.type === 'fleche') for (let i = 0; i < 4; i++) s.replay.particule(s.temps, 'bubble', e.x - e.vx * 0.25 * (i + 1), e.y - e.vy * 0.25 * (i + 1), e.z - e.vz * 0.25 * (i + 1), -e.vx, -e.vy, -e.vz, 1);
-    if (e.type === 'fleche' && e.crit) for (let i = 0; i < 4; i++) s.replay.particule(s.temps, 'crit', e.x + e.vx * i / 4, e.y + e.vy * i / 4, e.z + e.vz * i / 4, -e.vx, -e.vy + 0.2, -e.vz, 1);
+    if (!P.jete) {
+      if (e.dansEau) { const c = Math.fround(P.eau); e.vx *= c; e.vy *= c; e.vz *= c; bullesSillage(s, p0[0], p0[1], p0[2], [e.vx, e.vy, e.vz]); }
+      else { const c = Math.fround(0.99); e.vx *= c; e.vy *= c; e.vz *= c; }
+      e.vy -= g;
+    }
     if (e.type === 'perle') s.replay.particule(s.temps, 'portal', e.x, e.y + 0.1, e.z, 0, 0, 0, 1);
-    if (e.feuFleche > 0) { if (eau) e.feuFleche = 0; else { e.feuFleche--; s.replay.particule(s.temps, 'flame', e.x, e.y, e.z, 0, 0.01, 0, 1); } }   // fleche en feu (Flamme) : l'eau l'eteint ; flammes comme les acteurs qui brulent (convention du film)
-    if (P.jete) e.dansEau = eau;
-    else { e.vx *= c; e.vy = e.vy * c - g; e.vz *= c; }   // AbstractArrow.tick : deplacement, puis inertie, puis gravite
-    if (e.y < -80 || e.age > 6000) { this.E._fini.add(e); return false; }
+    // Entity.baseTick : l'eau que touche la boite maintenant (elle compte au tick suivant) et ses courants ; puis applyEffectsFromBlocks : les
+    // colonnes de bulles traversees (Projectile.onInsideBubbleColumn / onAboveBubbleColumn : une perle y reste en suspens, "stase")
+    e.dansEau = eauEtCourant(s, e, l);
+    bullesLeLong(s, e, p0, l);
+    if (e.feuFleche > 0) { if (e.dansEau) e.feuFleche = 0; else { e.feuFleche--; s.replay.particule(s.temps, 'flame', e.x, e.y, e.z, 0, 0.01, 0, 1); } }   // fleche en feu (Flamme) : l'eau l'eteint ; flammes comme les acteurs qui brulent (convention du film)
+    if (e.y < -128 || e.age > 6000) { this.E._fini.add(e); return false; }
     this.ecrire(e);
     return true;
   }
@@ -355,7 +474,13 @@ export class Projectiles {
       const evt = s.api.evenement('projectile.touche', { type: e.type, cible: cible?.acteur.nom ?? null, proprietaire: e.proprietaire });
       if (!evt.annule) { this.E._fini.add(e); if (cible) marquerPartie(s, cible.acteur, cible); toucheVent(this, e, pos, cible?.acteur ?? null, bloc && !cible ? bloc : null); return false; }
     }
+    // AbstractHurtingProjectile.applyInertia d'une charge de vent : inertie 1 dans l'air ET dans l'eau (getInertia, getLiquidInertia), 4 bulles
+    // dans l'eau ; puis le deplacement, l'eau et ses courants, les colonnes de bulles traversees (qui la poussent comme les objets jetes)
+    if (e.dansEau) bullesSillage(s, e.x, e.y, e.z, [e.vx, e.vy, e.vz]);
+    const de = [e.x, e.y, e.z];
     e.x += e.vx; e.y += e.vy; e.z += e.vz;
+    e.dansEau = eauEtCourant(s, e, TYPES[e.type].boite, true, -0.15);
+    bullesLeLong(s, e, de, TYPES[e.type].boite, -0.15);
     if (e.y > 350) { this.E._fini.add(e); toucheVent(this, e, [e.x, e.y, e.z], null, null); return false; }
     if (e.age > 1200) { this.E._fini.add(e); return false; }
     this.ecrire(e);
@@ -480,19 +605,27 @@ export class Projectiles {
       }
     } else if (e.type === 'perle') {
       for (let i = 0; i < 32; i++) s.replay.particule(s.temps, 'portal', x, y + s.hasard.reel() * 2, z, s.hasard.gaussien(), 0, s.hasard.gaussien(), 1);
-      if (prop && prop.mort < 0) {
-        // teleportation au point de contact (la position du projectile avant l'impact), degats 5 (regle perle.degats)
-        let px = e.x, py = e.y, pz = e.z;
-        for (let k = 0; k < 6; k++) { const b = prop.boite(px, py, pz); if (!this.occupe(b)) break; py += 0.5; }
+      // ThrownEnderpearl.onHit (Horizon game/creatures.rs, MIT) : le lanceur vivant (et pas endormi : isAllowedToTeleportOwner) va EXACTEMENT a
+      // la position de la perle au debut de son dernier tick (oldPosition, sans recherche de place libre) ; un joueur : 5 % d'endermite la ou il
+      // etait (monstres permis, difficulte pas paisible), il descend de sa monture, 5 degats `ender_pearl` (regle perle.degats), son
+      // entity.player.teleport. Sans lanceur (parti, mort) : la perle se brise seulement. Tout le monde de la scene est charge : en 26.3 la perle
+      // d'un joueur connecte garde ses tronÃ§ons charges, elle attend donc dans sa colonne, meme loin de lui.
+      if (prop && prop.mort < 0 && !prop.ia?.sommeil) {
+        const px = e.x, py = e.y, pz = e.z, joueur = !prop.typeCreature;
         const ancien = [prop.x, prop.y, prop.z];
         for (let i = 0; i < 32; i++) s.replay.particule(s.temps, 'portal', ancien[0], ancien[1] + s.hasard.reel() * 2, ancien[2], s.hasard.gaussien(), 0, s.hasard.gaussien(), 1);
+        if (joueur && s.hasard.flottant() < 0.05 && R.valeur('perle.endermite', true) && !/^(paisible|peaceful)$/.test(R.valeur('monde.difficulte', 'normal')) && s.acteurs) {
+          const m = s.acteurs.naitre({ type: 'endermite', x: ancien[0], y: ancien[1], z: ancien[2], lacet: prop.lacet, raison: 'perle', nom: 'endermite' });
+          if (m) (s.stats.iaJournal ??= []).push(`${(s.temps / 20).toFixed(2)} un endermite sort de la perle de ${prop.nom}`);
+        }
+        if (prop.monte) descendre(prop);
         prop.x = px; prop.y = py; prop.z = pz; prop.vx = 0; prop.vy = 0; prop.vz = 0; prop.distanceChute = 0;
+        if (joueur) { const q = R.valeur('perle.degats', 5); if (q > 0) prop.degats(q, 'perle'); }
         s.son('entity.player.teleport', px, py, pz, 1, 1);
-        const q = R.valeur('perle.degats', 5);
-        if (q > 0) prop.degats(q, 'perle');
         s.stats.teleports = (s.stats.teleports || 0) + 1;
-        s.dire(`${prop.nom} se teleporte en ${px.toFixed(1)},${py.toFixed(1)},${pz.toFixed(1)}`);
-      }
+        s.dire(`${prop.nom} se teleporte en ${px.toFixed(2)},${py.toFixed(2)},${pz.toFixed(2)}`);
+        s.api.evenement('perle.teleporte', { acteur: prop.nom, pos: [px, py, pz], de: ancien });
+      } else s.dire(`perle brisee sans teleportation (${prop ? (prop.mort >= 0 ? 'lanceur mort' : 'lanceur endormi') : 'pas de lanceur'})`);
     } else if (e.type === 'fiole') {
       // ThrownExperienceBottle.onHit : evenement 2002 (eclaboussure couleur 0x385DC6) et son 1053, puis 3 + nextInt(5) + nextInt(5) d'experience
       // en orbes qui partent de la face touchee (ou a l'oppose de la vitesse sur une entite) : ExperienceOrb.awardWithDirection

@@ -34,7 +34,7 @@ function proxyFromEnv(url, env) {
 
 class TunnelAgent extends https.Agent {
   constructor(proxy, connectTimeout) {
-    super({ keepAlive: true, maxSockets: 8 });
+    super({ keepAlive: true, maxSockets: 16 });   // 16 : la route raw lit des milliers de petits fichiers en parallele
     this.proxy = proxy;
     this.connectTimeout = connectTimeout;
   }
@@ -79,7 +79,7 @@ export class Net {
     this.bytes = 0;      // octets de corps recus sur le fil (apres compression eventuelle)
     this.requests = 0;   // requetes HTTP envoyees (redirections comprises)
     this.agents = new Map();
-    this.direct = new https.Agent({ keepAlive: true, maxSockets: 8 });
+    this.direct = new https.Agent({ keepAlive: true, maxSockets: 16 });
   }
   resetStats() { this.bytes = 0; this.requests = 0; }
   proxyInfo(url) { const p = proxyFromEnv(url, this.env); return p ? `${p.protocol}//${p.host}` : null; }
@@ -102,7 +102,10 @@ export class Net {
         method, agent: this.agentFor(url),
         headers: { 'User-Agent': this.userAgent, 'Accept-Encoding': gzip ? 'gzip' : 'identity', ...headers },
       });
-      const timer = setTimeout(() => req.destroy(new NetError(`delai depasse (${this.connectTimeout + 4000} ms) en attendant ${u.hostname}`, { url, fatal: true })), this.connectTimeout + 4000);
+      // le delai court a partir du moment ou la requete a sa connexion : une requete qui attend une place libre dans l'agent (route raw : des
+      // milliers de petits fichiers, 16 connexions) n'est pas comptee en retard
+      let timer = null;
+      req.once('socket', () => { timer = setTimeout(() => req.destroy(new NetError(`delai depasse (${this.connectTimeout + 4000} ms) en attendant ${u.hostname}`, { url, fatal: true })), this.connectTimeout + 4000); });
       req.once('error', (e) => { clearTimeout(timer); if (e instanceof NetError) e.url ||= url; reject(e); });
       req.once('response', (res) => {
         clearTimeout(timer);

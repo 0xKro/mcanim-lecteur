@@ -31,7 +31,7 @@ export const HAUTEUR_PLANE = 0.6, OEIL_PLANE = 0.4;   // Pose.FALL_FLYING : boit
 // generic, wither, dragon_breath, fall, ender_pearl, magic, indirect_magic, sonic_boom...) : l'armure n'y fait rien. Les autres (coups, fleches,
 // boules de feu, lave, foudre, explosions, se dessecher) passent par CombatRules.getDamageAfterAbsorb ; Protection contre les explosions pour
 // les explosions seulement (champ protectionExplosion).
-const SANS_ARMURE = new Set(['feu', 'eau', 'noyade', 'cramming', 'generique', 'fletrissement', 'poison', 'magie', 'perle', 'souffle_dragon', 'sonic_boom', 'chute', 'piqure', 'mur']);   // mur : fly_into_wall (#bypasses_armor)
+const SANS_ARMURE = new Set(['feu', 'eau', 'noyade', 'cramming', 'generique', 'fletrissement', 'poison', 'magie', 'perle', 'souffle_dragon', 'sonic_boom', 'chute', 'piqure', 'mur', 'faim', 'gel', 'vide']);   // mur : fly_into_wall ; faim : starve ; gel : freeze ; vide : out_of_world (#bypasses_armor)
 function apresArmure(a, q, source) {
   // creatures : armure naturelle (explosion.js) ; joueurs : armure du jeu, Brise-armure, Resistance, enchantements, absorption (inventaire.js)
   if (a.typeCreature && !a.armure) {
@@ -924,8 +924,10 @@ export class Acteur {
     this.vie = Math.max(0, this.vie - q);
     sim.dire(`${this.nom} perd ${q} (${source}) : ${this.vie}/${this.vieMax}`);
     sim.stats.degats = (sim.stats.degats || 0) + q;
+    // LivingEntity.hurtServer : mortel -> checkTotemDeathProtection (vie 1, effets du totem : inventaire.js), sinon la mort ; sauve : ni cri ni son de mort
+    const sauve = this.vie <= 0 && this.totemSauve(source);
     if (this.vie <= 0) this.mourir(source);
-    else if (nouveau) sim.son(this.typeCreature ? `entity.${this.typeCreature}.hurt` : 'entity.player.hurt', this.x, this.y, this.z, 1, 1 + (sim.hasard.flottant() - sim.hasard.flottant()) * 0.2);
+    else if (nouveau && !sauve) sim.son(this.typeCreature ? `entity.${this.typeCreature}.hurt` : 'entity.player.hurt', this.x, this.y, this.z, 1, 1 + (sim.hasard.flottant() - sim.hasard.flottant()) * 0.2);
     if (this.vie > 0) this.ia?.apresDegats?.(source, q);   // enderman (teleportation), chauve-souris (reveil), abeille (colere)
     if (this.vie > 0 && this.effets.size) this.effetsBlessure();   // Infestation (effets.js)
     // Epines et autres post_attack de l'armure de la victime contre celui qui frappe (EnchantmentHelper.doPostAttackEffects, enchanted = victim)
@@ -1005,6 +1007,7 @@ export class Acteur {
 
   // ---------------------------------------------------------------- un tick
   tick() {
+    if (this.totemEmetteur > 0) this.tickTotem();   // particules du totem : l'emetteur suit l'entite 30 ticks, meme a cheval (inventaire.js)
     if (this.veh) { if (this.mort >= 0) { this.mort = 21; this.ecrire(); return; } tickVehicule(this); this.ecrire(); if (this.mort < 0) ecrireVehicule(this); return; }   // wagonnet, bateau (moteur/vehicules.js)
     if (this.monte) { this.tickCavalier(); return; }
     if (this.impulsion?.grace > 0) this.impulsion.grace--;   // LivingEntity : currentImpulseContextResetGraceTime
@@ -1027,6 +1030,7 @@ export class Acteur {
     const x0 = this.x, z0 = this.z, y0 = this.y;
     if (this.course && !this.peutCourir()) this.course = false;   // FoodData.hasEnoughFood : pas de course a 6 de faim ou moins
     this.physique();
+    if (this.relance && this.vy <= 0) { (sim.stats.relances ??= []).push(`${this.nom} +${(this.y - this.relance.y0).toFixed(2).replace('.', ',')} b (t=${(this.relance.t / 20 / sim.replay.ralenti).toFixed(2).replace('.', ',')})`); this.relance = null; }   // sommet d'une relance de la Rafale de vent
     this.bulles();   // LivingEntity.aiStep : applyEffectsFromBlocks apres travel (colonnes de bulles)
     if (!this.typeCreature) { this.epuisementDeplacement(this.x - x0, this.y - y0, this.z - z0); this.tickEquipement(); this.tickVrille(); }   // effets.js, inventaire.js, objets-actes.js (Impulsion)
     this.ticksVol = this.planeur ? this.ticksVol + 1 : 0;   // LivingEntity.tick : fallFlyTicks compte apres aiStep

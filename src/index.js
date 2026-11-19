@@ -6,15 +6,17 @@ import { normGroups, KitWriter, readInfo, writeInfo, kitFingerprint, GROUP_VERSI
 import * as mojang from './routes/mojang.js';
 import * as git from './routes/git.js';
 import * as github from './routes/github.js';
+import * as raw from './routes/raw.js';
 import * as npm from './routes/npm.js';
 import * as archive from './routes/archive.js';
 
 export { buildArchive } from './archive-build.js';
 export { DEFAULT_GROUPS, GROUPS } from './kit.js';
-const ROUTES = { mojang, git, github, npm, archive };
+const ROUTES = { mojang, git, github, raw, npm, archive };
 // Ordre de 'auto' : officiel d'abord ; puis git (github.com seul : passe quand codeload/api sont bloques) ; puis le tarball codeload ;
+// puis raw (raw.githubusercontent.com seul, fichier par fichier, liste livree avec le lecteur : passe quand git ET codeload sont refuses) ;
 // puis l'archive hors ligne (seulement si donnee) ; npm en dernier : PARTIEL (autre version du jeu, aucun son), jamais accepte seul sans le dire.
-export const ROUTE_ORDER = ['mojang', 'git', 'github', 'archive', 'npm'];
+export const ROUTE_ORDER = ['mojang', 'git', 'github', 'raw', 'archive', 'npm'];
 
 // Raison d'echec en quelques mots, pour le message final : "403 (codeload)", "git absent", "delai depasse"...
 export function raisonCourte(e) {
@@ -26,7 +28,7 @@ export function raisonCourte(e) {
   return e.message.replace(/\s+/g, ' ').slice(0, 60);
 }
 
-const CONSEIL = "que faire : ouvrir github.com (avec git) ou piston-meta.mojang.com, ou donner un kit pret (MCANIM_KIT=<dossier> ou archive)";
+const CONSEIL = "que faire : ouvrir github.com (avec git), raw.githubusercontent.com ou piston-meta.mojang.com, ou donner un kit pret (MCANIM_KIT=<dossier> ou archive)";
 export function messageKitIntrouvable(attempts) {
   const parts = attempts.map((a) => (/^\d/.test(a.court) || a.court.startsWith('partiel') ? `${a.route} ${a.court}` : `${a.route}: ${a.court}`));
   const seule = attempts.find((a) => a.ok && !a.complete);

@@ -1,5 +1,5 @@
 ﻿// Famille "projectiles" : regles des objets en main et des projectiles (mecaniques dans moteur/{projectiles,utilisation}.js). Evenements du monde :
-// `projectile.touche` (ev.type, ev.cible, ev.proprietaire ; ev.annuler() : le projectile ne touche pas), `projectile.bloc`, `acteur.mange` (ev.objet, ev.nutrition, ev.faim).
+// `projectile.touche` (ev.type, ev.cible, ev.proprietaire ; ev.annuler() : le projectile ne touche pas), `projectile.bloc`, `perle.teleporte` (ev.acteur, ev.pos, ev.de), `acteur.mange` (ev.objet, ev.nutrition, ev.faim).
 // FireworkRocketItem.useOn : la fusee part du point vise, 0,15 bloc devant la face
 const FACE = { up: [0, 1, 0], down: [0, -1, 0], north: [0, 0, -1], south: [0, 0, 1], west: [-1, 0, 0], east: [1, 0, 0] };
 
@@ -21,6 +21,8 @@ export function installer(mc, regles) {
   regles.declarer('projectiles.recul', { def: 1, min: 0, max: 20, doc: 'multiplicateur du recul d\'un projectile qui touche un acteur (jeu : 1 = 0,4)' });
   regles.declarer('projectiles.vieFleche', { def: 1200, min: 20, max: 1000000, entier: true, doc: 'ticks pendant lesquels une fleche reste plantee (jeu : 1200 = 1 minute)' });
   regles.declarer('perle.degats', { def: 5, min: 0, max: 1000, doc: 'degats de chute de la perle d\'ender au lanceur qui se teleporte (jeu : 5)' });
+  regles.declarer('perle.disparaitMort', { def: true, doc: 'la perle d\'ender d\'un joueur mort disparait (regle du jeu enderPearlsVanishOnDeath : oui) ; false : elle reste et se brise sans teleporter' });
+  regles.declarer('perle.endermite', { def: true, doc: 'une perle qui teleporte un joueur fait naitre un endermite la ou il etait, 1 fois sur 20 (jeu : oui, si les monstres apparaissent et hors difficulte paisible)' });
   regles.declarer('arcs.puissanceMin', { def: 0.1, min: 0, max: 1, doc: 'puissance minimale pour qu\'un arc tire (jeu : 0,1 : un arc a peine tendu ne tire pas)' });
   regles.declarer('arcs.arbaleteCharge', { def: 25, min: 1, max: 400, entier: true, doc: 'ticks de chargement de l\'arbalete (jeu : 25 ; Charge rapide I : 20)' });
   regles.declarer('arcs.arbaleteVitesse', { def: 3.15, min: 0, max: 20, doc: 'vitesse de la fleche d\'arbalete en blocs par tick (jeu : 3,15)' });

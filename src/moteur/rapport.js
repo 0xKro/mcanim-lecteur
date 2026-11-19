@@ -27,6 +27,16 @@ export function texteRapport({ sim, replay, duree }) {
   if (S.arbres || S.foudres || S.neige || S.gels) M.push(`nature : arbres ${S.arbres || 0}, foudres ${S.foudres || 0}, neige ${S.neige || 0}, gel ${S.gels || 0}`);
   if (S.morts) M.push(`morts ${S.morts} (${(S.mortsListe || []).slice(0, 2).join(', ')})`);
   if (M.length) L.push('monde : ' + M.join(' ; '));
+  // combat : totems d'immortalite, coups ecrasants de la masse et relances de la Rafale de vent (hauteur au sommet), pieces d'armure cassees
+  const C = [];
+  if (S.totems?.length) C.push(`totems ${S.totems.length} (${S.totems.slice(0, 2).map((l) => l.split(' : totem')[0]).join(', ')})`);
+  if (S.coupsEcrasants?.length) C.push(`ecrasants ${S.coupsEcrasants.length} (${S.coupsEcrasants.slice(0, 3).map((l) => l.split(' ').slice(1).join(' ')).join(', ')})`);
+  if (S.relances?.length) C.push(`relances ${S.relances.slice(0, 3).join(', ')}`);
+  if (S.objetsCasses?.length) C.push(`casses ${S.objetsCasses.slice(0, 2).map((l) => l.split(' ').slice(1).join(' ')).join(', ')}`);
+  // usure de l'armure portee (survie) a la fin : tete/torse/jambes/pieds
+  const usees = (sim.acteurs?.liste ?? []).filter((x) => x.armure && !x.infini && Object.values(x.armure).some((t) => t && /usure=/.test(t))).slice(0, 2);
+  if (usees.length) C.push('armure usee ' + usees.map((x) => `${x.nom} ${['tete', 'torse', 'jambes', 'pieds'].map((e) => (x.armure[e] ? (/usure=(\d+)/.exec(x.armure[e])?.[1] ?? '0') : '-')).join('/')}`).join(', '));
+  if (C.length) L.push('combat : ' + C.join(' ; '));
   // IA des creatures : une ligne de compteurs, puis les evenements (attaques, tirs, explosions, morts, brulures) en abrege
   if (S.ia || S.iaJournal || S.coups) {
     const I = S.ia || {};

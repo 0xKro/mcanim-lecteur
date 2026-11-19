@@ -11,6 +11,7 @@ import { simuler, lireFichiersMods, preparer, ErreurMonde } from './index.js';
 import { replayDepuisObjet } from './replay.js';
 import { donneesAvecPerso } from './perso.js';
 import { optionsAvecContexte } from './contexte.js';
+import { racineObjetsLocale } from './objets-jeu.js';
 
 const ICI = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.resolve(ICI, '..');
@@ -54,7 +55,12 @@ export async function simulerIsole({ zone, donnees, monde = {}, acteurs = [], ba
     return { replay: r.replay, rapport: r.rapport, donnees: r.sim.d };
   }
   if (!donnees.octets) throw new Error('simulation des mods : donnees du jeu sans leurs octets');
-  const r = await dansLeFils({ op: 'simuler', zone: zoneBrute(zone), donnees: donnees.octets, monde, acteurs, duree, mods, options, contexte }, { garde: (options.plafondMs ?? 60000) + 30000, lectures: options.kitDir ? [path.join(options.kitDir, 'data', 'minecraft', 'worldgen'), ...['recipe', 'enchantment', 'tags', 'damage_type', 'loot_table', 'predicate', 'context_int_provider', 'context_float_provider'].map((d) => path.join(options.kitDir, 'data', 'minecraft', d))] : [] });   // + donnees d'objets du jeu (recettes, enchantements : objets-jeu.js)
+  // donnees d'objets du jeu (recettes, enchantements : objets-jeu.js) : celles du kit, sinon la copie locale trouvee ICI (le fils ne peut pas
+  // chercher : sans elles, une epee enchantee faisait echouer `mcanim simuler` d'une scene avec mods)
+  const racine = options.kitDir ? null : racineObjetsLocale();
+  const DOSSIERS = ['recipe', 'enchantment', 'tags', 'damage_type', 'loot_table', 'predicate', 'context_int_provider', 'context_float_provider'];
+  const lectures = [...(options.kitDir ? [path.join(options.kitDir, 'data', 'minecraft', 'worldgen'), ...DOSSIERS.map((d) => path.join(options.kitDir, 'data', 'minecraft', d))] : []), ...(racine ? DOSSIERS.map((d) => path.join(racine, 'data', 'minecraft', d)) : [])];
+  const r = await dansLeFils({ op: 'simuler', zone: zoneBrute(zone), donnees: donnees.octets, monde, acteurs, duree, mods, options: { ...options, racineObjets: racine }, contexte }, { garde: (options.plafondMs ?? 60000) + 30000, lectures });
   const replay = replayDepuisObjet(r.replay);
   return { replay, rapport: r.rapport, donnees: donneesAvecPerso(donnees, replay.perso?.blocs) };
 }

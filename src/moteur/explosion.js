@@ -4,6 +4,7 @@
 // Port de Horizon client/game/explosion.rs et tnt.rs : MIT, voir ATTRIBUTIONS.md.
 import { evenement } from './registre.js';
 import { boitesLocales } from './collision.js';
+import { valeurAttribut } from './attributs.js';
 import { VEHICULES } from '../creatures/especes.js';
 import { ordreHashSet, melangerJeu } from './ordre-java.js';
 const F = { TOUS: 3 };   // drapeaux de set_block (voir simulation.js)
@@ -218,8 +219,10 @@ export function exploser(sim, x, y, z, opt = {}) {
         if (ev.pousse) { a.vx += ex * ab; a.vy += ey * ab; a.vz += ez * ab; if (a.vy > 0) a.auSol = false; }
         continue;
       }
-      const prot = a.protectionExplosion ?? 0;   // l'armure et la Protection sont comptees par Acteur.degats (apres la fenetre d'invulnerabilite)
-      const k = ab * (1 - Math.min(1, 0.15 * prot));
+      // attribut explosion_knockback_resistance (moteur/attributs.js : 0 pour tous les types ; Protection contre les explosions 0,15F par niveau et
+      // par piece ; ancien champ protectionExplosion : 0,15 par niveau ; borne 0..1) ; PAS knockback_resistance : golem, ravageur et netherite sont
+      // pousses ; l'armure et la Protection (degats) sont comptees par Acteur.degats (apres la fenetre d'invulnerabilite)
+      const k = ab * (1 - valeurAttribut(a, 'explosion_knockback_resistance'));
       if (ev.pousse) {
         if (couple && k > 0) sim.replay.souffle(sim.temps, a.id, [ex * k, ey * k, ez * k], couple.m, a.auSol ? 1 : 0);
         a.vx += ex * k; a.vy += ey * k; a.vz += ez * k; if (a.vy > 0) a.auSol = false;

@@ -23,6 +23,11 @@ import { armureDe, degatsApresArmure } from './explosion.js';
 import { mouvementPlane, degatsMur } from './mth.js';   // vol plane aux elytres (LivingEntity.updateFallFlyingMovement, handleFallFlyingCollisions)
 import { estVehiculeSimule, creerVehicule, tickVehicule, ecrireVehicule, blesserVehicule, placerCavalier, monter, descendre, pousserWagonnets, colonnesBulles, pousseeBulle, interagirVehicule } from './vehicules.js';   // wagonnets et bateaux, cavaliers, colonnes de bulles (docs/SIMULATION.md partie 27)
 import { surGrimpable } from './poussee.js';            // LivingEntity.onClimbable (echelles, lianes : la fin du vol plane, la montee)
+import { valeurAttribut, baseAttribut } from './attributs.js';
+import { allumerActeur } from './projectiles.js';   // mise a feu (burning_time)   // attributs du jeu (base + equipement + enchantements + effets)
+// #minecraft:fall_damage_immune (data/minecraft/tags/entity_type du jeu 26.3) : lu dans les fichiers du jeu quand ils sont la, sinon cette copie
+const IMMUNISES_CHUTE = new Set(['copper_golem', 'iron_golem', 'snow_golem', 'shulker', 'allay', 'bat', 'bee', 'blaze', 'cat', 'chicken', 'ghast', 'happy_ghast', 'phantom', 'magma_cube', 'ocelot', 'parrot', 'wither', 'breeze']);
+const immuniseChute = (sim, type) => (sim.objetsJeu ? sim.objetsJeu.etiquette('entity_type', 'fall_damage_immune') : IMMUNISES_CHUTE).has(type);
 // Elytres : objet du plastron qui a le composant `glider` du jeu (items.json 26.3 : "minecraft:elytra", max_damage 432)
 export const ELYTRES_USURE_MAX = 432;
 export const estElytres = (id) => /^(minecraft:)?elytra$/.test(String(id ?? '').trim().toLowerCase());
@@ -31,7 +36,7 @@ export const HAUTEUR_PLANE = 0.6, OEIL_PLANE = 0.4;   // Pose.FALL_FLYING : boit
 // generic, wither, dragon_breath, fall, ender_pearl, magic, indirect_magic, sonic_boom...) : l'armure n'y fait rien. Les autres (coups, fleches,
 // boules de feu, lave, foudre, explosions, se dessecher) passent par CombatRules.getDamageAfterAbsorb ; Protection contre les explosions pour
 // les explosions seulement (champ protectionExplosion).
-const SANS_ARMURE = new Set(['feu', 'eau', 'noyade', 'cramming', 'generique', 'fletrissement', 'poison', 'magie', 'perle', 'souffle_dragon', 'sonic_boom', 'chute', 'piqure', 'mur', 'faim', 'gel', 'vide']);   // mur : fly_into_wall ; faim : starve ; gel : freeze ; vide : out_of_world (#bypasses_armor)
+const SANS_ARMURE = new Set(['feu', 'eau', 'noyade', 'cramming', 'generique', 'fletrissement', 'poison', 'magie', 'magie_indirecte', 'perle', 'souffle_dragon', 'sonic_boom', 'chute', 'piqure', 'mur', 'faim', 'gel', 'vide']);   // mur : fly_into_wall ; faim : starve ; gel : freeze ; vide : out_of_world (#bypasses_armor)
 function apresArmure(a, q, source) {
   // creatures : armure naturelle (explosion.js) ; joueurs : armure du jeu, Brise-armure, Resistance, enchantements, absorption (inventaire.js)
   if (a.typeCreature && !a.armure) {
@@ -77,7 +82,7 @@ export class Acteur {
     this.vieMax = d.vie ?? d.ia?.vie ?? 20; this.vie = this.vieMax; this.invulnerable = !!d.invulnerable; this.ramasse = d.ramasse === true; this.sac = new Map();
     this.hurtTime = 0; this.invulTemps = 0; this.derniereBlessure = 0; this.mort = -1; this.distanceChute = 0; this.air = 300; this.dansEau = false; this.dansLave = false;
     this.initUtilisation(d);
-    this.absorption = 0; this.feuJoueur = 0;
+    this.absorption = 0; this.feuJoueur = d.typeCreature ? 0 : -20;   // Entity.remainingFireTicks = -getFireImmuneTicks() (joueur 20)
     // creature (champ `type`) : sa boite, ses yeux et sa vitesse (film/actes.js, gabarit) ; joueur sinon
     const gb = d.gabarit ?? null;
     this.L = gb?.l ?? LARGEUR; this.H = gb?.h ?? HAUTEUR; this.O = gb?.oeil ?? OEIL; this.kVit = gb?.vitesse ?? 1;
@@ -103,9 +108,29 @@ export class Acteur {
   oeil() { return [this.x, this.y + (this.posePlane ? OEIL_PLANE : this.accroupi ? OEIL_ACCROUPI : this.O), this.z]; }
   // Player.canGlide (LivingEntity.canGlide) : en l'air, un planeur au plastron qui ne casse pas au prochain usage (usure < 431)
   peutPlaner() { return this.elytres && !this.auSol && this.mort < 0 && this.usureElytres < ELYTRES_USURE_MAX - 1 && !this.niveauEffet?.('levitation'); }
+  // attribut step_height (0,6 ; golem de fer, ravageur, chevaux 1 ; chameau 1,5 ; noye 1...)
+  hauteurPas() { return this.typeCreature ? (this._pas ??= valeurAttribut(this, 'step_height')) : PAS; }   // aucun modificateur du jeu : la base du type
+  // Entity.getBlockSpeedFactor : le bloc de la cellule (sauf eau et colonne de bulles), s'il vaut 1 celui de 0,500001 sous les pieds ;
+  // LivingEntity : Mth.lerp(movement_efficiency, facteur, 1) en flottant (Agilite des ames : 1 sur le sable des ames)
+  facteurVitesseBloc() {
+    const d = this.sim.d, x = Math.floor(this.x), z = Math.floor(this.z), ici = this.lec.etatEn(x, Math.floor(this.y), z);
+    let f = d.facteurVitesse(ici);
+    if (!(ici >= 0 && /^(water|bubble_column)$/.test(d.nomBloc(ici))) && f === 1) f = d.facteurVitesse(this.lec.etatEn(x, Math.floor(this.y - Math.fround(0.500001)), z));
+    if (f === 1) return 1;   // lerp(e, 1, 1) = 1
+    const e = Math.fround(valeurAttribut(this, 'movement_efficiency'));
+    return Math.fround(f + Math.fround(e * Math.fround(1 - f)));
+  }
+  freinBloc() { const f = this.facteurVitesseBloc(); if (f !== 1) { this.vx *= f; this.vz *= f; } }
+  // LivingEntity.getBlockJumpFactor : la cellule si elle n'est pas a 1, sinon le bloc 0,500001 sous les pieds (miel : 0,5)
+  facteurSautBloc() {
+    const d = this.sim.d, x = Math.floor(this.x), z = Math.floor(this.z), f = d.facteurSaut(this.lec.etatEn(x, Math.floor(this.y), z));
+    return f === 1 ? d.facteurSaut(this.lec.etatEn(x, Math.floor(this.y - Math.fround(0.500001)), z)) : f;
+  }
   get lec() { return this.g.lec; }
   get regles() { return this.sim.regles; }
-  portee() { return this.regles.valeur('joueur.portee', 4.5); }
+  // attributs block_interaction_range (4,5 ; la regle joueur.portee remplace la base) et entity_interaction_range (3) ; creatif : 5 et 5 (Horizon hand.rs)
+  portee() { return valeurAttribut(this, 'block_interaction_range', this.regles.valeur('joueur.portee', 4.5)); }
+  porteeCoup() { return valeurAttribut(this, 'entity_interaction_range'); }
 
   // ---------------------------------------------------------------- journal des intentions
   note(acte, statut, texte, debut = this.sim.temps) { this.sim.replay.acte(debut, this.nom, acte.verbe, acte.resume ?? '', statut, texte, this.sim.temps); }
@@ -207,13 +232,14 @@ export class Acteur {
     const B = o.boite(), [ex, ey, ez] = this.oeil();
     const cx = Math.max(B[0], Math.min(ex, B[3])), cy = Math.max(B[1], Math.min(ey, B[4])), cz = Math.max(B[2], Math.min(ez, B[5]));
     const d = Math.hypot(ex - cx, ey - cy, ez - cz);
-    if (d > 2.6) { const cap = Math.atan2(-(o.x - this.x), o.z - this.z) / RAD; this.entree = { avance: 1, cap, saute: false }; if (this.auSol && this.bute && this.marcheSautable(cap)) this.saut = true; }
+    const portee = this.porteeCoup();
+    if (d > portee - 0.4) { const cap = Math.atan2(-(o.x - this.x), o.z - this.z) / RAD; this.entree = { avance: 1, cap, saute: false }; if (this.auSol && this.bute && this.marcheSautable(cap)) this.saut = true; }
     // {ecrase} (masse) : au sol, il marche vers la cible (il quitte un perchoir) et saute tout pres ; il frappe en retombant de plus de 1,5 bloc
     if (T.acte.opts.ecrase && this.auSol) { const cap = Math.atan2(-(o.x - this.x), o.z - this.z) / RAD; this.entree = { avance: 1, cap, saute: false }; if (d < 1.6) this.saut = true; return; }
     // recharge de l'arme (Player.getAttackStrengthScale(0,5)) : le joueur peut frapper a tout moment ; {recharge} (defaut 1) est le seuil choisi
     // par la scene : il frappe des que la recharge l'atteint ET que la cible est a portee (3 blocs, de l'oeil a la boite de la cible)
     const depuis = sim.temps - this.dernierCoup, c0 = this.coupArme(o, depuis, false);
-    if (d > 3 || c0.recharge < (T.acte.opts.recharge ?? 1)) return;
+    if (d > portee || c0.recharge < (T.acte.opts.recharge ?? 1)) return;   // Player.isWithinAttackRange : de l'oeil a la boite, entity_interaction_range
     if ((T.critique || T.acte.opts.ecrase) && this.auSol) { this.saut = true; return; }   // coup critique (ou masse) : sauter, frapper en retombant
     if (T.critique && !(this.vy < 0)) return;
     if (T.acte.opts.ecrase && !(this.vy < 0 && this.distanceChute > 1.5)) return;
@@ -226,7 +252,7 @@ export class Acteur {
     if (ea?.annule) return;
     if (ea) c.degats = Number(ea.degats) || 0;
     o.detailDegats = null;
-    const ok = o.frappe(c.degats, 'joueur:' + this.nom, this.x - o.x, this.z - o.z, 0.4 * R);
+    const ok = o.frappe(c.degats, 'joueur:' + this.nom, this.x - o.x, this.z - o.z, Math.fround(0.4) * R);   // dealDefaultKnockback : 0,4F depuis les pieds de l'attaquant
     o.attaquantCourant = null;
     if (ok) { o.ia?.blesse(this); o.dernierFrappeur = this; }
     if (ok && o.detailDegats) sim.dire(this.detailCoup(o, c, o.detailDegats));   // le calcul du jeu, pas a pas (journal de `mcanim simuler`)
@@ -775,7 +801,10 @@ export class Acteur {
       const h = enEau ? fl.hauteurEau : fl.hauteurLave;
       if (enFluide && (!this.auSol || h > 0.4)) this.vy += 0.04;
       else if (this.auSol) {
-        this.vy = SAUT + this.bonusSaut();
+        // LivingEntity.jumpFromGround (Horizon horizon-world living_motion.rs jump_power) : (float) jump_strength (0,42F) x facteur de saut du bloc
+        // (miel 0,5) + Saut ameliore 0,1F x niveau, en flottant ; vy = max(puissance, vy)
+        const p = Math.fround(Math.fround(Math.fround(valeurAttribut(this, 'jump_strength')) * this.facteurSautBloc()) + this.bonusSaut());
+        if (p > Math.fround(1e-5)) this.vy = Math.max(p, this.vy);
         this.epuiser(this.course ? Math.fround(0.2) : Math.fround(0.05));   // Player.jumpFromGround : epuisement 0,05 (0,2 en courant)
         if (this.course) { this.vx += -Math.sin(this.lacet * RAD) * 0.2; this.vz += Math.cos(this.lacet * RAD) * 0.2; }
         this.auSol = false;
@@ -786,7 +815,7 @@ export class Acteur {
     let av = this.entree.avance > 0 ? ENTREE : 0;
     // on avance seulement quand le corps est a peu pres tourne vers la route
     if (av > 0 && Math.abs(norm180(this.entree.cap - this.lacet)) > 50) av = 0;
-    if (this.accroupi) av *= Math.min(1, FACTEUR_ACCROUPI + this.bonusAttribut('sneaking_speed'));   // attribut sneaking_speed 0,3 + Furtivite rapide
+    if (this.accroupi) av *= valeurAttribut(this, 'sneaking_speed');   // attribut sneaking_speed : 0,3 + Furtivite rapide (0,15F par niveau), borne 0..1
     else if (this.posePlane && !this.planeur && !enFluide) av *= FACTEUR_ACCROUPI;   // LocalPlayer.isMovingSlowly : le tick apres un vol plane, encore dans sa pose
     const vit = enFluide ? (enEau ? this.vitesseNage(VITESSE_MARCHE * this.kVit * this.facteurVitesse()) : 0.02) : this.auSol ? (this.course ? VITESSE_COURSE : VITESSE_MARCHE) * this.kVit * this.facteurVitesse() * (0.21600002 / (friction * friction * friction)) : (this.course ? 0.026 : 0.02);
     if (av > 0) {
@@ -806,10 +835,11 @@ export class Acteur {
     let mx = this.vx, my = this.vy, mz = this.vz;
     if (this.accroupi && this.auSol && !enFluide) [mx, mz] = this.sansTomber(mx, mz);
     const yAvant = this.y;
-    const r = deplacerBoite(lec, this.boite(), [mx, my, mz], this.auSol, PAS);
+    const r = deplacerBoite(lec, this.boite(), [mx, my, mz], this.auSol, this.hauteurPas());
     this.x += r.dx; this.y += r.dy; this.z += r.dz;
     if (r.bloqueX) this.vx = 0;
     if (r.bloqueZ) this.vz = 0;
+    this.freinBloc();   // Entity.move : vitesse horizontale x facteur de vitesse du bloc (sable des ames, miel), rapproche de 1 par movement_efficiency
     // contact vertical : remis a 0, sauf rebond du bloc (lit 0,75, slime 1 ; accroupi : non) : Entity.restituteMovementAfterCollisions (rebond.js)
     if (r.bloqueY) {
       const nom = r.auSol ? blocSous(lec, this.x, this.y, this.z) : null;
@@ -841,7 +871,7 @@ export class Acteur {
         const b = this.boite(this.x + this.vx, this.y + this.vy + 0.6 - this.y + yAvant, this.z + this.vz);
         if (!coupe(lec, b)) this.vy = 0.3;
       }
-      if (enLave) this.degats(4, 'lave');
+      if (enLave) { allumerActeur(this, 300); this.degats(4, 'lave'); }   // Entity.lavaHurt : igniteForSeconds(15) (x burning_time) puis 4 de degats
       return;
     }
     // LivingEntity.handleRelativeFrictionAndCalculateMovement : contre le mur (ou la touche de saut) sur une echelle, la vitesse verticale vaut 0,2
@@ -864,10 +894,11 @@ export class Acteur {
     const avantH = Math.hypot(this.vx, this.vz);
     [this.vx, this.vy, this.vz] = mouvementPlane([this.vx, this.vy, this.vz], this.tangage, this.lacetTete, g);
     const my = this.vy;
-    const r = deplacerBoite(lec, this.boite(), [this.vx, this.vy, this.vz], this.auSol, PAS);
+    const r = deplacerBoite(lec, this.boite(), [this.vx, this.vy, this.vz], this.auSol, this.hauteurPas());
     this.x += r.dx; this.y += r.dy; this.z += r.dz;
     if (r.bloqueX) this.vx = 0;
     if (r.bloqueZ) this.vz = 0;
+    this.freinBloc();
     if (r.bloqueY) { const nom = r.auSol ? blocSous(lec, this.x, this.y, this.z) : null; this.vy = nom ? vitesseApresContact(my, r.dy, GRAVITE, nom, { vivant: true, accroupi: false }) : 0; }
     this.auSol = r.auSol; this.bute = r.bloqueX || r.bloqueZ;
     if (r.dy < 0) this.distanceChute -= Math.fround(r.dy);
@@ -917,7 +948,7 @@ export class Acteur {
   }
   degats(quantite, source = 'generique') {
     const sim = this.sim;
-    if (this.veh) return this.mort < 0 && !this.invulnerable && blesserVehicule(this, Number(quantite), source);   // VehicleEntity.hurtServer
+    if (this.veh) { this.coupEntier = false; return this.mort < 0 && !this.invulnerable && blesserVehicule(this, Number(quantite), source); }   // VehicleEntity.hurtServer (pas un vivant : aucun recul)
     if (this.mort >= 0 || this.invulnerable || !sim.regles.valeur('vie.actif', true)) return false;
     if (this.ia?.esquive?.(source)) return false;   // enderman : un projectile le manque (il se teleporte)
     if (this.typeCreature === 'end_crystal') return sim.boss.cristalTouche(this, source);   // EndCrystal.hurtServer : il explose
@@ -935,6 +966,7 @@ export class Acteur {
       if (q <= this.derniereBlessure) return false;
       const reste = q - this.derniereBlessure; this.derniereBlessure = q; q = reste; nouveau = false;
     } else { this.derniereBlessure = q; this.invulTemps = 20; this.hurtTime = 10; }
+    this.coupEntier = nouveau;   // LivingEntity.hurtServer : le recul par defaut seulement pour un coup entier (utilisation.js frappe)
     const entree = q; this.etapesProtection = null;
     q = apresArmure(this, q, source);   // LivingEntity.actuallyHurt : armure (sauf #bypasses_armor), Resistance, protections d'enchantement, absorption
     this.detailDegats = { entree, etapes: this.etapesProtection, final: q, partiel: !nouveau };   // pour le journal (rien n'est recalcule)
@@ -989,8 +1021,12 @@ export class Acteur {
     if (this.typeCreature === 'breeze' && dist > 3) sim.son('entity.breeze.land', this.x, this.y, this.z, 1, 1);   // Breeze.causeFallDamage
     // impulsion d'une charge de vent (ServerPlayer.onExplosionHit, LivingEntity.causeFallDamage) : la chute ne compte que sous le point de la rafale
     if (this.impulsion) { dist = Math.min(dist, this.impulsion.y - this.y); if (dist <= 0 || this.impulsion.grace <= 0) this.impulsion = null; }
-    // LivingEntity.calculateFallDamage : floor(distance + 1e-6 - safe_fall_distance (3)) x multiplicateur
-    const q = Math.floor((dist + 1e-6 - R.valeur('vie.chuteSeuil', 3)) * R.valeur('vie.chute', 1));
+    // LivingEntity.calculateFallDamage (Horizon horizon-world living_fall.rs) : 0 pour #fall_damage_immune ; floor((distance + 1e-6 -
+    // safe_fall_distance) x fall_damage_multiplier) ; attributs (moteur/attributs.js) : 3 et 1 (chevaux, chameaux, lamas 6 et 0,5 ; renard 5),
+    // Saut ameliore +1 de distance sure par niveau ; la regle `vie.chuteSeuil` (3 par defaut) remplace la base, `vie.chute` multiplie
+    if (this.typeCreature && immuniseChute(sim, this.typeCreature)) return;
+    const seuil = R.valeur('vie.chuteSeuil', 3), sure = valeurAttribut(this, 'safe_fall_distance', seuil !== 3 ? seuil : baseAttribut(this, 'safe_fall_distance'));
+    const q = Math.floor((dist + 1e-6 - sure) * valeurAttribut(this, 'fall_damage_multiplier') * R.valeur('vie.chute', 1));
     if (q > 0) this.impulsion = null;
     if (q > 0) { sim.son(q > 4 ? 'entity.player.big_fall' : 'entity.player.small_fall', this.x, this.y, this.z, 1, 1); sim.stats.chutes = (sim.stats.chutes || 0) + 1; sim.stats.chuteMax = Math.max(sim.stats.chuteMax || 0, q); this.degats(q, 'chute'); }
   }
@@ -1015,13 +1051,34 @@ export class Acteur {
   toucherBlocs() {
     const sim = this.sim, b = this.boite();
     const x0 = Math.floor(b[0] + 1e-5), x1 = Math.floor(b[3] - 1e-5), y0 = Math.floor(b[1] + 1e-5), y1 = Math.floor(b[4] - 1e-5), z0 = Math.floor(b[2] + 1e-5), z1 = Math.floor(b[5] - 1e-5);
+    let feu = 0;
     for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
       const e = sim.monde.etatEn(x, y, z);
       if (e < 0) continue;
+      const nom = sim.d.nomBloc(e);
+      if (nom === 'fire') feu = Math.max(feu, 1); else if (nom === 'soul_fire') feu = Math.max(feu, 2);   // BaseFireBlock : 1 (feu des ames 2)
       const bl = sim.d.blocDe(e);
       if (!sim.reg.a('entre', bl)) continue;
-      sim.reg.lancerBloc('entre', bl, evenement({ pos: [x, y, z], etat: sim.d.chaine(e), bloc: sim.d.nomBloc(e), entite: { type: this.typeCreature ?? 'joueur', nom: this.nom, id: this.id } }), sim.api);
+      sim.reg.lancerBloc('entre', bl, evenement({ pos: [x, y, z], etat: sim.d.chaine(e), bloc: nom, entite: { type: this.typeCreature ?? 'joueur', nom: this.nom, id: this.id } }), sim.api);
     }
+    this.contactFeu(feu);
+  }
+  // InsideBlockEffectType.FIRE_IGNITE (Horizon motion/environment.rs apply_fire_contact, ignite_contact ; mobs/ai.rs) : dans le feu, la mise a
+  // feu (compteur negatif : -20 ticks d'attente du joueur, +1 par tick ; joueur : + 1 + [0, 2[ du hasard du monde ; puis au moins ceil(160 x
+  // burning_time)) hors de l'eau, et `in_fire` (1 ; feu des ames 2) ; hors du feu, le compteur d'un joueur qui ne brule pas revient a -20
+  contactFeu(feu) {
+    if (this.veh || this.mort >= 0) return;
+    const joueur = !this.typeCreature, sim = this.sim;
+    if (feu > 0) {
+      if (this.ia?.pr.immuniseFeu) return;
+      if (!this.dansEau) {
+        let t = joueur ? this.feuJoueur ?? 0 : this.ia ? this.ia.feu : this.feuJoueur ?? 0;
+        t = t < 0 ? t + 1 : joueur ? t + 1 + sim.hasard.entierBorne(2) : t;
+        if (t >= 0) t = Math.max(t, Math.ceil(160 * valeurAttribut(this, 'burning_time')));
+        if (this.ia) this.ia.feu = t; else this.feuJoueur = t;
+      }
+      this.degats(feu, 'flamme');
+    } else if (joueur && !(this.feuJoueur > 0)) this.feuJoueur = -20;
   }
 
   // ---------------------------------------------------------------- un tick
@@ -1085,9 +1142,11 @@ export class Acteur {
   // joueur en feu (petite boule de feu du blaze : 5 s) : 1 degat par seconde, flammes ; l'eau l'eteint
   brulerJoueur() {
     const sim = this.sim;
-    if (this.dansEau) { this.feuJoueur = 0; return; }
+    // Entity.baseTick (Horizon motion/environment.rs tick_remaining_fire) : 1 de degats quand le compteur est multiple de 20 (pas dans la lave),
+    // PUIS -1 ; l'eau le ramene a 0 au plus
+    if (this.feuJoueur % 20 === 0 && !this.dansLave) this.degats(1, 'feu');
     this.feuJoueur--;
-    if (this.feuJoueur % 20 === 0) this.degats(1, 'feu');
+    if (this.dansEau) { this.feuJoueur = Math.min(this.feuJoueur, 0); return; }
     if (this.feuJoueur % 3 === 0) sim.particule('flame', this.x + (sim.hasard.flottant() - 0.5) * 0.6, this.y + 0.3 + sim.hasard.flottant() * 1.4, this.z + (sim.hasard.flottant() - 0.5) * 0.6, 0, 0.02, 0, 1);
   }
   tickMort() {

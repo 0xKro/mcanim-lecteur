@@ -10,8 +10,14 @@ import { LANCABLES, VITESSE_LANCE, TANGAGE_LANCE, TYPES, puissanceArc, tangageBa
 import { lireFusee, nouvelleFusee } from './fusees.js';
 import { lirePile, idDe, textePile } from './pile.js';
 import { effetsPotion } from './potions.js';
+import { valeurAttribut } from './attributs.js';
+import { typeDegats } from './enchantements.js';
 
 const RAD = Math.PI / 180;
+const f2 = (v) => String(Math.round(v * 100) / 100).replace('.', ',');   // nombre du journal (2 decimales, virgule)
+// #minecraft:no_knockback (data/minecraft/tags/damage_type du jeu 26.3) : lu dans les fichiers du jeu quand ils sont la, sinon cette copie
+const SANS_RECUL = new Set(['explosion', 'player_explosion', 'bad_respawn_point', 'in_fire', 'lightning_bolt', 'on_fire', 'lava', 'hot_floor', 'sulfur_cube_hot', 'in_wall', 'cramming', 'drown', 'starve', 'cactus', 'fall', 'ender_pearl', 'fly_into_wall', 'out_of_world', 'generic', 'magic', 'wither', 'dragon_breath', 'dry_out', 'sweet_berry_bush', 'freeze', 'stalagmite', 'outside_border', 'generic_kill', 'campfire', 'spear']);
+const sansRecul = (sim, source) => (sim.objetsJeu ? sim.objetsJeu.etiquette('damage_type', 'no_knockback') : SANS_RECUL).has(typeDegats(source));
 
 // Effets que le moteur sait appliquer. `ticks` : duree par defaut de la potion du jeu ; `vitesse` / `saut` : multiplicateurs ou ajouts du jeu
 export const EFFETS = {
@@ -83,26 +89,40 @@ export function installerUtilisation(Acteur, EchecActe) {
   };
 
   // ---------------------------------------------------------------- coups recus (knockback du jeu) : 0 degat = clignotement rouge et recul seulement
-  P.frappe = function (q, source, dx, dz, force = 0.4) {
+  // LivingEntity.hurtServer : dealDefaultKnockback (force 0,4F ; `force` des appelants, x regles combat.recul / projectiles.recul) seulement pour
+  // un coup ENTIER (pas celui qui passe la fenetre d'invulnerabilite pour la difference) et un type de degats hors #minecraft:no_knockback ;
+  // (dx, dz) : vers la source (sa position ; un projectile : -sa vitesse horizontale, calculateHorizontalHurtKnockbackDirection)
+  P.frappe = function (q, source, dx, dz, force = Math.fround(0.4), { recul: cause = 'coup' } = {}) {
     const sim = this.sim;
     if (this.mort >= 0 || this.invulnerable || !sim.regles.valeur('vie.actif', true)) return false;
     this.dernierCoup = { source, dx, dz, t: sim.temps };   // d'ou vient le coup (dragon : la partie touchee, ia-boss.js partieTouchee)
+    this.coupEntier = true;
     if (q > 0) { if (!this.degats(q, source)) return false; } else {
       if (this.invulTemps > 10) return false;
       this.invulTemps = 20; this.hurtTime = 10; this.derniereBlessure = 0;
       sim.son('entity.player.hurt', this.x, this.y, this.z, 1, 1 + (sim.hasard.flottant() - sim.hasard.flottant()) * 0.2);
     }
-    this.recul(force, dx, dz);
+    if (force > 0 && this.coupEntier && !sansRecul(sim, source)) this.recul(force, dx, dz, cause);
     return true;
   };
-  // LivingEntity.knockback : (dx, dz) pointe vers l'attaquant ; la vitesse est divisee par 2 puis reculee de `force`
-  P.recul = function (force, dx, dz) {
-    force *= 1 - (this.ia?.pr.antiRecul ?? 0);   // attribut knockback_resistance (golem de fer 1, ravageur 0,75...)
-    if (!(force > 0)) return;
-    let L = Math.hypot(dx, dz);
-    if (L < 1e-6) { const a = this.sim.hasard.flottant() * 2 * Math.PI; dx = Math.sin(a); dz = Math.cos(a); L = 1; }
-    this.vx = this.vx / 2 - (dx / L) * force; this.vz = this.vz / 2 - (dz / L) * force;
-    if (this.auSol) { this.vy = Math.min(0.4, this.vy / 2 + force); this.auSol = false; }
+  // LivingEntity.knockback(force, dx, dz) : force x (1 - knockback_resistance) (attribut : base du type, armure en netherite 0,1F par piece,
+  // borne -2..1 : moteur/attributs.js) ; rien si elle n'est pas positive ; (dx, dz) pointe vers la source (tire au hasard de l'entite, 0,01 x
+  // (r - r), tant que dx^2 + dz^2 < 1e-5F) ; vitesse horizontale / 2 - direction x force ; au sol vy = min(0,4 ; vy / 2 + force). Le journal
+  // ecrit la force avant et apres la resistance.
+  P.recul = function (force, dx, dz, cause = 'coup') {
+    const sim = this.sim;
+    if (this.ia?.reculBoss?.(force, dx, dz)) return;   // dragon (EnderDragon.knockback : rien assis, sa propre vitesse sinon)
+    const kr = valeurAttribut(this, 'knockback_resistance'), f = force * (1 - kr);
+    sim.dire(`recul ${this.nom} ${f2(force)} -> ${f2(f)} (${cause}, knockback_resistance ${f2(kr)})`);
+    (sim.stats.reculs ??= []).push([sim.temps, this.nom, force, f, kr, cause]);
+    if (!(f > 0)) return;
+    while (dx * dx + dz * dz < Math.fround(1e-5)) {
+      const h = this.ia?.h ?? (this._hRecul ??= sim.nouvelAleatoire ? sim.nouvelAleatoire(0x7ec0 + this.id * 7919) : sim.hasard);   // hasard de l'entite (pas celui du monde)
+      dx = (h.reel() - h.reel()) * 0.01; dz = (h.reel() - h.reel()) * 0.01;
+    }
+    const L = Math.sqrt(dx * dx + dz * dz);
+    this.vx = this.vx / 2 - (dx / L) * f; this.vz = this.vz / 2 - (dz / L) * f;
+    if (this.auSol) { this.vy = Math.min(0.4, this.vy / 2 + f); this.auSol = false; }
   };
 
   // ---------------------------------------------------------------- aide : point vise (nombres, nom d'acteur ou rien)

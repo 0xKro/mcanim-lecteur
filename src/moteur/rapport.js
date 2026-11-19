@@ -74,7 +74,7 @@ export function texteRapport({ sim, replay, duree }) {
   const ev = (replay.sons.length / 7) | 0, pa = (replay.particules.length / 9) | 0;
   if (ev || pa) L.push(`sons ${ev}, particules ${pa} ; voisins mis a jour ${sim.stats.voisins}, ticks planifies ${sim.stats.ticks}, aleatoires ${sim.stats.aleatoires}`);
   const rl = replay.ralenti;
-  for (const [tick, t] of replay.textes.slice(0, 8)) L.push(`t=${fr(tick / 20 / rl, 2)} ${court2(t)}`);
+  for (const [tick, t] of replay.textes.slice(0, 10)) L.push(`t=${fr(tick / 20 / rl, 2)} ${court2(t)}`);   // 10 lignes : les reculs (avant / apres la resistance) ont la leur
   for (const w of replay.avertissements) L.push('avert: ' + w);
   // intentions des acteurs : UNE ligne chacune (fait / interrompu par ... / ECHEC : raison) ; les echecs et interruptions d'abord (ils comptent),
   // puis les reussites, puis les verbes d'etat reussis (regarde, tient, accroupi, saute), tant que ca tient dans la limite

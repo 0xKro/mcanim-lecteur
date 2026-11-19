@@ -43,6 +43,8 @@ export class Donnees {
     const L = j.lignes, c = Object.fromEntries(j.champsLigne.map((n, i) => [n, i]));
     this.emissionE = new Uint8Array(a); this.opaciteE = new Uint8Array(a); this.drapeauxE = new Uint16Array(a);
     this.dureteE = new Float32Array(a); this.resistanceE = new Float32Array(a); this.frictionE = new Float32Array(a);
+    // Block.getSpeedFactor / getJumpFactor (flottants du jeu : sable des ames 0,4 ; bloc de miel 0,4 et 0,5 ; les autres 1)
+    this.vitesseE = new Float32Array(a); this.sautE = new Float32Array(a);
     this.formeE = new Int16Array(a); this.sonE = new Uint8Array(a); this.solideE = new Uint32Array(a);
     this.faibleE = new Uint32Array(a); this.fortE = new Uint32Array(a); this.fluideE = new Uint8Array(a); this.pousseeE = new Uint8Array(a);
     this.niveauFluideE = new Uint8Array(a); this.instrumentE = new Uint8Array(a); this.jeuE = new Uint8Array(a);   // jeuE : drapeaux du jeu (bit 0 plein, 1 air, 2 conduit la redstone, 3 source de signal, 4 sortie analogique)
@@ -50,6 +52,7 @@ export class Donnees {
       const l = L[idx[i]];
       this.emissionE[i] = l[c.emission]; this.opaciteE[i] = l[c.opacite]; this.drapeauxE[i] = l[c.drapeaux];
       this.dureteE[i] = l[c.durete]; this.resistanceE[i] = l[c.resistance]; this.frictionE[i] = l[c.friction];
+      this.vitesseE[i] = c.vitesse !== undefined ? l[c.vitesse] : 1; this.sautE[i] = c.saut !== undefined ? l[c.saut] : 1;
       this.formeE[i] = l[c.forme]; this.sonE[i] = l[c.son]; this.solideE[i] = l[c.solide]; this.faibleE[i] = l[c.faible]; this.fortE[i] = l[c.fort];
       this.instrumentE[i] = l[c.instrument]; this.jeuE[i] = l[c.drapeauxJeu]; this.fluideE[i] = l[c.fluide]; this.niveauFluideE[i] = l[c.niveauFluide]; this.pousseeE[i] = l[c.poussee];
     }
@@ -150,6 +153,8 @@ export class Donnees {
   durete(id) { return this.dureteE[id]; }
   resistance(id) { return this.resistanceE[id]; }
   friction(id) { return this.frictionE[id]; }
+  facteurVitesse(id) { return id >= 0 ? this.vitesseE[id] : 1; }   // Block.getSpeedFactor (flottant)
+  facteurSaut(id) { return id >= 0 ? this.sautE[id] : 1; }         // Block.getJumpFactor (flottant)
   boites(id) { const f = this.formeE[id]; return f < 0 ? [] : this.j.formes[f]; }
   // appui sur une face : 0 bas, 1 haut, 2 nord, 3 sud, 4 ouest, 5 est ; type 0 = face pleine, 1 = centre seulement, 2 = rigide (3 jeux de 6 bits)
   solideFace(id, face, type = 0) { return (this.solideE[id] & (1 << (type * 6 + face))) !== 0; }

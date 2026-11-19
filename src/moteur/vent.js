@@ -16,6 +16,7 @@
 import { ordreHashSet, melangerJeu } from './ordre-java.js';
 import { exposition } from './explosion.js';
 import { VEHICULES } from '../creatures/especes.js';
+import { valeurAttribut } from './attributs.js';
 
 export const RAFALE = { vent: { rayon: 1.2, recul: 1.22 }, vent_breeze: { rayon: 3, recul: 1 } };
 const ENTITES_POUSSEES = { tnt: [0.98, 0.98, 0], chute: [0.98, 0.98, Math.fround(0.98 * 0.85)], fleche: [0.5, 0.5, 0.13], trident: [0.5, 0.5, 0.13], boule: [0.25, 0.25, 0.2125], oeuf: [0.25, 0.25, 0.2125], perle: [0.25, 0.25, 0.2125], potion: [0.25, 0.25, 0.2125], petite_boule_feu: [0.3125, 0.3125, 0.265625], crane: [0.3125, 0.3125, 0.265625], boule_feu: [1, 1, 0.85], boule_dragon: [1, 1, 0.85], fusee: [0.25, 0.25, 0.2125] };
@@ -49,7 +50,7 @@ export function rafale(sim, centre, type) {
     const dist = Math.hypot(a.x - centre[0], a.y - centre[1], a.z - centre[2]) / R;
     if (dist > 1) continue;
     const o = a.oeil(), w = [o[0] - centre[0], o[1] - centre[1], o[2] - centre[2]], n = Math.hypot(...w);
-    const res = Math.min(1, 0.15 * (a.protectionExplosion ?? 0));
+    const res = valeurAttribut(a, 'explosion_knockback_resistance');   // pas knockback_resistance (moteur/attributs.js) : la netherite ne retient pas la rafale
     const k = (1 - dist) * exposition(lec, centre, a.boite()) * recul * (VEHICULES.has(a.typeCreature) ? 1 : 1 - res);
     if (n >= 1e-5) { a.vx += w[0] / n * k; a.vy += w[1] / n * k; a.vz += w[2] / n * k; if (a.vy > 0) a.auSol = false; }
     if (!a.typeCreature) a.impulsion = type === 'vent' ? { y: a.y, grace: 40 } : a.impulsion ? { ...a.impulsion, grace: 0 } : null;   // ServerPlayer.onExplosionHit
@@ -107,7 +108,7 @@ export function toucheVent(P, e, pos, acteur, hit) {
   if (acteur) {
     const prop = s.acteurs?.parNom.get(e.proprietaire) ?? null;
     const insensible = e.type === 'vent_breeze' && (acteur.typeCreature === 'breeze' || acteur.ia?.type === 'breeze');
-    if (!insensible) acteur.frappe(1, e.type === 'vent_breeze' ? 'mob:breeze' : 'vent', e.x - acteur.x, e.z - acteur.z, 0.4);   // recul 0,4 (wind_charge n'est pas dans #no_knockback)
+    if (!insensible) acteur.frappe(1, e.type === 'vent_breeze' ? 'mob:breeze' : 'vent', -e.vx, -e.vz, Math.fround(0.4), { recul: 'charge de vent' });   // recul 0,4F le long du vol (wind_charge n'est pas dans #no_knockback)
     void prop;
   } else if (hit) centre = [pos[0] + hit.face[0] * 0.25, pos[1] + hit.face[1] * 0.25, pos[2] + hit.face[2] * 0.25];
   rafale(s, centre, e.type);

@@ -5,6 +5,7 @@
 // l'armure, recul 2,5 / 0,5 ; 40 ticks de repos), Obscurite (260 ticks) aux joueurs a 20 blocs toutes les 120 ticks.
 // Port d'apres Horizon (MIT, voir ATTRIBUTIONS.md) : mobs/warden.rs (increase_anger, receive_vibration, tick_sonic_boom, server_ai_step),
 // mobs/warden_brain.rs (activites, durees, vitesses, delais).
+import { valeurAttribut } from './attributs.js';   // knockback_resistance de la cible de l'onde sonique
 const journal = (sim, t) => (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${t}`);
 export const POSTURES = ['standing', 'emerging', 'digging', 'roaring', 'sniffing'];
 const DUREE = { emerging: 134, digging: 100, roaring: 84, sniffing: 84 };
@@ -164,7 +165,13 @@ export const METHODES_WARDEN = {
       const s = [a.x, a.y + 1.6, a.z], e = o.oeil(), d = [e[0] - s[0], e[1] - s[1], e[2] - s[2]], L = Math.hypot(...d), n = L < 1e-5 ? [0, 0, 0] : d.map((c) => c / L);
       for (let i = 1; i < Math.floor(L) + 7; i++) sim.particule('sonic_boom', s[0] + n[0] * i, s[1] + n[1] * i, s[2] + n[2] * i, 0, 0, 0, 1);
       sim.son('entity.warden.sonic_boom', a.x, a.y, a.z, 3, 1);
-      if (o.degats(10, 'sonic_boom')) { const k = 1 - (o.ia?.pr.antiRecul ?? 0); o.vx += n[0] * 2.5 * k; o.vy += n[1] * 0.5 * k; o.vz += n[2] * 2.5 * k; o.auSol = false; o.ia?.blesse(a); }
+      // hurtServer(sonicBoom(warden)) : sonic_boom n'est pas dans #no_knockback, donc aussi le recul par defaut 0,4F depuis le warden ; puis
+      // Entity.push (2,5 ; 0,5) x (1 - knockback_resistance de la cible, moteur/attributs.js)
+      if (o.frappe(10, 'sonic_boom', a.x - o.x, a.z - o.z, Math.fround(0.4), { recul: 'onde sonique' })) {
+        const kr = valeurAttribut(o, 'knockback_resistance'), k = 1 - kr;
+        sim.dire(`recul ${o.nom} onde sonique 2,5 -> ${String(Math.round(2.5 * k * 100) / 100).replace('.', ',')} (knockback_resistance ${String(Math.round(kr * 100) / 100).replace('.', ',')})`);
+        o.vx += n[0] * 2.5 * k; o.vy += n[1] * 0.5 * k; o.vz += n[2] * 2.5 * k; o.auSol = false; o.ia?.blesse(a);
+      }
       journal(sim, `${a.nom} : onde sonique sur ${o.nom} (10, ignore l armure)`);
     }
     if (this.soniqueT >= 60) { this.soniqueT = -1; this.soniqueCd = sim.temps + 40; }

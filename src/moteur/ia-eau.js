@@ -238,7 +238,7 @@ export const METHODES_EAU = {
     if (L.t >= 0) sim.replay.trait(sim.temps, 'laser', [a.x, a.y + a.O, a.z], [o.x, o.y + o.O, o.z], Math.min(1, L.t / duree));
     if (L.t >= duree) {
       const q = 1 + (this.difficulte() >= 3 ? 2 : 0) + (this.type === 'elder_guardian' ? 2 : 0);
-      o.frappe(q, 'magie', a.x - o.x, a.z - o.z, 0);
+      o.frappe(q, 'magie_indirecte', a.x - o.x, a.z - o.z, Math.fround(0.4), { recul: 'laser du gardien' });   // indirectMagic(gardien) : hors #no_knockback, recul 0,4F
       this.frapper(o);
       journal(sim, `${a.nom} : le laser touche ${o.nom} (${q} de magie + le coup)`);
       this.cible = null;
@@ -287,7 +287,7 @@ export const METHODES_EAU = {
     const etat = (e) => { if (e !== this.gonflement) { this.gonflement = e; this.changer({ variante: ['small', 'medium', 'big'][e] }); sim.son(e > 0 ? 'entity.puffer_fish.blow_up' : 'entity.puffer_fish.blow_out', a.x, a.y, a.z, 1, 1); } };
     if (proche) { this.compteDegonfle = 0; if (this.gonflement === 0) { etat(1); this.compteGonfle = 0; } else if (this.gonflement === 1 && ++this.compteGonfle > 40) etat(2); }
     else if (this.gonflement > 0 && ++this.compteDegonfle > 60) { etat(this.gonflement - 1); this.compteDegonfle = 0; }
-    if (this.gonflement > 0) for (const o of this.autres()) if (this.auContact(o) && !['pufferfish', 'cod', 'salmon', 'tropical_fish', 'guardian', 'elder_guardian'].includes(this.typeDe(o))) { if (o.frappe(1 + this.gonflement, 'mob:pufferfish', a.x - o.x, a.z - o.z, 0)) { o.appliquerEffet('poison', 60 * this.gonflement, 0); sim.son('entity.puffer_fish.sting', a.x, a.y, a.z, 1, 1); } }
+    if (this.gonflement > 0) for (const o of this.autres()) if (this.auContact(o) && !['pufferfish', 'cod', 'salmon', 'tropical_fish', 'guardian', 'elder_guardian'].includes(this.typeDe(o))) { if (o.frappe(1 + this.gonflement, 'mob:pufferfish', a.x - o.x, a.z - o.z, Math.fround(0.4))) { o.appliquerEffet('poison', 60 * this.gonflement, 0); sim.son('entity.puffer_fish.sting', a.x, a.y, a.z, 1, 1); } }
   },
   // ElderGuardian.customServerAiStep : Fatigue minière III (6000 ticks) aux joueurs a 50 blocs qui ne l'ont pas deja (ou moins de 1200 ticks),
   // le fantome du gardien a l'ecran (particule ELDER_GUARDIAN) et le son de la malediction

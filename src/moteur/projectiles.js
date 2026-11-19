@@ -15,6 +15,7 @@ import { exploser } from './explosion.js';
 import { tickFusee } from './fusees.js';
 import { toucheVent } from './vent.js';
 import { lirePile } from './pile.js';
+import { valeurAttribut } from './attributs.js';   // knockback_resistance (Frappe)
 import { couleurPotion } from './potions.js';
 import { descendre } from './vehicules.js';
 
@@ -436,7 +437,7 @@ export class Projectiles {
     if (e.type === 'crane') return craneTouche(s, e, pos, acteur, griefing);
     if (e.type === 'boule_dragon') { if (acteur && acteur.nom === e.proprietaire) return; s.boss.nuageBoule(pos, e); return; }
     if (e.type === 'boule_feu') {
-      if (acteur) { acteur.frappe(6, 'boule_feu', x - acteur.x, z - acteur.z, 0); s.dire(`boule de feu touche ${acteur.nom} : 6 degats`); }
+      if (acteur) { acteur.frappe(6, 'boule_feu', -e.vx, -e.vz, Math.fround(0.4)); s.dire(`boule de feu touche ${acteur.nom} : 6 degats`); }
       s.stats.boulesFeu = (s.stats.boulesFeu || 0) + 1;
       (s.stats.iaJournal ??= []).push(`${(s.temps / 20).toFixed(2)} boule de feu explose (puissance ${e.puissance ?? 1})${acteur ? ' sur ' + acteur.nom : ''} en ${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)}${e.renvoyee ? ' (renvoyee)' : ''}`);
       s.dire(`boule de feu : explosion de puissance ${e.puissance ?? 1}`);
@@ -446,7 +447,7 @@ export class Projectiles {
     // petite boule de feu
     s.stats.petitesBoulesFeu = (s.stats.petitesBoulesFeu || 0) + 1;
     if (acteur) {
-      const ok = acteur.frappe(5, 'petite_boule_feu', x - acteur.x, z - acteur.z, 0);
+      const ok = acteur.frappe(5, 'petite_boule_feu', -e.vx, -e.vz, Math.fround(0.4));   // fireball n'est pas dans #no_knockback : recul 0,4F le long du vol
       if (ok || acteur.mort < 0) allumerActeur(acteur, 100);
       (s.stats.iaJournal ??= []).push(`${(s.temps / 20).toFixed(2)} petite boule de feu touche ${acteur.nom}`);
     } else if (hit && griefing) {
@@ -534,7 +535,7 @@ export class Projectiles {
   toucheActeur(e, cible) {
     const s = this.sim, E = this.E, a = cible.acteur, R = this.R;
     const px = e.x + e.vx * cible.t, py = e.y + e.vy * cible.t, pz = e.z + e.vz * cible.t;
-    const dx = px - a.x, dz = pz - a.z, recul = R.valeur('projectiles.recul', 1);
+    const recul = R.valeur('projectiles.recul', 1);
     const evt = s.api.evenement('projectile.touche', { type: e.type, cible: a.nom, proprietaire: e.proprietaire });
     if (evt.annule) return false;
     marquerPartie(s, a, cible);
@@ -550,12 +551,18 @@ export class Projectiles {
       q = e.type === 'trident' ? q * R.valeur('projectiles.degats', 1) : Math.round(q * R.valeur('projectiles.degats', 1));
       if (e.feuFleche > 0) allumerActeur(a, 100);   // une fleche en feu (Flamme) allume la cible 5 s
       a.attaquantCourant = prop0;
-      const ok = a.frappe(q, e.type === 'trident' ? 'trident' : 'fleche', dx, dz, 0.4 * recul);
+      // dealDefaultKnockback : un projectile recule le long de SON VOL (Projectile.calculateHorizontalHurtKnockbackDirection : -vitesse horizontale)
+      const ok = a.frappe(q, e.type === 'trident' ? 'trident' : 'fleche', -e.vx, -e.vz, Math.fround(0.4) * recul, { recul: e.type });
       a.attaquantCourant = null;
       if (ok && s.objetsJeu && arme) {
-        // Frappe (knockback de l'arme) : poussee le long du vol x 0,6 (AbstractArrow.doKnockback), effets apres l'attaque de l'arme (Canalisation)
+        // Frappe (knockback de l'arme) : AbstractArrow.doKnockback (Horizon game/creatures.rs) : vitesse horizontale normalisee x Frappe x 0,6 x
+        // max(0, 1 - knockback_resistance) (moteur/attributs.js) ; Entity.push (x, 0,1, z) seulement si ce vecteur n'est pas nul ; effets apres l'attaque (Canalisation)
         const kb = e.type === 'fleche' ? s.enchant.valeurPile(arme, 'knockback', { type: typeDirect, ceci: a, directAttaquant: typeDirect }, 0) : 0;
-        if (kb > 0) { const h = Math.hypot(e.vx, e.vz) || 1, f = kb * 0.6 * (1 - (a.ia?.pr.antiRecul ?? 0)); a.vx += e.vx / h * f; a.vy += 0.1; a.vz += e.vz / h * f; a.auSol = false; }
+        if (kb > 0) {
+          const h = Math.sqrt(e.vx * e.vx + e.vz * e.vz), kr = valeurAttribut(a, 'knockback_resistance'), f = kb * 0.6 * Math.max(0, 1 - kr);
+          s.dire(`recul ${a.nom} ${String(Math.round(kb * 0.6 * 100) / 100).replace('.', ',')} -> ${String(Math.round(f * 100) / 100).replace('.', ',')} (Frappe, knockback_resistance ${String(Math.round(kr * 100) / 100).replace('.', ',')})`);
+          if (h >= Math.fround(1e-5) && f > 0) { a.vx += e.vx / h * f; a.vy += 0.1; a.vz += e.vz / h * f; a.auSol = false; }   // Vec3.normalize : nul sous 1e-5F
+        }
         s.enchant.apresAttaque(a, prop0, { type: typeDirect, direct: false, directAttaquant: typeDirect, arme, attaquantSeul: true });
       }
       if (ok && e.effetsFleche) for (const [id, t, n] of e.effetsFleche) a.appliquerEffet(id, t, n);   // fleche a effet (duree x 0,125)
@@ -592,7 +599,7 @@ export class Projectiles {
     const [x, y, z] = pos;
     const prop = s.acteurs?.parNom.get(e.proprietaire) ?? null;
     if (e.type === 'boule' || e.type === 'oeuf') {
-      if (acteur) { const dx = x - acteur.x, dz = z - acteur.z; acteur.frappe(0, e.type, dx, dz, 0.4 * R.valeur('projectiles.recul', 1)); s.stats.touches = (s.stats.touches || 0) + 1; s.dire(`${e.type} touche ${acteur.nom}`); }
+      if (acteur) { acteur.frappe(0, e.type, -e.vx, -e.vz, Math.fround(0.4) * R.valeur('projectiles.recul', 1), { recul: e.type }); s.stats.touches = (s.stats.touches || 0) + 1; s.dire(`${e.type} touche ${acteur.nom}`); }
       for (let i = 0; i < 8; i++) s.replay.particule(s.temps, 'item|' + TYPES[e.type].objet, x, y, z, (s.hasard.flottant() - 0.5) * 0.2, s.hasard.flottant() * 0.2, (s.hasard.flottant() - 0.5) * 0.2, 1);
       s.son(e.type === 'oeuf' ? 'entity.egg.throw' : 'block.snow.break', x, y, z, 0.5, 1);
       // ThrownEgg.onHit : 1 chance sur 8 qu'un poussin naisse (et 1 sur 32 alors : quatre), age -24000 ; regle `oeufs.poussins`
@@ -710,7 +717,7 @@ function craneTouche(s, e, pos, acteur, griefing) {
   const dif = { paisible: 0, peaceful: 0, facile: 1, easy: 1, normal: 2, difficile: 3, hard: 3 }[s.regles.valeur('monde.difficulte', 'normal')] ?? 2;
   const fl = dif === 2 ? 200 : dif === 3 ? 800 : 0;
   if (acteur && !(prop?.ia?.type === 'wither' && /^(zombie|husk|drowned|zombie_villager|skeleton|stray|bogged|parched|wither_skeleton|zombie_horse|skeleton_horse|phantom|zombified_piglin|zoglin|wither)$/.test(acteur.ia?.type ?? acteur.typeCreature ?? ''))) {
-    const q = vivant ? 8 : 5, ok = acteur.frappe(q, vivant ? 'crane_wither' : 'magie', pos[0] - acteur.x, pos[2] - acteur.z, 0);
+    const q = vivant ? 8 : 5, ok = acteur.frappe(q, vivant ? 'crane_wither' : 'magie', -e.vx, -e.vz, Math.fround(0.4));   // wither_skull : recul 0,4F le long du vol (magic : aucun, #no_knockback)
     if (ok && acteur.mort < 0 && fl > 0 && acteur.typeCreature !== 'wither') acteur.appliquerEffet('wither', fl, 1);
     if (ok && acteur.mort >= 0 && vivant) prop.vie = Math.min(prop.vieMax, prop.vie + 5);
     (s.stats.iaJournal ??= []).push(`${(s.temps / 20).toFixed(2)} crane${e.dangereux ? ' bleu' : ''} touche ${acteur.nom} : ${q}${fl && acteur.mort < 0 ? `, fletrissement II ${fl / 20} s` : ''}`);
@@ -719,9 +726,11 @@ function craneTouche(s, e, pos, acteur, griefing) {
   exploser(s, pos[0], pos[1], pos[2], { puissance: 1, casseBlocs: griefing, source: 'crane', ...(e.dangereux ? { plafondResistance: 0.8 } : {}) });
 }
 // met un acteur en feu `ticks` ticks (Entity.igniteForSeconds) : une creature a IA brule par son IA, un joueur par le compteur `feuJoueur` (acteurs.js)
+// LivingEntity.igniteForTicks : ceil(ticks x attribut burning_time) (1 ; Protection contre le feu -0,15F par niveau et par piece, add_multiplied_base)
 export function allumerActeur(a, ticks) {
-  if (a.ia) { if (!a.ia.pr.immuniseFeu) a.ia.feu = Math.max(a.ia.feu, ticks); return; }
-  a.feuJoueur = Math.max(a.feuJoueur ?? 0, ticks);
+  const t = Math.ceil(ticks * valeurAttribut(a, 'burning_time'));
+  if (a.ia) { if (!a.ia.pr.immuniseFeu) a.ia.feu = Math.max(a.ia.feu, t); return; }
+  a.feuJoueur = Math.max(a.feuJoueur ?? 0, t);
 }
 
 // LevelEventHandler 2002 / 2007 (potionSplashParticles) et son 1053 / 1054 : 8 miettes de la potion jetee et 100 particules d'effet de la

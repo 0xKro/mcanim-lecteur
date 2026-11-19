@@ -23,7 +23,8 @@ import { METHODES_BREEZE } from './ia-breeze.js';   // breeze : cerveau, tir de 
 import { METHODES_OEUFS, declarerReglesOeufs } from './ia-oeufs.js';   // oeufs et reproductions a part : tortue, grenouille, renifleur, panda, ocelot, axolotl, poule
 import { METHODES_VILLAGEOIS } from './ia-villageois.js';   // villageois : temps libre, echanges, reproduction, jeu des bebes, lits et postes pris
 import { declarerReglesPoussee } from './poussee.js';   // les corps vivants se poussent (acteurs.poussee)
-import { composants } from './inventaire.js';   // attaque de l'arme tenue (attribute_modifiers des objets du jeu)
+import { valeurAttribut } from './attributs.js';   // attributs du jeu : attack_damage, attack_knockback, knockback_resistance (base + arme + effets)
+import { sinMth, cosMth, DEG_RAD } from './mth.js';
 import { idDe } from './pile.js';
 
 const RAD = Math.PI / 180;
@@ -43,7 +44,7 @@ export const PROFILS = {
   bogged: P('squelette', { degats: 2, soleil: true, arc: true, intervalle: [50, 30] }), parched: P('squelette', { degats: 2, arc: true }),
   wither_skeleton: P('zombie', { degats: 4 }),   // WitherSkeleton.finalizeSpawn : attack_damage 4 (2 par defaut) ; l'epee en pierre tenue ajoute 4 (degatsMelee) : 8
   creeper: P('creeper'), spider: P('araignee', { degats: 2 }), cave_spider: P('araignee', { degats: 2 }),
-  iron_golem: P('golem', { degats: 15, antiRecul: 1 }), snow_golem: P('neige'),
+  iron_golem: P('golem', { degats: 15 }), snow_golem: P('neige'),
   rabbit: P('lapin', { panique: 2.2 }), cow: P('passif', { panique: 2.0 }), mooshroom: P('passif', { panique: 2.0 }), pig: P('passif', { panique: 1.25 }),
   sheep: P('passif', { panique: 1.25 }), chicken: P('passif', { panique: 1.4 }), goat: P('passif', { panique: 2.0 }), horse: P('passif', { panique: 1.2 }),
   donkey: P('passif', { panique: 1.2 }), mule: P('passif', { panique: 1.2 }), llama: P('passif', { panique: 1.2 }), camel: P('passif', { panique: 4 }),
@@ -51,12 +52,12 @@ export const PROFILS = {
   armadillo: P('passif', { panique: 2.0 }), frog: P('passif', { panique: 2.0 }), panda: P('passif', { panique: 2.0 }), polar_bear: P('neutre', { degats: 6 }),
   wolf: P('loup', { degats: 4, panique: 1.5 }), zombified_piglin: P('neutre', { degats: 5, suivi: 35 }),
   piglin: P('neutre', { degats: 5 }), piglin_brute: P('zombie', { degats: 7, suivi: 16 }), vindicator: P('illageois', { degats: 5, suivi: 12 }),
-  pillager: P('illageois', { arbalete: true, suivi: 32 }), ravager: P('illageois', { degats: 12, suivi: 32, antiRecul: 0.75 }), hoglin: P('zombie', { degats: 6 }), zoglin: P('zombie', { degats: 6 }),
+  pillager: P('illageois', { arbalete: true, suivi: 32 }), ravager: P('illageois', { degats: 12, suivi: 32 }), hoglin: P('zombie', { degats: 6 }), zoglin: P('zombie', { degats: 6 }),
   // especes a comportement propre (moteur/ia-especes.js) ; attack_damage et follow_range du jeu
   bat: P('chauve'), bee: P('abeille', { degats: 2, suivi: 48 }), allay: P('allay'), parrot: P('perroquet'), ghast: P('ghast', { suivi: 100, immuniseFeu: true }), happy_ghast: P('ghast', { suivi: 16 }),
   phantom: P('phantom', { degats: 6, suivi: 64, soleil: true }), vex: P('vex', { degats: 4, immuniseFeu: true }), blaze: P('blaze', { degats: 6, suivi: 48, immuniseFeu: true }),
   witch: P('sorciere', { suivi: 16 }), enderman: P('enderman', { degats: 7, suivi: 64 }),
-  wither: P('wither', { suivi: 40, immuniseFeu: true }), ender_dragon: P('dragon', { immuniseFeu: true, antiRecul: 1 }), warden: P('warden', { degats: 30, suivi: 24, antiRecul: 1 }), breeze: P('breeze', { degats: 3, suivi: 24 }),
+  wither: P('wither', { suivi: 40, immuniseFeu: true }), ender_dragon: P('dragon', { immuniseFeu: true }), warden: P('warden', { degats: 30, suivi: 24 }), breeze: P('breeze', { degats: 3, suivi: 24 }),
   cod: P('poisson', { panique: 1.25 }), salmon: P('poisson', { panique: 1.25 }), tropical_fish: P('poisson', { panique: 1.25 }), pufferfish: P('poisson', { panique: 1.25 }), tadpole: P('poisson', { panique: 1.25 }),
   squid: P('calmar'), glow_squid: P('calmar'), dolphin: P('dauphin', { degats: 3 }), axolotl: P('axolotl', { degats: 2, panique: 2.0 }),
   guardian: P('gardien', { degats: 6 }), elder_guardian: P('gardien', { degats: 8 }), sniffer: P('passif', { panique: 2.0 }),
@@ -393,18 +394,20 @@ export class IA {
   // Mob.doHurtTarget : attack_damage (golem : d / 2 + [0, d[), degats selon la difficulte si la cible est un joueur, recul 0,4
   // attack_damage du type + modificateur de l'arme tenue (attribute_modifiers, emplacement mainhand), puis EnchantmentHelper.modifyDamage
   // (Tranchant, Chatiment...) : Mob.doHurtTarget du jeu, sans mode de jeu (un mob n'en a pas)
+  // attribut attack_damage (moteur/attributs.js) : le profil du type (attributes.json ; WitherSkeleton.finalizeSpawn 4) + l'arme tenue + Force /
+  // Faiblesse, borne 0..2048 ; puis les enchantements de l'arme
   degatsMelee(o) {
     const a = this.a, sim = this.sim, arme = a.main?.objet ?? null;
-    let q = this.pr.degats;
-    if (!arme) return q;
-    q += composants(sim.d, arme).attaque;
-    if (sim.objetsJeu) q = sim.enchant.valeurPile(arme, 'damage', { type: 'mob_attack', direct: true, ceci: o, attaquant: a, directAttaquant: a, outil: idDe(arme) }, q);
+    let q = valeurAttribut(a, 'attack_damage', this.pr.degats);
+    if (arme && sim.objetsJeu) q = sim.enchant.valeurPile(arme, 'damage', { type: 'mob_attack', direct: true, ceci: o, attaquant: a, directAttaquant: a, outil: idDe(arme) }, q);
     return q;
   }
   frapper(o) {
     const a = this.a, sim = this.sim, h = this.h;
     let q = this.degatsMelee(o);
-    if (this.pr.fam === 'golem') q = q / 2 + h.entierBorne(Math.floor(q));
+    // IronGolem.doHurtTarget, HoglinBase.hurtAndThrowTarget (hoglin, zoglin adultes) : d / 2 + [0, (int) d[
+    const hoglin = (this.type === 'hoglin' || this.type === 'zoglin') && !this.bebe;
+    if (this.pr.fam === 'golem' || (hoglin && Math.trunc(q) > 0)) q = q / 2 + h.entierBorne(Math.trunc(q));
     if (this.typeDe(o) === 'joueur') q = degatsJoueur(q, this.difficulte());
     q *= sim.regles.valeur('ia.degats', 1);
     const ev = sim.api.evenement('creature.attaque', { creature: a.nom, type: this.type, cible: o.nom, degats: q });
@@ -413,18 +416,37 @@ export class IA {
     const ea = a.evEntite('attaque', { cible: o.nom, degats: q });   // gestionnaires d'entite (mc.entite(type | id de mod).sur('attaque'))
     if (ea) { if (ea.annule) return; q = Number(ea.degats) || 0; }
     a.balancer(); this.attaqueTick = sim.temps;
-    const ok = q > 0 ? o.frappe(q, 'mob:' + this.type, a.x - o.x, a.z - o.z, 0.4 * sim.regles.valeur('combat.recul', 1)) : false;
+    const R = sim.regles.valeur('combat.recul', 1);
+    const ok = q > 0 ? o.frappe(q, 'mob:' + this.type, a.x - o.x, a.z - o.z, Math.fround(0.4) * R) : false;   // dealDefaultKnockback 0,4F depuis le mob
     if (ok) {
       o.ia?.blesse(a); o.dernierFrappeur = a;
-      const arme = a.main?.objet ?? null;   // Mob.doHurtTarget : recul de l'arme (Recul), puis les effets d'apres l'attaque (Aura de feu...)
-      if (arme && sim.objetsJeu) {
-        const kb = sim.enchant.valeurPile(arme, 'knockback', { type: 'mob_attack', direct: true, ceci: o, attaquant: a, directAttaquant: a, outil: idDe(arme) }, 0);
-        if (kb > 0) o.recul(kb * 0.5 * sim.regles.valeur('combat.recul', 1), a.x - o.x, a.z - o.z);
-        sim.enchant.apresAttaque(o, a, { type: 'mob_attack', direct: true, directAttaquant: a, arme, attaquantSeul: true });
+      const arme = a.main?.objet ?? null;
+      if (hoglin) this.lancerCible(o);   // HoglinBase.throwTarget (a la place du recul de Mob.doHurtTarget)
+      else if (this.pr.fam !== 'golem') {
+        // Mob.doHurtTarget : getKnockback = (attribut attack_knockback (ravageur, warden 1,5) + Recul de l'arme) / 2F ; causeExtraKnockback :
+        // LivingEntity.knockback le long du lacet du mob (Mth.sin, -Mth.cos), puis sa vitesse horizontale x 0,6 (Horizon mobs/ai.rs)
+        let kb = Math.fround(valeurAttribut(a, 'attack_knockback'));
+        if (arme && sim.objetsJeu) kb = Math.fround(sim.enchant.valeurPile(arme, 'knockback', { type: 'mob_attack', direct: true, ceci: o, attaquant: a, directAttaquant: a, outil: idDe(arme) }, kb));
+        kb = Math.fround(kb / 2);
+        if (kb > 0) { const r = Math.fround(a.lacet * DEG_RAD); o.recul(kb * R, sinMth(r), -cosMth(r), `coup de ${this.type} (attack_knockback, Recul)`); a.vx *= 0.6; a.vz *= 0.6; }
       }
-      if (this.pr.fam === 'golem') { o.vy += 0.4; sim.son('entity.iron_golem.attack', a.x, a.y, a.z, 1, 1); }
+      if (arme && sim.objetsJeu) sim.enchant.apresAttaque(o, a, { type: 'mob_attack', direct: true, directAttaquant: a, arme, attaquantSeul: true });   // les effets d'apres l'attaque (Aura de feu...)
+      // IronGolem.doHurtTarget : la cible monte de 0,4F x max(0, 1 - knockback_resistance)
+      if (this.pr.fam === 'golem') { const kr = valeurAttribut(o, 'knockback_resistance'); o.vy += Math.fround(0.4) * Math.max(0, 1 - kr); sim.dire(`recul ${o.nom} vers le haut 0,4 -> ${String(Math.round(Math.fround(0.4) * Math.max(0, 1 - kr) * 100) / 100).replace('.', ',')} (golem de fer, knockback_resistance ${String(Math.round(kr * 100) / 100).replace('.', ',')})`); sim.son('entity.iron_golem.attack', a.x, a.y, a.z, 1, 1); }
       this.stat('attaques'); (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${a.nom} frappe ${o.nom} ${+q.toFixed(1)}`);
     }
+  }
+  // HoglinBase.throwTarget (Horizon mobs/piglin.rs throw_target) : force = attack_knockback du mob - knockback_resistance de la cible (rien si
+  // <= 0) ; vers la cible a l'horizontale, x force x (r x 0,5F + 0,2F), tournee de (entier [-10, 10]) RADIANS (Vec3.yRot, Mth), et vers le haut
+  // force x r x 0,5 ; Entity.push (ajoute a la vitesse) ; tirages du hasard du mob dans cet ordre
+  lancerCible(o) {
+    const a = this.a, sim = this.sim, h = this.h, kr = valeurAttribut(o, 'knockback_resistance'), ak = valeurAttribut(a, 'attack_knockback'), p = ak - kr;
+    sim.dire(`recul ${o.nom} ${String(Math.round(ak * 100) / 100).replace('.', ',')} -> ${String(Math.round(Math.max(0, p) * 100) / 100).replace('.', ',')} (lancer de ${this.type}, knockback_resistance ${String(Math.round(kr * 100) / 100).replace('.', ',')})`);
+    if (p <= 0) return;
+    const ang = h.entierBorne(21) - 10, s = p * Math.fround(Math.fround(h.flottant() * 0.5) + Math.fround(0.2));
+    const dx = o.x - a.x, dz = o.z - a.z, L = Math.sqrt(dx * dx + dz * dz);
+    const vx = L < 1e-4 ? 0 : dx / L * s, vz = L < 1e-4 ? 0 : dz / L * s, c = cosMth(ang), sn = sinMth(ang);
+    o.vx += vx * c + vz * sn; o.vy += p * h.flottant() * 0.5; o.vz += vz * c - vx * sn;
   }
   // BreakDoorGoal (zombies, difficile) : une porte en bois fermee a moins de 2 blocs sur la route : 240 ticks, coups toutes les 20, puis cassee
   casserPorte() {
@@ -620,15 +642,16 @@ export class IA {
     if (this.pr.soleil && sim.regles.valeur('ia.soleil', true) && this.jour() && !a.dansEau && !pluie && sim.temps % 1 === 0) {
       const lum = 1;   // ciel visible en plein jour : luminosite 1 (lumiere du ciel 15)
       if (this.h.flottant() * 30 < (lum - 0.4) * 2 && this.cielVisible(a.x, a.y, a.z)) {
-        if (this.casque || a.armure?.tete) { /* le casque s'abime a la place (non suivi) */ } else if (this.feu < 160) { if (this.feu <= 0) { this.stat('brulures'); (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${a.nom} brule au soleil`); } this.feu = 160; }
+        if (this.casque || a.armure?.tete) { /* le casque s'abime a la place (non suivi) */ } else { const t = Math.ceil(160 * valeurAttribut(a, 'burning_time')); if (this.feu < t) { if (this.feu <= 0) { this.stat('brulures'); (sim.stats.iaJournal ??= []).push(`${(sim.temps / 20).toFixed(2)} ${a.nom} brule au soleil`); } this.feu = t; } }   // igniteForSeconds(8) : ceil(160 x burning_time)
       }
     }
-    if (a.dansEau || pluie) this.feu = 0;
+    // Entity.baseTick (Horizon mobs/ai.rs) : degats quand le compteur est multiple de 20 (pas dans la lave), PUIS -1 ; mouille : eteint
     if (this.feu > 0) {
+      if (this.feu % 20 === 0 && !a.dansLave) a.degats(1, 'feu');
       this.feu--;
-      if (this.feu % 20 === 0) a.degats(1, 'feu');
       if (this.feu % 4 === 0) sim.particule('flame', a.x + (this.h.flottant() - 0.5) * a.L, a.y + a.H * (0.6 + this.h.flottant() * 0.5), a.z + (this.h.flottant() - 0.5) * a.L, 0, 0.02, 0, 1);
     }
+    if (a.dansEau || pluie) this.feu = Math.min(this.feu, 0);
   }
 
   // etat d'animation pour le rendu (replay.ia) : drapeaux 1 agressif, 2 attaque (coup en cours), 4 arc tendu, 8 en feu ; gonflement 0..1 ; tension

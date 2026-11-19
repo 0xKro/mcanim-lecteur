@@ -539,11 +539,24 @@ export const METHODES_BOSS = {
       if (o.typeCreature === 'end_crystal') continue;
       if (ailes.some((b) => touche(b, o))) {
         const dx = o.x - a.x, dz = o.z - a.z, d = Math.max(dx * dx + dz * dz, 0.1);
-        o.vx += dx / d * 4; o.vy += 0.2; o.vz += dz / d * 4; o.auSol = false;
-        if (!ASSIS.has(this.phase) && sim.temps - (o.dernierCoupDragon ?? -1e9) > 2) { o.dernierCoupDragon = sim.temps; o.frappe(5, 'mob:ender_dragon', a.x - o.x, a.z - o.z, 0); }
+        o.vx += dx / d * 4; o.vy += Math.fround(0.2); o.vz += dz / d * 4; o.auSol = false;
+        // hurt(mobAttack(dragon)) : un coup ordinaire, donc le recul par defaut 0,4F depuis le dragon (Horizon mobs/dragon_contacts.rs)
+        if (!ASSIS.has(this.phase) && sim.temps - (o.dernierCoupDragon ?? -1e9) > 2) { o.dernierCoupDragon = sim.temps; o.frappe(5, 'mob:ender_dragon', a.x - o.x, a.z - o.z, Math.fround(0.4)); }
         this.stat('coupsAiles');
-      } else if (tetes.some((b) => touche(b, o))) { o.frappe(10, 'mob:ender_dragon', a.x - o.x, a.z - o.z, 0); this.stat('coupsTete'); }
+      } else if (tetes.some((b) => touche(b, o))) { o.frappe(10, 'mob:ender_dragon', a.x - o.x, a.z - o.z, Math.fround(0.4)); this.stat('coupsTete'); }
     }
+  },
+  // EnderDragon.knockback (Horizon game/dragon.rs) : rien quand il est pose (phases assises) ; sinon LivingEntity.knockback sur SA vitesse,
+  // resistance 0 (attributes.json : le dragon n'a pas de knockback_resistance), vitesse verticale gardee (noPhysics : jamais au sol)
+  reculBoss(force, dx, dz) {
+    if (this.type !== 'ender_dragon') return false;
+    const sim = this.sim;
+    sim.dire(`recul ${this.a.nom} ${String(Math.round(force * 100) / 100).replace('.', ',')} -> ${ASSIS.has(this.phase) ? '0 (pose)' : String(Math.round(force * 100) / 100).replace('.', ',')} (dragon, knockback_resistance 0)`);
+    if (ASSIS.has(this.phase) || !(force > 0)) return true;
+    while (dx * dx + dz * dz < Math.fround(1e-5)) { dx = (this.h.reel() - this.h.reel()) * 0.01; dz = (this.h.reel() - this.h.reel()) * 0.01; }
+    const L = Math.sqrt(dx * dx + dz * dz);
+    this.dv[0] = this.dv[0] / 2 - dx / L * force; this.dv[2] = this.dv[2] / 2 - dz / L * force;
+    return true;
   },
   // checkWalls (tete, cou, corps) : avec mobGriefing, les blocs ni #dragon_immune ni #dragon_transparent sont detruits (evenement 2008) ;
   // un bloc immune ralentit (inWall)

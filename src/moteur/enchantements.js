@@ -18,7 +18,7 @@ export function typeDegats(source) {
   const s = String(source ?? 'generique');
   if (s.startsWith('joueur:')) return 'player_attack';
   const T = {
-    fleche: 'arrow', trident: 'trident', chute: 'fall', feu: 'on_fire', flamme: 'in_fire', lave: 'lava', noyade: 'drown', poison: 'magic', magie: 'magic',
+    fleche: 'arrow', trident: 'trident', chute: 'fall', feu: 'on_fire', flamme: 'in_fire', lave: 'lava', noyade: 'drown', poison: 'magic', magie: 'magic', magie_indirecte: 'indirect_magic', crane_wither: 'wither_skull',
     fletrissement: 'wither', foudre: 'lightning_bolt', boule_feu: 'fireball', petite_boule_feu: 'fireball', perle: 'ender_pearl', mur: 'fly_into_wall',
     fusee: 'fireworks', cactus: 'cactus', epines: 'thorns', faim: 'starve', sonic_boom: 'sonic_boom', piqure: 'sting', generique: 'generic', cramming: 'cramming',
     souffle_dragon: 'dragon_breath', vent: 'wind_charge', masse: 'mace_smash', boule: 'thrown', oeuf: 'thrown', crane: 'wither_skull', magma: 'hot_floor',

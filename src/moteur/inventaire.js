@@ -14,8 +14,9 @@
 // Port de Horizon game/{item_durability,enchant_effects,mace}.rs, horizon-world/src/{item_durability,component_durability}.rs (MIT, ATTRIBUTIONS.md).
 import { lirePile, textePile, canon, idDe } from './pile.js';
 import { typeDegats, estDirect, valeurNiveau } from './enchantements.js';
-import { armureDe } from './explosion.js';
 import { effetsPotion } from './potions.js';
+import { valeurAttribut } from './attributs.js';
+import { sinMth, cosMth, DEG_RAD } from './mth.js';
 
 const court = (s) => String(s ?? '').replace(/^minecraft:/, '');
 export const f2 = (v) => String(Math.round(v * 100) / 100).replace('.', ',');   // nombre du journal de `mcanim simuler` (2 decimales, virgule)
@@ -171,17 +172,15 @@ export function installerInventaire(Acteur, EchecActe) {
   };
 
   // ---------------------------------------------------------------- combat au corps a corps (Player.attack)
-  // attribut attack_damage : 1 (joueur) + l'arme + Force (3 par niveau) - Faiblesse (4 par niveau) ; vitesse : 4 + l'arme
-  P.attributAttaque = function () {
-    const c = composants(this.sim.d, this.main.objet);
-    const base = this.main.objet ? 1 + c.attaque : 1;
-    return Math.max(0, base + 3 * this.niveauEffet('strength') - 4 * this.niveauEffet('weakness'));
-  };
-  P.vitesseAttaque = function () { const c = composants(this.sim.d, this.main.objet); return this.main.objet && (c.attaque || c.vitesse) ? 4 + c.vitesse : 4; };
+  // attribut attack_damage (moteur/attributs.js) : 1 (joueur) + l'arme (add_value) + Force (3 par niveau) - Faiblesse (4 par niveau), borne 0..2048 ;
+  // attack_speed : 4 + l'arme (le flottant du jeu : -3,4F de la masse), x (1 + 0,1F par niveau de Celerite), x (1 - 0,1F par niveau de Fatigue)
+  P.attributAttaque = function () { return valeurAttribut(this, 'attack_damage', 1); };
+  P.vitesseAttaque = function () { return valeurAttribut(this, 'attack_speed'); };
   // rend { degats, recharge, critique, recul, ecrasant }
   P.coupArme = function (o, depuis, critique) {
     const sim = this.sim, arme = this.main.objet;
-    const periode = 20 / this.vitesseAttaque(), s = Math.max(0, Math.min(1, (depuis + 0.5) / periode));
+    // Player.getCurrentItemAttackStrengthDelay : (float)(1 / attack_speed x 20) ; getAttackStrengthScale(0,5F) : clamp(((float)ticks + 0,5F) / delai), en flottant
+    const periode = Math.fround(1 / this.vitesseAttaque() * 20), s = Math.max(0, Math.min(1, Math.fround(Math.fround(depuis + 0.5) / periode)));
     // ordre de Player.attack (Horizon melee.rs melee_damage) : bonus d'enchantement pris sur l'attribut AVANT la recharge ; base x (0,2 + 0,8 s^2),
     // bonus x s ; PUIS Item.getAttackDamageBonus (coup ecrasant de la masse : NON multiplie par la recharge) ; PUIS le critique (s > 0,9) x 1,5 sur
     // base + ecrasant ; enfin + le bonus d'enchantement
@@ -222,8 +221,10 @@ export function installerInventaire(Acteur, EchecActe) {
   P.apresCoup = function (o, c, ok) {
     const sim = this.sim, R = sim.regles.valeur('combat.recul', 1), arme = this.main.objet;
     if (ok) {
-      let kb = c.recul + (this.course && c.recharge > 0.9 ? 1 : 0);
-      if (kb > 0) { o.recul(kb * 0.5 * R, this.x - o.x, this.z - o.z); this.vx *= 0.6; this.vz *= 0.6; if (this.course && c.recharge > 0.9) sim.son('entity.player.attack.knockback', this.x, this.y, this.z, 1, 1); }
+      // Player.attack : getKnockback (attribut attack_knockback + Recul de l'arme) + 1 en courant ; causeExtraKnockback : LivingEntity.knockback(kb x 0,5F,
+      // Mth.sin(lacet), -Mth.cos(lacet)) le long du REGARD de l'attaquant, puis la vitesse de l'attaquant x 0,6 a l'horizontale
+      const kb = Math.fround(Math.fround(valeurAttribut(this, 'attack_knockback') + c.recul) + (this.course && c.recharge > 0.9 ? 1 : 0));
+      if (kb > 0) { const a = Math.fround(this.lacetTete * DEG_RAD); o.recul(Math.fround(kb * 0.5) * R, sinMth(a), -cosMth(a), 'coup (Recul, course)'); this.vx *= 0.6; this.vz *= 0.6; if (this.course && c.recharge > 0.9) sim.son('entity.player.attack.knockback', this.x, this.y, this.z, 1, 1); }
       if (c.balayage) this.balayer(o, c);
       // Player.itemAttackInteraction (Horizon mace.rs weapon_hit) : MaceItem.hurtEnemy (la chute s'arrete : vitesse verticale 0,01, recul autour),
       // PUIS les post_attack de l'arme (Rafale de vent : l'explosion a ses pieds le relance, la chute compte encore pour sa condition), PUIS
@@ -251,9 +252,9 @@ export function installerInventaire(Acteur, EchecActe) {
     const sim = this.sim, arme = this.main.objet, R = sim.regles.valeur('combat.recul', 1), s = c.recharge;
     sim.son('entity.player.attack.sweep', this.x, this.y, this.z, 1, 1);
     const B = o.boite(), zone = [B[0] - 1, B[1] - 0.25, B[2] - 1, B[3] + 1, B[4] + 0.25, B[5] + 1];
-    const ratio = Math.max(0, Math.min(1, this.bonusAttribut('sweeping_damage_ratio')));
+    const ratio = valeurAttribut(this, 'sweeping_damage_ratio');   // Affilage (Sweeping Edge), borne 0..1
     const base = 1 + ratio * this.attributAttaque() * (0.2 + s * s * 0.8);
-    const a = this.lacetTete * Math.PI / 180, kx = Math.sin(a), kz = -Math.cos(a);   // LivingEntity.knockback(0,4 ; sin(yRot) ; -cos(yRot))
+    const a = this.lacetTete * Math.PI / 180, ar = Math.fround(this.lacetTete * DEG_RAD), kx = sinMth(ar), kz = -cosMth(ar);   // LivingEntity.knockback(0,4F ; Mth.sin(yRot) ; -Mth.cos(yRot))
     for (const v of [...this.g.liste]) {
       if (v === this || v === o || v.mort >= 0 || v.veh) continue;
       const b = v.boite();
@@ -262,7 +263,7 @@ export function installerInventaire(Acteur, EchecActe) {
       const ctx = { type: 'player_attack', direct: true, ceci: v, attaquant: this, directAttaquant: this, outil: idDe(arme) };
       const q = (sim.objetsJeu ? sim.enchant.valeurPile(arme, 'damage', ctx, base) : base) * s;
       v.attaquantCourant = this;
-      const ok = v.frappe(q, 'joueur:' + this.nom, kx, kz, 0.4 * R);
+      const ok = v.frappe(q, 'joueur:' + this.nom, kx, kz, Math.fround(0.4) * R, { recul: 'balayage' });
       v.attaquantCourant = null;
       if (!ok) continue;
       v.ia?.blesse(this); v.dernierFrappeur = this;
@@ -275,7 +276,8 @@ export function installerInventaire(Acteur, EchecActe) {
   };
   // MaceItem.hurtEnemy (Horizon mace.rs) : vitesse verticale 0,01, son au sol (lourd au-dela de 5 blocs) ou en l'air, chute ignoree, puis
   // MaceItem.knockback : chaque vivant a 3,5 blocs de la cible (sauf l'attaquant et la cible) pousse de (3,5 - d) x 0,7 x (2 si lourd) x
-  // (1 - resistance) a l'horizontale et de 0,7 vers le haut ; la chute est remise a zero (postHurtEnemy)
+  // (1 - knockback_resistance : moteur/attributs.js, armure en netherite comprise) a l'horizontale et de 0,7 vers le haut (rien si la force est
+  // nulle ou negative) ; la chute est remise a zero (postHurtEnemy)
   P.ecraser = function (o, c) {
     const sim = this.sim;
     const lourd = this.distanceChute > 5;
@@ -288,7 +290,8 @@ export function installerInventaire(Acteur, EchecActe) {
       if (v === this || v === o || v.mort >= 0) continue;
       const d = [v.x - o.x, v.y - o.y, v.z - o.z], L = Math.hypot(...d);
       if (L > 3.5) continue;
-      const f = (3.5 - L) * Math.fround(0.7) * (lourd ? 2 : 1) * (1 - (v.ia?.pr.antiRecul ?? 0));
+      const kr = valeurAttribut(v, 'knockback_resistance'), f0 = (3.5 - L) * Math.fround(0.7) * (lourd ? 2 : 1), f = f0 * (1 - kr);
+      sim.dire(`recul ${v.nom} ${f2(f0)} -> ${f2(f)} (coup ecrasant autour, knockback_resistance ${f2(kr)})`);
       if (f <= 0) continue;
       if (L >= Math.fround(1e-5)) { v.vx += d[0] / L * f; v.vz += d[2] / L * f; }
       v.vy += Math.fround(0.7); v.auSol = false;
@@ -331,12 +334,8 @@ export function installerInventaire(Acteur, EchecActe) {
     if (this.absorption > 0) { const a = Math.min(this.absorption, q); this.absorption -= a; q -= a; E.push(`absorption -${f2(a)}`); }
     return q;
   };
-  // armure portee : points et robustesse des composants du jeu (attribute_modifiers de `objets`)
-  P.armureDu = function () {
-    let { points, robustesse } = armureDe({ typeCreature: this.typeCreature });   // armure naturelle des creatures (explosion.js)
-    for (const e of EMP_ARMURE) { const t = this.armure?.[e]; if (!t) continue; const c = composants(this.sim.d, idArmure(this.sim.d, t, e)); points += c.armure; robustesse += c.robustesse; }
-    return { points, robustesse };
-  };
+  // armure portee : attributs armor (borne 0..30) et armor_toughness (0..20) : base du type (armure naturelle) + attribute_modifiers des pieces
+  P.armureDu = function () { return { points: valeurAttribut(this, 'armor'), robustesse: valeurAttribut(this, 'armor_toughness') }; };
   // LivingEntity.doHurtEquipment : (int) max(1, degats / 4) a chaque piece portee qui s'use (pieds, jambes, torse, tete : l'ordre du jeu, celui des
   // tirages de Solidite), dans tous les modes sauf le creatif ; une piece qui resiste au feu (netherite : damage_resistant #is_fire) ne s'use pas sous des degats de feu
   P.userArmure = function (degats, type = 'generic') {
@@ -354,8 +353,9 @@ export function installerInventaire(Acteur, EchecActe) {
     }
   };
 
-  // ---------------------------------------------------------------- attributs des enchantements de l'equipement (EnchantmentHelper.forEachModifier)
-  P.bonusAttribut = function (nom) { return this.sim.objetsJeu && (this.armure || this.main.objet) ? this.sim.enchant.attribut(this, nom) : 0; };
+  // ---------------------------------------------------------------- attributs (moteur/attributs.js : base + equipement + enchantements + effets)
+  // valeur d'un attribut dont la base est 0 pour tous les types (water_movement_efficiency, oxygen_bonus) : la somme de ses modificateurs, bornee
+  P.bonusAttribut = function (nom) { return valeurAttribut(this, nom); };
   // LivingEntity.travelInWater : frein horizontal 0,8 (0,9 en nageant vite), rapproche de 0,546 par water_movement_efficiency (Agilite aquatique,
   // moitie hors du sol) ; Grace du dauphin : 0,96
   P.freinEau = function () {
@@ -374,8 +374,8 @@ export function installerInventaire(Acteur, EchecActe) {
   };
   // LivingEntity.decreaseAirSupply : avec oxygen_bonus i (Apnee), l'air ne baisse pas si nextDouble() >= 1 / (i + 1)
   P.garderAir = function () { const i = this.bonusAttribut('oxygen_bonus'); return i > 0 && this.sim.hasard.reel() >= 1 / (i + 1); };
-  // Player.getDestroySpeed : sous l'eau x submerged_mining_speed (0,2 ; Affinite aquatique : x 5 = 1) ; sur une echelle on mine comme au sol (non : le jeu divise aussi)
-  P.sousEauSansAffinite = function () { return !!this.teteEau && this.bonusAttribut('submerged_mining_speed') <= 0 && !(this.armure?.tete && this.sim.objetsJeu && this.sim.enchant.attribut(this, 'submerged_mining_speed', 'add_multiplied_total') > 0); };
+  // Player.getDestroySpeed : la tete sous l'eau, vitesse x (float) submerged_mining_speed (0,2 ; Affinite aquatique : x (1 + 4) = 1) ; false hors de l'eau
+  P.sousEauSansAffinite = function () { return this.teteEau ? valeurAttribut(this, 'submerged_mining_speed') : false; };
   P.grimpeCasse = function () { return false; };
   // location_changed des pieds (Marche givree, Agilite des ames) a chaque changement de cellule ; tick (particules de Agilite des ames)
   P.tickEquipement = function () {
@@ -395,10 +395,11 @@ export function installerInventaire(Acteur, EchecActe) {
       for (const x of sim.enchant.def(id)?.effects?.['minecraft:location_changed'] ?? []) {
         const ctx = { ceci: this, position: [this.x, this.y, this.z], actif: !!this.agiliteAmes };
         const ty = court(x.effect?.type), attr = ty === 'all_of' && x.effect.effects?.some((e) => court(e.type) === 'attribute');
-        if (x.requirements && !sim.enchant.condition(x.requirements, n, ctx)) { if (attr) this.agiliteAmes = 0; continue; }
-        if (attr) {   // Agilite des ames : attribut movement_speed (ajout) tant que la condition tient
+        if (x.requirements && !sim.enchant.condition(x.requirements, n, ctx)) { if (attr) { this.agiliteAmes = 0; this.attributsLieu = null; } continue; }
+        if (attr) {   // Agilite des ames : ses attributs (movement_speed, movement_efficiency : attributs.js) tant que la condition tient
           const a = x.effect.effects.find((e) => court(e.attribute) === 'movement_speed');
           this.agiliteAmes = a ? valeurNiveau(a.amount, n) : 0;
+          this.attributsLieu = x.effect.effects.filter((e) => court(e.type) === 'attribute').map((e) => [court(e.attribute), valeurNiveau(e.amount, n), e.operation ?? 'add_value']);
           continue;
         }
         sim.enchant.effetEntite(x.effect, n, this, { porteur: this, emplacement: 'feet', pile: t, ceci: this });

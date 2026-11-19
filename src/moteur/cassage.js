@@ -40,7 +40,8 @@ export function progressionParTick(d, etat, ctx = {}) {
   if (v > 1 && ctx.efficacite > 0) v = f(v + f(ctx.efficacite * ctx.efficacite + 1));   // attribut mining_efficiency de l'enchantement
   if (ctx.hate > 0) v = f(v * f(1 + ctx.hate * 0.2));
   if (ctx.fatigue > 0) v = f(v * [0.3, 0.09, 0.0027, 0.00081][Math.min(ctx.fatigue - 1, 3)]);
-  if (ctx.sousEau) v = f(v * 0.2);                    // SUBMERGED_MINING_SPEED
+  if (typeof ctx.sousEau === 'number') v = f(v * f(ctx.sousEau));   // tete sous l'eau : x (float) attribut submerged_mining_speed (moteur/attributs.js)
+  else if (ctx.sousEau) v = f(v * 0.2);               // SUBMERGED_MINING_SPEED (0,2 : appel sans attribut)
   if (ctx.auSol === false) v = f(v / 5);
   if (ctx.multiplicateur && ctx.multiplicateur !== 1) v = f(v * ctx.multiplicateur);
   const ok = bonOutil(d, etat, ctx.outil);

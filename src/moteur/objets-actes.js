@@ -248,7 +248,7 @@ export function installerObjets(Acteur, EchecActe) {
       this.vrilleTouches.add(o);
       let q = this.vrilleDegats;
       if (sim.objetsJeu && this.main.objet) q = sim.enchant.valeurPile(this.main.objet, 'damage', { type: 'player_attack', direct: true, ceci: o, attaquant: this, directAttaquant: this, outil: 'trident' }, q);
-      o.attaquantCourant = this; o.frappe(q, 'joueur:' + this.nom, this.x - o.x, this.z - o.z, 0.4); o.attaquantCourant = null;
+      o.attaquantCourant = this; o.frappe(q, 'joueur:' + this.nom, this.x - o.x, this.z - o.z, Math.fround(0.4), { recul: 'vrille' }); o.attaquantCourant = null;
       this.vx *= -0.2; this.vy *= -0.2; this.vz *= -0.2; this.vrille = 0;
       sim.dire(`${this.nom} touche ${o.nom} en vrille (${q})`);
       break;

@@ -15,6 +15,7 @@
 // Port de Horizon horizon-client-render/src/effects.rs, game/potions.rs, horizon-world/src/{food,movement_statistics}.rs (MIT, ATTRIBUTIONS.md).
 import { EFFETS } from './utilisation.js';
 import { couleurPotion } from './potions.js';
+import { valeurAttribut, modificateurs } from './attributs.js';   // attributs des effets (MobEffect.addAttributeModifier)
 
 const MORTS_VIVANTS = new Set(['zombie', 'husk', 'drowned', 'zombie_villager', 'skeleton', 'stray', 'bogged', 'parched', 'wither_skeleton', 'zombified_piglin', 'zoglin', 'phantom', 'wither', 'skeleton_horse', 'zombie_horse', 'zombie_nautilus']);
 // durees par defaut (ticks) d'une potion du jeu par effet : Potions du jeu (Horizon horizon-client-core/src/potions.rs) ; instantanes : 1
@@ -50,8 +51,9 @@ export function installerEffets(Acteur) {
     // MobEffectInstance.update : un niveau plus fort remplace ; meme niveau : la plus longue duree
     if (!actuel || actuel.niveau < niveau || (actuel.niveau === niveau && actuel.fin < fin)) this.effets.set(id, { fin, niveau, debut: sim.temps });
     else return;
-    if (id === 'health_boost') { this.vieMaxBase ??= this.vieMax; this.vieMax = this.vieMaxBase + 4 * (niveau + 1); }
-    if (id === 'absorption') this.absorption = Math.max(this.absorption ?? 0, 4 * (niveau + 1));
+    // Bonus de vie : attribut max_health (+4 par niveau, borne 1..1024) ; Absorption : max(absorption, 4 x niveau), bornee par max_absorption
+    if (id === 'health_boost') { this.vieMaxBase ??= this.vieMax; this.vieMax = valeurAttribut(this, 'max_health', this.vieMaxBase); }
+    if (id === 'absorption') this.absorption = Math.min(valeurAttribut(this, 'max_absorption'), Math.max(this.absorption ?? 0, 4 * (niveau + 1)));
     if (!this.typeCreature) {
       if (id === 'darkness') sim.replay.obscurite.push({ debut: sim.temps, fin, acteur: this.nom });   // le film assombrit la vue (film/look.js)
       if (VUES.has(id)) (sim.replay.visions ??= []).push({ debut: sim.temps, fin, acteur: this.nom, effet: id, niveau });
@@ -65,18 +67,24 @@ export function installerEffets(Acteur) {
     const e = this.effets.get(id);
     if (!e) return;
     this.effets.delete(id);
-    if (id === 'health_boost') { this.vieMax = this.vieMaxBase ?? 20; this.vie = Math.min(this.vie, this.vieMax); }
-    if (id === 'absorption') this.absorption = 0;
+    if (id === 'health_boost') { this.vieMax = valeurAttribut(this, 'max_health', this.vieMaxBase ?? 20); this.vie = Math.min(this.vie, this.vieMax); }
+    if (id === 'absorption') this.absorption = Math.min(this.absorption ?? 0, valeurAttribut(this, 'max_absorption'));   // max_absorption retombe (0 sans autre source)
   };
   P.niveauEffet = function (id) { const e = this.effets.get(id); return e && e.fin > this.sim.temps ? e.niveau + 1 : 0; };
+  // attribut movement_speed (moteur/attributs.js) rapporte a sa base 0,1 : (0,1 + Agilite des ames) / 0,1 x (1 + 0,2F x Rapidite) x (1 - 0,15F x
+  // Lenteur) ; la marche (acteurs.js) le multiplie par ses vitesses de base (VITESSE_MARCHE 0,1, course 0,13 : sprint +30 %)
   P.facteurVitesse = function () {
-    const v = this.niveauEffet('speed'), l = this.niveauEffet('slowness');
-    const ames = this.agiliteAmes ? 1 + this.agiliteAmes / 0.1 : 1;   // Agilite des ames : movement_speed 0,1 + ajout (inventaire.js)
-    return Math.max(0, ames * (1 + Math.fround(0.2) * v) * (1 - Math.fround(0.15) * l)) * this.sim.regles.valeur('effets.vitesse', 1);
+    let ajout = 0, r;
+    const m = modificateurs(this, 'movement_speed');
+    for (const [v, op] of m) if (op === 'add_value') ajout += v;
+    r = ajout ? 1 + ajout / 0.1 : 1;
+    for (const [v, op] of m) if (op === 'add_multiplied_total') r *= 1 + v;
+    return Math.max(0, r) * this.sim.regles.valeur('effets.vitesse', 1);
   };
-  P.bonusSaut = function () { return 0.1 * this.niveauEffet('jump_boost'); };
+  // LivingEntity.getJumpBoostPower : 0,1F x (amplificateur + 1), en flottant
+  P.bonusSaut = function () { const n = this.niveauEffet('jump_boost'); return n ? Math.fround(Math.fround(0.1) * n) : 0; };
   P.respireSousEau = function () { return this.niveauEffet('water_breathing') > 0 || this.niveauEffet('conduit_power') > 0 || this.niveauEffet('breath_of_the_nautilus') > 0; };
-  P.chance = function () { return this.niveauEffet('luck') - this.niveauEffet('unluck'); };
+  P.chance = function () { return valeurAttribut(this, 'luck'); };   // attribut luck : Chance +1, Malchance -1 par niveau
 
   // LivingEntity.tickEffects (ordre d'insertion), puis FoodData.tick
   P.tickEffets = function () {

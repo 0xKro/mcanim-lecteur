@@ -273,13 +273,13 @@ function horsRails(a, v) {
   a.vx *= f; a.vz *= f;
   if (!v.onGround) { a.vx *= F095; a.vy *= F095; a.vz *= F095; }
 }
-// Entity.getBlockSpeedFactor : sable des ames et miel (0,4) sous le vehicule
+// Entity.getBlockSpeedFactor (facteurs du jeu : sable des ames et miel 0,4F) : la cellule ; dans l'eau ou une colonne de bulles, elle seule ;
+// sinon, si elle vaut 1, le bloc 0,500001F sous le vehicule (pas un vivant : pas de movement_efficiency)
 function facteurVitesseBloc(a) {
-  const sim = a.sim, x = Math.floor(a.x), z = Math.floor(a.z);
-  const ici = sim.monde.etatEn(x, Math.floor(a.y), z), f = (e) => { if (e < 0) return 1; const n = sim.d.nomBloc(e); return n === 'soul_sand' || n === 'honey_block' ? 0.4 : 1; };
-  const k = f(ici);
-  if (ici >= 0 && !/^(water|bubble_column)$/.test(sim.d.nomBloc(ici)) && k !== 1) return k;
-  return k !== 1 ? k : f(sim.monde.etatEn(x, Math.floor(a.y - 0.5000001), z));
+  const sim = a.sim, d = sim.d, x = Math.floor(a.x), z = Math.floor(a.z);
+  const ici = sim.monde.etatEn(x, Math.floor(a.y), z), k = d.facteurVitesse(ici);
+  if (ici >= 0 && /^(water|bubble_column)$/.test(d.nomBloc(ici))) return k;
+  return k !== 1 ? k : d.facteurVitesse(sim.monde.etatEn(x, Math.floor(a.y - Math.fround(0.500001)), z));
 }
 // activateMinecart (rail declencheur)
 function activer(a, v, alim) {

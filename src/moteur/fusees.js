@@ -156,7 +156,7 @@ function eclater(s, e) {
       const fx = Math.fround(e.x - a.x), fy = Math.fround(e.y - a.y), fz = Math.fround(e.z - a.z);
       const dist = Math.fround(Math.sqrt(Math.fround(Math.fround(fx * fx) + Math.fround(fy * fy)) + Math.fround(fz * fz)));
       const deg = Math.fround(q * Math.sqrt((5 - dist) / 5));
-      if (a.frappe(deg, 'fusee', e.x - a.x, e.z - a.z, 0.4)) s.stats.fuseesBlessures = (s.stats.fuseesBlessures || 0) + 1;
+      if (a.frappe(deg, 'fusee', e.x - a.x, e.z - a.z, Math.fround(0.4))) s.stats.fuseesBlessures = (s.stats.fuseesBlessures || 0) + 1;
       s.dire(`fusee : ${a.nom} prend ${deg.toFixed(2)}`);
     }
   }

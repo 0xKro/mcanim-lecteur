@@ -5,29 +5,35 @@ import { limitesEmprise } from './appliquer.js';
 
 const NOM = (s) => String(s).replace(/^minecraft:/, '');
 
-export function rapportDecor({ g, d, cls, ex, decor, diff, net, lia, comble, nom }) {
+export function rapportDecor({ g, d, cls, ex, decor, diff, net, lia, comble, nom, emprise = null }) {
   void decor;
-  const liste = [...diff];
-  const E = limitesEmprise(g, liste);
-  const compte = new Map();
+  const liste = Array.isArray(diff) ? diff : [...diff];
+  const E = emprise ?? limitesEmprise(g, liste);
   let plus = 0, moins = 0;
-  const S = new Set();        // cellules du decor qui ne sont pas de l'air
+  // memo par indice de palette (un grand decor change des millions de cellules) : air ?
+  const airP = new Int8Array(g.palette.length).fill(-1);
+  const estAir = (p) => { let v = airP[p]; if (v < 0) { const e = g.etatDePal(p); v = e >= 0 && cls.infoEtat(e).air ? 1 : 0; airP[p] = v; } return v === 1; };
+  const parPal = new Uint32Array(g.palette.length);
+  const S = [];               // cellules du decor qui ne sont pas de l'air
   for (const i of liste) {
-    const e = g.etatDePal(g.cells[i]);
-    const air = e >= 0 && cls.infoEtat(e).air;
-    const eo = g.etatDePal(g.orig[i]);
-    const airo = eo >= 0 && cls.infoEtat(eo).air;
-    if (air) { if (!airo) moins++; continue; }
-    plus++; S.add(i);
-    const n = e < 0 ? '#hidden' : d.nomBloc(e);
-    compte.set(n, (compte.get(n) || 0) + 1);
+    const p = g.cells[i];
+    if (estAir(p)) { if (!estAir(g.orig[i])) moins++; continue; }
+    plus++; S.push(i); parPal[p]++;
+  }
+  const compte = new Map();
+  for (let p = 0; p < parPal.length; p++) {
+    if (!parPal[p]) continue;
+    const e = g.etatDePal(p), n = e < 0 ? '#hidden' : d.nomBloc(e);
+    compte.set(n, (compte.get(n) || 0) + parPal[p]);
   }
   const blocs = [...compte.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
 
   // sol sous l'emprise (d'avant le decor)
   let smin = Infinity, smax = -Infinity;
   if (liste.length) {
-    for (let z = E.z0; z <= E.z1; z++) for (let x = E.x0; x <= E.x1; x++) {
+    // grande emprise : une colonne sur `pas` dans chaque sens (65 536 colonnes lues au plus ; c'est un resume)
+    const pas = Math.max(1, Math.ceil(Math.sqrt(((E.x1 - E.x0 + 1) * (E.z1 - E.z0 + 1)) / 65536)));
+    for (let z = E.z0; z <= E.z1; z += pas) for (let x = E.x0; x <= E.x1; x += pas) {
       if (!g.dansXZ(x, z)) continue;
       const s = ex.solColonne(x, z, g.orig);
       if (s === null) continue;
@@ -49,10 +55,9 @@ export function rapportDecor({ g, d, cls, ex, decor, diff, net, lia, comble, nom
     if (v < 0) { const e = g.etatDePal(p); v = e < 0 || (d.boites(e).length && d.fluide(e) === 0) ? 1 : 0; solideP[p] = v; }
     return v === 1;
   };
-  const coord = (i) => { const ly = Math.floor(i / sxz), r = i - ly * sxz, lz = Math.floor(r / g.sx); return [r - lz * g.sx, ly, lz]; };   // locales
   const supporte = (i) => {
-    const [lx, ly, lz] = coord(i);
-    if (ly === 0) return true;                                      // le bas de la boite : le sous-sol
+    const ly = Math.floor(i / sxz), r = i - ly * sxz, lz = Math.floor(r / g.sx), lx = r - lz * g.sx;
+    if (ly === 0) return true;                                    // le bas de la boite : le sous-sol
     if (lx > 0 && lx < g.sx - 1 && ly < g.sy - 1 && lz > 0 && lz < g.sz - 1) {
       for (let k = 0; k < 26; k++) { const j = i + OFF[k]; if (!inS[j] && solide(g.cells[j])) return true; }
       return false;
@@ -66,10 +71,10 @@ export function rapportDecor({ g, d, cls, ex, decor, diff, net, lia, comble, nom
     }
     return false;
   };
-  const file = new Int32Array(S.size); let nf = 0;
+  const file = new Int32Array(S.length); let nf = 0;
   for (const i of S) if (supporte(i)) { vuF[i] = 1; file[nf++] = i; }
   for (let k = 0; k < nf; k++) {
-    const i = file[k], [lx, ly, lz] = coord(i);
+    const i = file[k], ly = Math.floor(i / sxz), r = i - ly * sxz, lz = Math.floor(r / g.sx), lx = r - lz * g.sx;
     const interieur = lx > 0 && lx < g.sx - 1 && ly > 0 && ly < g.sy - 1 && lz > 0 && lz < g.sz - 1;
     for (let q = 0; q < 26; q++) {
       let j;
@@ -82,19 +87,35 @@ export function rapportDecor({ g, d, cls, ex, decor, diff, net, lia, comble, nom
       if (inS[j] && !vuF[j]) { vuF[j] = 1; file[nf++] = j; }
     }
   }
-  const flottants = [...S].filter((i) => !vuF[i]);
+  const flottants = S.filter((i) => !vuF[i]);
 
   // ---- portes et blocs sans appui
   const portes = [], sansAppui = [];
   const plein = (x, y, z) => { const e = g.etat(x, y, z); return e < 0 || (d.boites(e).some((b) => b[0] <= 0.01 && b[3] >= 0.99 && b[2] <= 0.01 && b[5] >= 0.99 && b[4] >= 0.99) && d.fluide(e) === 0); };
   let sources = 0;
+  // memo par indice de palette : 1 = source de lumiere, 2 = porte (moitie basse) ou bloc qui demande un appui
+  const genreP = new Int8Array(g.palette.length).fill(-1);
+  const genre = (p) => {
+    let v = genreP[p];
+    if (v < 0) {
+      const e = g.etatDePal(p); v = 0;
+      if (e >= 0) {
+        const info = cls.infoEtat(e);
+        if (d.emission(e) > 0) v |= 1;
+        if ((info.porte && d.prop(e, 'half') === 'lower') || info.torche || info.tapis || info.plaque || info.bougie || info.rail || (info.plante && !info.eau)) v |= 2;
+      }
+      genreP[p] = v;
+    }
+    return v;
+  };
   for (const i of S) {
+    const gp = genre(g.cells[i]);
+    if (!gp) continue;
+    if (gp & 1) sources++;
+    if (!(gp & 2)) continue;
     const e = g.etatDePal(g.cells[i]);
-    if (e < 0) continue;
     const info = cls.infoEtat(e);
-    if (d.emission(e) > 0) sources++;
     const porteBasse = info.porte && d.prop(e, 'half') === 'lower';
-    if (!porteBasse && !(info.torche || info.tapis || info.plaque || info.bougie || info.rail || (info.plante && !info.eau))) continue;
     const [x, y, z] = g.xyz(i);
     if (porteBasse) {
       const f = d.prop(e, 'facing'), v = VECT[f], ouverte = d.prop(e, 'open') === 'true';
@@ -142,6 +163,9 @@ export function rapportDecor({ g, d, cls, ex, decor, diff, net, lia, comble, nom
   if (g.agrandissements) avert.push(`zone agrandie ${g.agrandissements} fois (le decor depasse la boite de la zone)`);
   for (const a of ex.stats.avert) avert.push(a);
   if (sources) lignes.push(`lumiere : ${sources} source(s) (torches, lanternes...) ; la lumiere de blocs est calculee par le monde (scene avec decor)`);
+  const notes = ex.stats.notes;
+  for (const n of notes.slice(0, 4)) lignes.push(n.length > 390 ? n.slice(0, 387) + '...' : n);
+  if (notes.length > 4) lignes.push(`... et ${notes.length - 4} autre(s) import(s)`);
   lignes.push('avert : ' + avert.join(' | '));
   return { emprise: E, plus, moins, blocs, sol: { y: ex.ay, min: smin, max: smax }, flottants: flottants.length, portes, sansAppui: sansAppui.length, avertissements: avert.filter((a) => a !== '0 flottant'), lignes: lignes.slice(0, 15), stats: ex.stats, cellules: liste.length };
 }

@@ -12,6 +12,9 @@ export const ARTICULATIONS = ['coudeD', 'coudeG', 'genouD', 'genouG'];
 export const FLEXION_MAX = 150;
 // Orientation du corps entier : bascule et roulis en degres (voir perso/modele.js, inclinaison), hauteur : decalage vertical en blocs.
 export const BASCULE_MAX = 180, HAUTEUR_MAX = 10;
+// Nombre d'acteurs (ville vivante, foule du marche) : 40 joueurs au plus, 150 acteurs en tout avec les creatures (avant : 10 et 24).
+// Cout mesure (docs/CONCEPTION.md, partie acteurs) : les skins et les modeles sont partages entre acteurs identiques (caches), le reste croit avec le nombre.
+export const MAX_JOUEURS = 40, MAX_ACTEURS = 150;
 // Articulations libres : angles a 3 valeurs (epaule, hanche, tete, tronc), cibles de mains et de pieds ; plafond absurde +-360 (limites.js, cibles.js).
 import { lireBannieres } from './bannieres-champ.js';
 import { lireCreature, VERBES_CREATURES } from '../creatures/scene.js';   // champs des creatures (type, variante, monture...)
@@ -156,10 +159,10 @@ export function validerScene(s, { sansCamera = false } = {}) {
   if (!estNombre(s.duree) || s.duree < 1 || s.duree > DUREE_MAX) err('duree', `entre 1 et ${DUREE_MAX} secondes attendu, pas ${JSON.stringify(s.duree)}`);
   if (typeof s.zone !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(s.zone)) err('zone', 'identifiant de zone attendu (22 caracteres : lettres, chiffres, - et _)');
   if (!Array.isArray(s.acteurs) || s.acteurs.length < 1) err('acteurs', 'au moins un acteur est attendu');
-  // dix joueurs au plus ; les creatures (champ `type`) s'y ajoutent, jusqu'a 24 acteurs en tout
+  // 40 joueurs au plus ; les creatures (champ `type`) s'y ajoutent, jusqu'a 150 acteurs en tout
   const nbJoueurs = s.acteurs.filter((a) => !(a && typeof a.type === 'string' && a.type !== 'joueur')).length;
-  if (nbJoueurs > 10) err('acteurs', 'dix acteurs au maximum (les creatures en plus, 24 acteurs en tout)');
-  if (s.acteurs.length > 24) err('acteurs', '24 acteurs au maximum en comptant les creatures (dix joueurs au plus)');
+  if (nbJoueurs > MAX_JOUEURS) err('acteurs', `${MAX_JOUEURS} joueurs au maximum (les creatures en plus, ${MAX_ACTEURS} acteurs en tout) ; recu ${nbJoueurs}`);
+  if (s.acteurs.length > MAX_ACTEURS) err('acteurs', `${MAX_ACTEURS} acteurs au maximum en comptant les creatures (${MAX_JOUEURS} joueurs au plus) ; recu ${s.acteurs.length}`);
 
   const noms = new Set();
   const tousNoms = new Set(s.acteurs.map((a) => a?.nom));   // les gestes peuvent viser un acteur declare plus loin
@@ -410,9 +413,9 @@ function verifierSkin(v, ch) {
 }
 
 // Champ facultatif `shader` : chemin d'un fichier .json relatif au fichier de scene (le contenu est lu et controle au rendu).
-// Champ `decor` : liste de 1 a 8 chemins de fichiers .decor.json (relatifs a la scene) ou objets en ligne {"ancre":[x,z],"ops":[...]}.
-// Le CONTENU des decors est controle plus tard (decor/lire.js, avec les tables du jeu) ; ici seulement la forme.
-export const MAX_DECORS = 8;
+// Champ `decor` : liste de 1 a 32 chemins de fichiers .decor.json (relatifs a la scene) ou objets en ligne {"ancre":[x,z],"ops":[...]}.
+// Le CONTENU des decors est controle plus tard (decor/lire.js, avec les tables du jeu) ; ici seulement la forme. Meme limite que LIMITES.decors.
+export const MAX_DECORS = 32;
 function lireListeDecor(v) {
   if (!Array.isArray(v) || v.length < 1 || v.length > MAX_DECORS) err('decor', `liste de 1 a ${MAX_DECORS} decors attendue, par exemple ["maison.decor.json"] ou [{"ancre":[-250,-640],"ops":[["plein",0,0,0,2,2,2,"stone"]]}]`);
   return v.map((e, i) => {

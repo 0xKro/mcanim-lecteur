@@ -12,7 +12,7 @@ import { installerFamilles } from './familles/index.js';
 import { Regles } from './regles.js';
 import { ErreurMonde } from './erreurs.js';
 import { voulaisTu } from './util.js';
-import { texteRapport } from './rapport.js';
+import { texteRapport, texteSonde } from './rapport.js';
 import { Acteurs } from './acteurs.js';
 import { solSous } from './collision.js';
 import { Enchanteur } from './enchantements.js';
@@ -54,6 +54,9 @@ export function declarerReglesMonde(regles) {
   regles.declarer('monde.ticksAleatoires', { def: 3, min: 0, max: 64, entier: true, doc: 'positions tirees par section de 16x16x16 et par tick (jeu : 3) ; 0 coupe les ticks aleatoires' });
   regles.declarer('monde.ralenti', { def: 1, min: 0.05, max: 1, doc: 'le monde avance a cette fraction du temps du film (ralenti d\'explosion)' });
   regles.declarer('monde.plafondVoisins', { def: 200000, min: 1000, max: 1000000, entier: true, doc: 'mises a jour de voisins enchainees par pose avant coupure (jeu : 1000000)' });
+  // Rendu SEULEMENT (lu par rendu/scene.js -> rendu/ciel-vanille.js tableLumiere) : la simulation n'en tient aucun compte, les niveaux de lumiere
+  // du jeu (apparition des monstres, pousse des cultures, neige qui fond, capteur de lumiere) restent exacts.
+  regles.declarer('lumiere.blocs', { def: 1, min: 0, max: 3, doc: 'RENDU seulement : multiplie l\'eclat de la lumiere des blocs dans l\'image (1 = le jeu ; 2 ou 3 pour une grande salle de chateau) ; les niveaux de lumiere du jeu (monstres, cultures) ne changent pas' });
 }
 
 // Registre de regles complet (moteur + familles), sans monde : pour `mcanim regles --liste`
@@ -93,6 +96,8 @@ export function preparer({ zone, donnees, monde = {}, mods = [], acteurs = [], o
   const sim = new Simulation({ zone, donnees, config, monde: options.monde });
   installerObjetsJeu(sim, options.objetsJeu !== undefined ? options.objetsJeu : objetsDuKit(options.kitDir, options.racineObjets ?? null));   // recettes, enchantements, alambics, nuages de potion (partie 26)
   sim.persoEntites = definitions.entites; sim.definitions = definitions;
+  const tr = options.diagnostic?.trace;   // mcanim simuler --trace x,y,z
+  if (Array.isArray(tr) && tr.length === 3 && tr.every(Number.isInteger)) sim.suivre(tr[0], tr[1], tr[2]);
   if (definitions.blocs.length || definitions.entites.length) sim.replay.perso = definitions;   // le rendu en a besoin (modeles, textures, echelle)
   declarerReglesMonde(sim.regles);
   installerFamilles(sim.reg, sim.regles);
@@ -121,12 +126,45 @@ export function preparer({ zone, donnees, monde = {}, mods = [], acteurs = [], o
 }
 
 // Simulation complete. `duree` : secondes de la scene. Rend { replay, sim, rapport }.
+// options.diagnostic (docs/SIMULATION.md partie 33) : { tout } (rapport complet, sans plafond), { trace: [x, y, z] } (changements de la cellule
+// tick a tick, avec leur cause), { sonde: { t, pos: [x, y, z] } } (la simulation s'arrete a l'instant t ; le rapport est l'etat de la cellule :
+// mcanim etat --bloc).
 export function simuler({ zone, donnees, monde = {}, mods, acteurs = [], baseDir, duree, options = {} }) {
   const sources = mods || lireFichiersMods(monde.mods, baseDir);
   const sim = preparer({ zone, donnees, monde, mods: sources, acteurs, options });
   const ralenti = sim.regles.valeur('monde.ralenti', 1);
+  const dg = options.diagnostic ?? {};
+  if (dg.sonde) {
+    const tick = Math.floor(Math.min(dg.sonde.t, duree) * 20 * ralenti + 1e-9);
+    const replay = sim.executer({ duree, ralenti, jusqua: tick });
+    return { replay, sim, rapport: texteSonde(sim, dg.sonde.pos, tick) };
+  }
   const replay = sim.executer({ duree, ralenti });
-  return { replay, sim, rapport: texteRapport({ sim, replay, duree }) };
+  return { replay, sim, rapport: texteRapport({ sim, replay, duree, tout: !!dg.tout }) };
+}
+
+// Blocs d'une zone (deja decoree) que le jeu casserait faute d'appui (canSurvive faux) : `mcanim decor verifier`. `avant` : la zone d'avant le decor
+// (seules les cellules changees par le decor sont regardees). Rend [{ nom, x, y, z }] (`max` au plus) et le nombre total.
+export function blocsSansAppui({ zone, avant = null, donnees, max = 200 }) {
+  const sim = preparer({ zone, donnees, monde: {}, options: { objetsJeu: null } });
+  const d = sim.d, pal = zone.palette, cand = new Map();
+  const candidat = (p) => {
+    let c = cand.get(p);
+    if (c === undefined) { const e = d.etatId(pal[p]); c = e >= 0 && sim.reg.a('survit', d.blocDe(e)) && d.prop(e, 'half') !== 'upper'; cand.set(p, c); }
+    return c;
+  };
+  const liste = [];
+  let n = 0;
+  for (let ly = 0; ly < zone.sy; ly++) for (let lz = 0; lz < zone.sz; lz++) for (let lx = 0; lx < zone.sx; lx++) {
+    const p = zone.cellules[(ly * zone.sz + lz) * zone.sx + lx];
+    if (!candidat(p)) continue;
+    const x = zone.x0 + lx, y = zone.y0 + ly, z = zone.z0 + lz;
+    if (avant && avant.bloc(x, y, z) === pal[p]) continue;   // pas pose par le decor
+    if (sim.survit(x, y, z)) continue;
+    n++;
+    if (liste.length < max) liste.push({ nom: pal[p].replace(/^minecraft:/, '').replace(/\[.*$/, ''), x, y, z });
+  }
+  return { liste, total: n };
 }
 
 // Acteurs simules (scene.acteurs avec `actes`) : descripteurs { nom, pos: [x, z] | [x, y, z], lacet, objet, actes: [{ t, verbe, ... }] }.

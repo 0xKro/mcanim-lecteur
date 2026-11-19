@@ -17,8 +17,19 @@ const COUCHES = [['opaque', 0], ['decoupe', 1], ['interne', 1], ['melange', 3]];
 function normaliser(v) { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; }
 
 // Remplit `out` (Float32Array) pour une couche du mailleur. Retourne le nombre de sommets.
+// Regle de scene monde.regles.lumiere.blocs (rendu seulement, 1 = le jeu) pour un vrai pack : beaucoup de packs (Bliss...) calculent la lumiere
+// des blocs depuis la coordonnee lmcoord du sommet sans lire la texture `lightmap` : multiplier la texture n'y changeait rien (essai du banc,
+// 19/11/2026 : luminance 43,7 -> 44,1 avec 2,5). On deplace donc le niveau du sommet : l'eclat du jeu au niveau L est c(L) = (L/15) / (4 - 3 L/15)
+// (courbe de LightTexture) ; le nouveau niveau L' est celui dont l'eclat vaut min(1, c(L) x mult) (inverse : L' = 15 x 4c / (1 + 3c)).
+// Un pack qui lit la texture lightmap du jeu y trouve exactement l'eclat multiplie (la texture n'est plus multipliee : pack/etat.js).
+export function niveauBlocRegle(L, mult = 1) {
+  if (mult === 1 || !(L > 0)) return L;
+  const v = Math.min(15, L) / 15, c = Math.min(1, Math.max(0, (v / (4 - 3 * v)) * mult));
+  return 15 * 4 * c / (1 + 3 * c);
+}
 // lightmap : scenes avec un monde, la lumiere de bloc des sommets (niveau 0..15 x 16) est la vraie ; sinon (comme avant) celle du bloc emissif.
-export function sommetsDeCouche(c, numCouche, emission, lightmap = false) {
+// multBlocs : regle monde.regles.lumiere.blocs (voir niveauBlocRegle), seulement pour la vraie lumiere de bloc.
+export function sommetsDeCouche(c, numCouche, emission, lightmap = false, multBlocs = 1) {
   const n = c.nbQuads, g = c.gpu;
   const out = new Float32Array(n * 4 * FLOATS_PAR_SOMMET);
   const P = c.positions, U = c.uvs;
@@ -43,7 +54,7 @@ export function sommetsDeCouche(c, numCouche, emission, lightmap = false) {
       const px = P[q * 12 + k * 3], py = P[q * 12 + k * 3 + 1], pz = P[q * 12 + k * 3 + 2];
       out[o] = px; out[o + 1] = py; out[o + 2] = pz;
       out[o + 3] = U[q * 8 + k * 2]; out[o + 4] = U[q * 8 + k * 2 + 1];
-      out[o + 5] = lightmap ? Math.min(240, g.blv[q * 4 + k] * 16) : em * 16; out[o + 6] = Math.min(240, g.lvl[q * 4 + k] * 16);
+      out[o + 5] = lightmap ? Math.min(240, niveauBlocRegle(g.blv[q * 4 + k], multBlocs) * 16) : em * 16; out[o + 6] = Math.min(240, g.lvl[q * 4 + k] * 16);
       out[o + 7] = g.tint[q * 3] / 255; out[o + 8] = g.tint[q * 3 + 1] / 255; out[o + 9] = g.tint[q * 3 + 2] / 255;
       out[o + 10] = c.ao[q * 4 + k] / 255;
       out[o + 11] = nor[0]; out[o + 12] = nor[1]; out[o + 13] = nor[2];
@@ -67,12 +78,12 @@ export function exporterZone(scene, dossier) {
   };
   const B = scene.boite ? scene.boite() : scene.zone;
   const entete = { v: 1, floatsParSommet: FLOATS_PAR_SOMMET, zone: { origine: [B.x0, B.y0, B.z0], taille: [B.sx, B.sy, B.sz] }, palette: scene.monde ? scene.monde.palette : scene.zone.palette, couches: {} };
-  const lightmap = !!m.lightmap;
+  const lightmap = !!m.lightmap, mult = scene.options?.monde?.multBlocs ?? 1;
   let octets = 0;
   for (const [nom, num] of COUCHES) {
     const c = m.couches[nom];
     if (!c || c.nbQuads === 0 || !c.gpu) continue;
-    const sommets = sommetsDeCouche(c, num, emission, lightmap);
+    const sommets = sommetsDeCouche(c, num, emission, lightmap, mult);
     fs.writeFileSync(path.join(dossier, nom + '.vtx'), Buffer.from(sommets.buffer, 0, sommets.byteLength));
     fs.writeFileSync(path.join(dossier, nom + '.idx'), Buffer.from(c.indices.buffer.slice(0, c.nbQuads * 6 * 4)));
     entete.couches[nom] = { quads: c.nbQuads, couche: num, ...(scene.monde ? { sections: c.sections.map((s) => [s.debut, s.nb, s.cle]) } : {}) };
@@ -93,12 +104,12 @@ export function exporterMaj(scene, dossier, maj) {
   fs.rmSync(dossier, { recursive: true, force: true });
   fs.mkdirSync(dossier, { recursive: true });
   const emission = (idx) => { const e = scene.maillage.interne.etats[idx]; return e && (e.emission || e.type === 3) ? 15 : 0; };
-  const lightmap = !!scene.maillage.lightmap;
+  const lightmap = !!scene.maillage.lightmap, mult = scene.options?.monde?.multBlocs ?? 1;
   let octets = 0, quads = 0;
   const ajouts = [];
   for (const a of maj.ajouts) {
     const num = COUCHES.find(([n]) => n === a.nom)[1];
-    const sommets = sommetsDeCouche(a.c, num, emission, lightmap);
+    const sommets = sommetsDeCouche(a.c, num, emission, lightmap, mult);
     fs.writeFileSync(path.join(dossier, `p${a.id}.vtx`), Buffer.from(sommets.buffer, 0, sommets.byteLength));
     fs.writeFileSync(path.join(dossier, `p${a.id}.idx`), Buffer.from(a.c.indices.buffer.slice(0, a.c.nbQuads * 6 * 4)));
     octets += sommets.byteLength + a.c.nbQuads * 24; quads += a.c.nbQuads;

@@ -133,6 +133,10 @@ Avec `monde` (`chargerScene({ options: { monde: { donnees, replay, lumiere } } }
 - **Ombres du soleil (shader.json)** : une piece neuve est cuite tout de suite ; les sections que le soleil relie a une cellule changee sont recuites (`moteur.cuireChangements`), pas toute la zone.
 - **Export GPU (vrai pack de shaders)** : `exporterZone` ecrit la vraie lumiere de bloc par sommet (coordonnee lumiere du jeu, 0 a 240) ; `scene.prendreMajGPU()` + `exporterMaj(scene, dossier, maj)` (`pack/export-gpu.js`) ecrivent les sections refaites entre deux images, `Hote.majMaillage(dossier)` les envoie a l'hote OpenGL (commande `maillage-maj`) qui ne dessine plus les sections mortes et ajoute les pieces. Cout mesure cote Node : voir `docs/SIMULATION.md` (partie 8).
 
+## Grandes zones : maillage paresseux
+
+Au-dela de 257 x 257 colonnes (zones de rayon > 128 ; defaut du site : rayon 256, maximum 512), `chargerScene` ne maille rien (`scene.paresseux`, forcable avec `options.paresseux`). A chaque image, `rendre` appelle `scene.assurerVue(camera, loin)` : les colonnes de 16 x 16 (toute la hauteur) a moins de `loin` (fin de la brume + 1, distance horizontale) sont maillees (`maillage.mailleColonne(a, c)`), envoyees aux workers comme des pieces (message `maj`), et celles a plus de `loin + 64` sont oubliees. Memes quads et memes sections que le maillage complet : meme image (test `grandes-zones.test.js`). Avec `monde`, une colonne deja maillee dont une cellule change est refaite entiere. Vrai pack de shaders : les colonnes partent vers l'hote par `exporterMaj` a chaque image. `scene.statsParesseux` = `{ colonnes, quads, ms }`. Les commandes sans image (`terrain`, `trajet`, `empreinte`) ne maillent rien. Mesures : `docs/CONCEPTION.md` partie 2.2.
+
 ## Comment ca marche (pour les curieux)
 - Le maillage est divise en sections de 16x16x16 blocs, par couche (opaque, decoupe, melange), dans des `SharedArrayBuffer` partages avec les workers.
 - Chaque worker dessine des bandes de 16 rangees (rangees paires pour l'un, impaires pour l'autre) dans le meme tampon d'image : pas de copie ni de recollage.

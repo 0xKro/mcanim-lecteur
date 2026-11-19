@@ -8,13 +8,14 @@ import { listeObjets, groupePresent } from './fichiers.js';
 import { objetPourNotes } from './habillage.js';
 import { idRendu } from './reflet.js';
 import { nomMateriau, couleurArmure, couchesTexture, materiauxDuKit, EMPLACEMENTS } from './armure.js';
+import { TETE_DE_OBJET } from '../film/tetes-modele.js';
 
 // Groupes a la demande (kit.js) dont la scene a besoin : ['objets'], ['armures'], les deux ou [].
 export function groupesDeScene(scene) {
   const { objets, armures } = idsDeScene(scene);
   const m = groupesMontage(scene);   // textes et incrustations : groupe `interface` (police, sprites) ; icones d'objets : `objets`
   // une scene avec monde peut lacher des objets au sol (butin des blocs casses ou detruits) : leur modele vient du groupe `objets`
-  return [...(objets.size || m.objets || scene.monde || scene.acteurs.some((a) => a.creature?.echange) ? ['objets'] : []), ...(armures.size ? ['armures'] : []), ...(m.interface || scene.acteurs.some((a) => a.etiquette) ? ['interface'] : []), ...(scene.monde ? ['projectiles', 'worldgen', 'recettes'] : []),...(scene.acteurs.some((a) => a.creature) ? ['entites', 'sons_creatures'] : evenementsDeScene(scene) ? ['sons_creatures'] : []), ...(scene.monde && !scene.acteurs.some((a) => a.creature) ? ['entites'] : [])];   // monde : rayon de la balise, livre du pupitre, wagonnets nes en route (textures entity/)   // creatures : textures et sons du jeu ; sons du monde a la demande (ambiance, sons nommes hors du kit de base)
+  return [...(objets.size || m.objets || scene.monde || scene.acteurs.some((a) => a.creature?.echange) ? ['objets'] : []), ...(armures.size ? ['armures'] : []), ...(m.interface || scene.decor || scene.acteurs.some((a) => a.etiquette) ? ['interface'] : []), ...(scene.monde ? ['projectiles', 'worldgen', 'recettes'] : []),...(scene.acteurs.some((a) => a.creature) ? ['entites', 'sons_creatures'] : evenementsDeScene(scene) ? ['sons_creatures'] : []), ...(scene.monde && !scene.acteurs.some((a) => a.creature) ? ['entites'] : [])];   // monde : rayon de la balise, livre du pupitre, wagonnets nes en route (textures entity/)   // creatures : textures et sons du jeu ; sons du monde a la demande (ambiance, sons nommes hors du kit de base)
 }
 
 // Groupes de kit dont le montage a besoin : { interface, objets }.
@@ -84,6 +85,7 @@ export function planifier(scene, kit) {
         if (!k.id) continue;
         const mat = nomMateriau(k.id);
         if (mat === 'elytra' && e === 'torse') { if (!fs.existsSync(path.join(kit, 'assets', 'minecraft', 'textures', 'entity', 'equipment', 'wings', 'elytra.png'))) return { erreur: 'armure.torse "elytra" : texture entity/equipment/wings/elytra absente du kit (groupe "armures")', note: null }; continue; }   // elytres : couche wings (WingsLayer)
+        if (e === 'tete' && TETE_DE_OBJET[String(k.id).replace(/^minecraft:/, '')]) continue;   // tete (crane) portee : dessinee comme le jeu (CustomHeadLayer, objets/habillage.js)
         if (!mat || !couchesTexture(kit, mat, e)) return { erreur: `armure.${e} : "${k.id}" inconnu pour cet emplacement (materiaux : ${materiauxDuKit(kit).join(', ')} ; ou un objet comme diamond_helmet ; jambieres : pas de turtle)`, note: null };
         // cuir teint : "leather_chestplate#3A6FD8" ou "leather_chestplate#red" (une teinture du jeu) ; seul un calque teignable se teint
         if (/#/.test(k.id) && (couleurArmure(k.id) === null || !couchesTexture(kit, mat, e).some((c) => c.teinte !== null))) return { erreur: `armure.${e} : "${k.id}" : la teinte se met au cuir seulement, en #RRGGBB ou #teinture (white, orange, magenta, light_blue, yellow, lime, pink, gray, light_gray, cyan, purple, blue, brown, green, red, black)`, note: null };

@@ -2,6 +2,7 @@
 // pas). Les textures du corps, de l'armure et des objets sont rangees dans un seul atlas (colonne de 64 de large : le skin en haut, puis
 // chaque texture dans l'ordre ou on la rencontre) ; les UV du corps sont recalculees pour cet atlas. Sans armure ni objet, rien de tout cela
 // n'est appele et le maillage est celui d'avant, au bit pres.
+import { maillagesTete, TETE_DE_OBJET, TETES, skinParDefautUUID } from '../film/tetes-modele.js';   // tete portee comme casque
 import * as M from '../perso/modele.js';
 import { definirParties } from '../perso/modele.js';
 import { texture, teinter, textureManquante } from './fichiers.js';
@@ -153,6 +154,31 @@ export function habiller(perso, m, pose, mats, bitsFlexion, lumiere, brut) {
       if (tg) {
         const brille = !!pose.refletArmure?.[e];
         morceaux.push({ ...g, partie: decale ? g.partie.map((p) => p + decale) : g.partie, echelle: [64, 64], t: brille ? cuireReflet(kit, tg, (pose.age ?? 0) * 50, true) : tg, cle: `${kit}|galon|${e}|${mat}|${gl.motif}|${gl.garniture}${brille ? '|reflet' : ''}`, vivant: brille });
+      }
+    }
+  }
+
+  // ---- tete (crane) portee comme casque (CustomHeadLayer) : repere de la tete, scale(1,1875, -1,1875, -1,1875), translate(-0,5, 0, -0,5), puis le crane
+  // pose au sol tourne de 180 degres (SkullBlockRenderer.renderSkull(null, 180)) ; joueur : skin du profil (pose.teteSkin), sinon Steve
+  const typeTete = TETE_DE_OBJET[String(armure.tete ?? '').replace(/^minecraft:/, '')];
+  if (typeTete) {
+    const T0 = TETES[typeTete];
+    let t = null;
+    if (typeTete === 'player' && pose.teteSkin?.tex) t = pose.teteSkin.tex;   // skin du profil deja lu (decor/index.js)
+    if (!t && typeTete === 'player' && pose.teteSkin?.uuid) { const sd = skinParDefautUUID(pose.teteSkin.uuid); t = texture(kit, `entity/player/${sd.modele}/${sd.nom}`); }
+    if (!t) t = texture(kit, T0.tex.replace(/\.png$/, ''));
+    if (t) {
+      const k = 16 * 1.1875;
+      for (const mt of maillagesTete(typeTete, { rotation: 8, texture: t, place: (q) => [k * (q[0] - 0.5), -k * q[1], -k * (q[2] - 0.5)] })) {
+        const n = mt.positions.length / 3, normales = new Float32Array(n * 3);
+        for (let q = 0; q < n; q += 4) {
+          const P = (i) => [mt.positions[(q + i) * 3], mt.positions[(q + i) * 3 + 1], mt.positions[(q + i) * 3 + 2]];
+          const a0 = P(0), a1 = P(1), a2 = P(3), u = [a1[0] - a0[0], a1[1] - a0[1], a1[2] - a0[2]], w = [a2[0] - a0[0], a2[1] - a0[1], a2[2] - a0[2]];
+          let nx = u[1] * w[2] - u[2] * w[1], ny = u[2] * w[0] - u[0] * w[2], nz = u[0] * w[1] - u[1] * w[0]; const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+          for (let i = 0; i < 4; i++) normales.set([nx, ny, nz], (q + i) * 3);
+        }
+        const ind = new Uint32Array(mt.indices.length * 2); ind.set(mt.indices); for (let i = 0; i < mt.indices.length; i += 3) { ind[mt.indices.length + i] = mt.indices[i]; ind[mt.indices.length + i + 1] = mt.indices[i + 2]; ind[mt.indices.length + i + 2] = mt.indices[i + 1]; }   // les deux faces
+        morceaux.push({ local: mt.positions, normales, partie: new Uint16Array(n).fill(0), uvs: mt.uvs, indices: ind, echelle: null, t, cle: `${kit}|tete|${typeTete}|${pose.teteSkin?.uuid ?? ''}|${pose.teteSkin?.tex ? 'profil' : ''}` });
       }
     }
   }

@@ -367,7 +367,9 @@ export const TEINTE_BLOC = [0xff / 255, 0xd8 / 255, 0x8c / 255];
 // (`boss` 0..1 : couleur melangee vers couleur x (0,7 ; 0,6 ; 0,6)), `obscurite` retiree, puis bornee ; monde de l'End (`dimension: 'end'`) :
 // attributs du type de dimension the_end du jeu (ambient_light_color #3f473f, sky_light_color #ac60cd, sky_light_factor 0).
 export const AMBIANT_END = [0x3f / 255, 0x47 / 255, 0x3f / 255], CIEL_END = [0xac / 255, 0x60 / 255, 0xcd / 255];
-export function tableLumiere(ticks, gamma = 0.5, { flicker = 0, nightVision = 0, facteurCiel = 1, boss = 0, obscurite = 0, dimension = 'overworld', eclairEnd = 0 } = {}) {
+// `blocs` (regle de scene monde.regles.lumiere.blocs, 0 a 3, 1 = le jeu) : multiplie le terme de lumiere des blocs (rendu seulement : les niveaux
+// 0..15 du monde, et donc la simulation, ne changent pas) ; 1 donne exactement la table du jeu.
+export function tableLumiere(ticks, gamma = 0.5, { flicker = 0, nightVision = 0, facteurCiel = 1, boss = 0, obscurite = 0, dimension = 'overworld', eclairEnd = 0, blocs = 1 } = {}) {
   const end = dimension === 'end';
   const f = end ? eclairEnd : piste(PISTE_LUM_FACTEUR, ticks)[0] * facteurCiel, sc = end ? CIEL_END : piste(PISTE_LUM_COULEUR, ticks);
   const R = new Float32Array(256), G = new Float32Array(256), B = new Float32Array(256);
@@ -377,7 +379,7 @@ export function tableLumiere(ticks, gamma = 0.5, { flicker = 0, nightVision = 0,
   for (let s = 0; s < 16; s++) {
     for (let b = 0; b < 16; b++) {
       const lb = b / 15, ls = s / 15;
-      const sk = lum(ls) * f, bk = lum(lb) * (1.4 + flicker);
+      const sk = lum(ls) * f, bk = lum(lb) * (1.4 + flicker) * blocs;
       const par = (2 * lb - 1) ** 2;
       const bc = TEINTE_BLOC.map((t) => t + (1 - t) * 0.9 * par);
       const c = [0, 1, 2].map((k) => { let v = amb[k] + sc[k] * sk + bc[k] * bk; if (boss) v += (v * ASS[k] - v) * boss; return Math.min(1, Math.max(0, v - obscurite)); });

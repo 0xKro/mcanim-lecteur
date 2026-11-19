@@ -8,9 +8,9 @@
 //        [--pack-shader pack.zip [--echelle 1|0.5] [--profil NOM] [--option NOM=VALEUR ...] [--repli]]   (vrai pack de shaders, plus lent)
 //   mcanim skin <ref> [--sortie skin.png] [--zones] [--modele wide|slim]
 //   mcanim texture <jeu/chemin> [--sortie f.png] [--pack pack.zip]
-//   mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360] [--pack pack.zip]
+//   mcanim apercu <scene.json> --t 3.5 [--sortie a.png|a.jpg] [--taille 640x360 .. 1920x1080] [--pack pack.zip]
 //   mcanim shader --guide | --cles <famille> | --verifier f.json | --extraire pack.zip [--sortie dossier] | --exemples
-//   mcanim simuler <scene.json>   (simulation du jeu : gratuit, resume court)
+//   mcanim simuler <scene.json> [--tout] [--trace x,y,z]   (simulation du jeu : gratuit, resume court ; blocs retires faute d'appui)
 //   mcanim regles --liste [famille] | --familles   (parametres du jeu modifiables par la scene)
 //   mcanim mods verifier <fichier.js>
 //   mcanim kit
@@ -39,6 +39,7 @@ import { lireReglages, preparerOptions, nonGere, ErreurPack } from '../src/shade
 import { noteAmplitudes } from '../src/film/limites.js';   // articulations libres : amplitudes hors plausible (une ligne)
 import { animer } from '../src/film/scene.js';
 import { descripteursActeurs } from '../src/film/actes.js';   // acteurs a intentions de la simulation
+import { tailleApercu, formatApercu } from '../src/film/apercu.js';   // apercu : taille (1920 de large au plus) et format du fichier
 
 const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai terrain)
   mcanim terrain <zone> [--pas 8]     telecharge la zone et le kit, resume du terrain (chemins, clairieres, eau)
@@ -46,13 +47,14 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   mcanim terrain <zone> --carte [f.png] [--echelle N]   carte vue de dessus GRATUITE (grille et etiquettes tous les 16 blocs, rues, portes, cloche d'un village) ; a lire pour se reperer
   (village : le resume donne village{type, rues[l,p], maisons[b,porte[x,z,cote]], cloche, puits, fermes, lampes} ; rue:true dans chemins = rue du village)
   mcanim etat <scene.json> [--t secondes|fin]   position, cap, vitesse, phases des boucles, pose de chaque acteur : pour enchainer la scene suivante (pos, lacet, boucle "phase0") ; assemblage ffmpeg : fiche enchainer
+  mcanim etat <scene.json> --t 5 --bloc x,y,z   UN bloc a cet instant (apres la simulation) : identifiant et etat, puissance recue et emise, bloc a entite (contenu, sortie du comparateur, four), lumiere, survit ou non ; gratuit
   mcanim trajet <scene.json>          ce qui arrive aux acteurs sur leur chemin : saut, chute, eau, echelle, marches, mur, vitesses ; gratuit, court
   mcanim empreinte <scene.json> [memes options que rendre]   controle la scene, affiche empreinte et duree ; l'empreinte couvre le CONTENU des PNG / shader / pack cites et les options
                                       de rendu (--skin --pack --shader --pack-shader --echelle --profil --option) : un octet change apres autoriser_scene = jeton refuse (modifier_scene)
   mcanim rendre <scene.json> --jeton <jeton> [--sortie f.mp4] [--pack pack.zip] [--skin nom=fichier.png] [--shader shader.json]
   mcanim rendre ... --pack-shader pack.zip [--echelle 1|0.5] [--profil NOM] [--option NOM=VALEUR ...] [--repli]   VRAI pack de shaders (le code du pack tourne sur
                                       un OpenGL logiciel ; lent : quelques secondes par image ; 0.5 = le pack tourne a mi-taille puis l'image est agrandie)
-  mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360] [--zones] [--shader shader.json | --pack-shader pack.zip ...]   UNE image de la scene, petite, filigranee, SANS jeton
+  mcanim apercu <scene.json> --t 3.5 [--sortie a.png] [--taille 640x360] [--zones] [--shader shader.json | --pack-shader pack.zip ...]   UNE image de la scene, filigranee, SANS jeton ; 640x360 par defaut, jusqu'a 1920x1080 (au-dela de 640 de large : JPEG de quelques centaines de Ko)
                                       (verifie couleurs, masques, cadrage avant de payer ; le rendu complet exige le jeton)
   mcanim planche <scene.json> [--n 12] [--sortie f.png] [--sans-zones]   PLANCHE DE CONTACT gratuite et filigranee : N images (ou une par plan si la scene a des plans), avec incrustations, effets et transitions, en UNE image ; revoir un montage rapide sans payer
   (vertical : textes et incrustations restent dans la ZONE SURE des applications, champ zonesSures "toutes" par defaut = instagram + tiktok + youtube ; "aucune" pour la desactiver ; --zones / planche montrent les masques d'interface)
@@ -68,13 +70,14 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   mcanim shader --exemples            ou sont shader-leger.json et shader-tout.json
   mcanim creatures --liste [mot]     CREATURES (champ d'acteur type) : types, variantes, animations nommees, parties, vitesses (30 lignes au plus) ; gratuit
   mcanim objets --cherche <mot>       identifiants d'objets du jeu (20 au plus) pour les champs objet / objetG ; --armures : materiaux du champ armure
-  mcanim simuler <scene.json>         simule le jeu (champ monde : blocs poses, regles, mods) AVANT de payer le rendu ; gratuit, resume court (blocs changes, avertissements)
+  mcanim simuler <scene.json> [--tout] [--trace x,y,z]   simule le jeu (champ monde : blocs poses, regles, mods) AVANT de payer le rendu ; gratuit, resume court (blocs changes, avertissements,
+                                      "! comparator en x,y,z retiré : pas d'appui" pour chaque bloc tombe faute d'appui) ; --tout : rapport entier (tous les types) ; --trace : chaque changement de ce bloc tick par tick et sa cause
   (acteur.actes [[t,"verbe",..]] : un joueur SIMULE par le jeu : va x z | regarde | saute | accroupi | tient "objet" | attends s | utilise x y z (porte, bouton, levier, coffre, cloche...) | pose x y z "bloc" | casse x y z | utilise (manger, boire) | lance x y z|"acteur" (boule de neige, oeuf, perle, potion, fiole d experience, trident) | tire x y z|"acteur" (arc, arbalete) | frappe "acteur" {coups, critique, objet} (epee : recharge, critique, recul) | jette n | prend|depose x y z "objet" n | plane [x y z] {tangage,lacet} (elytres : armure torse "elytra" ; fusee en main + utilise = propulsion) ; options {va, ouvrePortes, duree, max, effet, niveau, secondes, charge} ; portee 4.5 ; mcanim simuler dit les echecs ; fiches actions, blocs_interactifs, casser_poser, objets_utiliser, arcs_projectiles)
   (croissance et meteo comme le jeu : cultures (1/(floor(25/v)+1)), pousses -> arbres, farine d'os, feuilles qui meurent, herbe ; ciel.meteo [[t,"pluie"|"orage"|"clair"|"foudre",...]] : pluie, neige, tonnerre, eclair, ciel terne ; regle croissance.vitesse = lapse de temps ; fiches croissance, meteo)
   (redstone et pistons comme le jeu : levier, bouton, plaque, poudre (15, -1 par bloc), torche (2 ticks, grille), repeteur (2 a 8 ticks), comparateur, observateur (2 ticks), lampe, pistons (12 blocs, collant, slime), entonnoir, dropper ; monde.contenus [[x,y,z,"objet",n]] ; monde.cmd [t,"frappe",x,y,z,force] ; regles redstone.* pistons.* contenus.* ; fiches redstone, pistons)
   mcanim regles --liste [famille]     parametres du jeu que monde.regles peut changer (nom = defaut [plage] explication) ; --familles : les familles
   mcanim mods verifier <fichier.js>   charge un mod de monde.mods dans le bac a sable et signale l'erreur en une ligne
-  mcanim decor verifier|apercu|executer|module ... [--scene scene.json]   DECORS (la zone vient de la scene : plus de --zone) : faire construire sur le terrain (maisons, ponts, tours, aplanir) ; champ de scene decor ["maison.decor.json"] ; verifier = rapport de 15 lignes, apercu = petite image ; gratuits ; fiches decor_bases, decor_operations, decor_terrain, decor_maison
+  mcanim decor verifier|apercu|executer|module ... [--scene scene.json]   DECORS (la zone vient de la scene : plus de --zone) : faire construire sur le terrain (maisons, ponts, tours, chateaux, aplanir) ; champ de scene decor ["maison.decor.json"] (32 au plus) ; ops : plein creux mur ligne toit porte... sphere ellipsoide cyl cone (creux : epaisseur), grille (blocs denses + palette), importer (.schem .nbt .litematic), copier miroir rotation, gab/pose ; verifier = rapport de 15 lignes, apercu = petite image ; gratuits ; fiches decor_bases, decor_operations, decor_grille, decor_terrain, decor_maison
   mcanim terrain --scene scene.json   resume du terrain APRES les decors de la scene (les chemins contournent les batiments)
   mcanim kit                          recupere le kit de base
   (options de rendre : --ssaa 2 pour un rendu plus lisse, 3 fois plus lent)
@@ -83,7 +86,7 @@ const AIDE = `mcanim : de la scene au MP4 (personnages Minecraft dans un vrai te
   acteur : fige [[debut,fin]] (cet acteur seul s'arrete, pose tenue ; les autres continuent) figeSauf ["tete",...] (pistes qui continuent) ; boucle : phase0 (0..1, demarre a cette phase) ; sons : {pas, volume 0..4, liste [[t,"son",volume,cible]]} cible {"acteur":"nom"} ou [x,y,z]
   montage (facultatif, 1 a 180 s, fichier 64 Ko max) : plans [{de,a,camera,transition,vitesse,arret,image}] (une camera par plan, coupes) ; sousTitres {texte,debut,fin|mots,par,couleurs} et textes [[debut,fin,"texte"]] ;
   incrustations [{type: texte compteur fleche ligne icone equation coeurs faim horloge nom bulle chat succes inventaire coffre hud carte image, t:[debut,fin], ecran|monde|acteur}] ; camera : roulis secousse coupZoom flouFile flouRadial profondeurChamp ; sons.fichiers [[t,"voix.mp3",volume,{voix,sousVoix,fondu,boucle}]] (fiches du site)
-  champs de scene facultatifs : monde {graine, regles, mods, blocs [[t,x,y,z,"bloc"]], cmd, contenus, lumiere} (simulation du jeu ; lumiere des blocs), image, ciel, gel, textures, shader, packShader (pack .zip, chemin relatif a la scene) ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui, objet objetG [t,"id"|null] (objet tenu en main droite / gauche ; mcanim objets --cherche mot), armure {tete,torse,jambes,pieds} (fiches du site) ; CREATURES : type (zombie, cow, horse, boat... : mcanim creatures --liste), variante, bebe, taille, charge, selle, armureCheval, colle, coffre, tondu, gonfle, agressif, anim [[t,nom]], regarde, parties, porte, contenu, echange, sautille ; IA : ia true, cible, comportement passif|agressif|fuit|garde, garde, maison, travail, lit, rassemblement (villageois : emploi du temps du jeu, echange par utilise "nom"), epaule (perroquet), ami (allay), apprivoise, ruche [x,y,z] (abeille : fleurs, nectar, ruche, miel), nourriture {"bread":3} (villageois) ; reproduction : utilise "animal" {"objet":"wheat"} (amour, bebe ne pendant la simulation, il suit), juke-box utilise x y z {"objet":"music_disc_cat"} (perroquets et allays dansent), conversions, golem appele ; volants (chauve-souris, abeille, perroquet, allay, ghast, phantom, vex), blaze, sorciere, enderman ; wither (pose du 3e wither_skeleton_skull sur le T de soul_sand : charge, explosion, cranes), dragon (centre [x,z], perchoir [x,y,z], cristaux type end_crystal ; monde.fontaine), oeufs (tortue maison, grenouille, renifleur, poule), panda genes, ocelot confiance, axolotl, nage (bancs, calmar, dauphin, gardiens), warden emerge et vibrations (capteurs de sculk, obscurite) ; incrustation marchand ; frappe "boule_feu" (renvoi) (regles monde.difficulte, ia.*, combat.*, laisse.rupture, dragon.rayon, wither.invocation, oeufs.*) ; laisse "nom"|[x,y,z] (corde du jeu) ; monture (cavalier), etiquette ; sons.ambiance true (eau, lave, feu) (fiches creatures, creatures_anim, montures (laisse), creatures_ia, creatures_vol, vie, combat, son_fichiers)
+  champs de scene facultatifs : monde {graine, regles, mods, blocs [[t,x,y,z,"bloc"]], cmd, contenus, lumiere} (simulation du jeu ; lumiere des blocs, bloc invisible light[level=0..15] ; regle lumiere.blocs 0..3 : eclat des blocs dans l'image seulement), image, ciel, gel, textures, shader, packShader (pack .zip, chemin relatif a la scene) ; acteur : skins, masque, lueur, horsImage, coudeD coudeG genouD genouG appui, objet objetG [t,"id"|null] (objet tenu en main droite / gauche ; mcanim objets --cherche mot), armure {tete,torse,jambes,pieds} (fiches du site) ; CREATURES : type (zombie, cow, horse, boat... : mcanim creatures --liste ; 40 joueurs + creatures, 150 acteurs au plus), variante, bebe, taille, charge, selle, armureCheval, colle, coffre, tondu, gonfle, agressif, anim [[t,nom]], regarde, parties, porte, contenu, echange, sautille ; IA : ia true, cible, comportement passif|agressif|fuit|garde, garde, maison, travail, lit, rassemblement (villageois : emploi du temps du jeu, echange par utilise "nom"), epaule (perroquet), ami (allay), apprivoise, ruche [x,y,z] (abeille : fleurs, nectar, ruche, miel), nourriture {"bread":3} (villageois) ; reproduction : utilise "animal" {"objet":"wheat"} (amour, bebe ne pendant la simulation, il suit), juke-box utilise x y z {"objet":"music_disc_cat"} (perroquets et allays dansent), conversions, golem appele ; volants (chauve-souris, abeille, perroquet, allay, ghast, phantom, vex), blaze, sorciere, enderman ; wither (pose du 3e wither_skeleton_skull sur le T de soul_sand : charge, explosion, cranes), dragon (centre [x,z], perchoir [x,y,z], cristaux type end_crystal ; monde.fontaine), oeufs (tortue maison, grenouille, renifleur, poule), panda genes, ocelot confiance, axolotl, nage (bancs, calmar, dauphin, gardiens), warden emerge et vibrations (capteurs de sculk, obscurite) ; incrustation marchand ; frappe "boule_feu" (renvoi) (regles monde.difficulte, ia.*, combat.*, laisse.rupture, dragon.rayon, wither.invocation, oeufs.*) ; laisse "nom"|[x,y,z] (corde du jeu) ; monture (cavalier), etiquette ; sons.ambiance true (eau, lave, feu) (fiches creatures, creatures_anim, montures (laisse), creatures_ia, creatures_vol, vie, combat, son_fichiers)
   hauteur automatique (physique du jeu : saut 0.42, gravite 0.08, pas de 0.6, chute, eau, echelle) a partir de pos [t,x,z] ; acteur : bascule [t,deg] roulis [t,deg]
   (corps entier autour des hanches, 90 = a plat) hauteur [t,blocs] (decalage vertical) reactions:false (coupe les reactions automatiques du corps)
   membres libres : brasD brasG jambeD jambeG [t,avant,cote,torsion] (cote < 0 : croise le corps ; torsion > 0 : rotation interne), tete [t,lacet,tangage,roulis],
@@ -235,11 +238,26 @@ async function commandeTrajet(argv) {
 }
 
 // Etat de la scene a un instant (gratuit) : position, direction, phases des boucles, pose tenue ; pour enchainer la scene suivante sans a-coup.
+// --bloc x,y,z : l'etat d'UN bloc a l'instant t (identifiant et etat, puissance recue et emise, donnees du bloc a entite, lumiere), apres la
+// simulation jusqu'a cet instant (docs/SIMULATION.md partie 33)
 async function commandeEtat(argv) {
-  const { pos, opt } = lireArgs(argv, { valeurs: ['t'] });
-  if (pos.length !== 1) throw new Usage('usage : mcanim etat <scene.json> [--t secondes|fin]   (defaut : fin)');
+  const { pos, opt } = lireArgs(argv, { valeurs: ['t', 'bloc'] });
+  if (pos.length !== 1) throw new Usage('usage : mcanim etat <scene.json> [--t secondes|fin] [--bloc x,y,z]   (defaut : fin)');
   const tt = opt.t === undefined || opt.t === 'fin' ? 'fin' : Number(opt.t);
   if (tt !== 'fin' && !Number.isFinite(tt)) throw new Usage('--t : un nombre de secondes ou "fin"');
+  if (opt.bloc !== undefined) {
+    const p = lirePosition(opt.bloc, '--bloc');
+    const { scene } = lireScene(lireTexte(pos[0]), { sansCamera: true });
+    const t = tt === 'fin' ? scene.duree : tt;
+    if (t < 0 || t > scene.duree) throw new Usage(`--t : entre 0 et ${scene.duree} secondes (duree de la scene)`);
+    const baseDir = path.dirname(path.resolve(pos[0]));
+    if (scene.monde) return dire(await simulerCli(scene, baseDir, { sonde: { t, pos: p } }));
+    // sans monde : rien ne bouge, le bloc est celui du terrain (apres les decors)
+    const { lireZone } = await import('../src/rendu/zone.js');
+    let zone = lireZone((await obtenirZone(scene.zone)).chemin);
+    if (scene.decor) { const { donneesDuJeu } = await import('../src/moteur/chargeur.js'); zone = (await (await import('../src/decor/index.js')).zoneAvecDecor({ zone, scene, baseDir, donnees: await donneesDuJeu({ log: dire }) })).zone; }
+    return dire(`bloc ${p.join(',')} : ${zone.bloc(...p)} (terrain${scene.decor ? ' et decors' : ''} ; la scene n'a pas de champ monde : rien ne change pendant le film, pas de puissance ni de bloc a entite)`);
+  }
   const { scene } = lireScene(lireTexte(pos[0]));
   const t = await terrainDeScene(scene, { telecharger: true });
   try {
@@ -392,11 +410,14 @@ async function commandeApercu(argv) {
   const habillage = planifierHabillage(scene, kit);
   if (habillage.erreur) throw new Usage(habillage.erreur);
   if (habillage.note) dire(habillage.note);
-  const sortie = path.resolve(opt.sortie || 'apercu.png');
+  // sortie par defaut : apercu.png jusqu'a 640 de large, apercu.jpg au-dela (fichier petit, src/film/apercu.js)
+  let largeurA = 640;
+  try { largeurA = tailleApercu(opt.taille, scene)[0]; } catch (e) { throw new Usage(e.message); }
+  const sortie = path.resolve(opt.sortie || (formatApercu(null, largeurA) === 'jpeg' ? 'apercu.jpg' : 'apercu.png'));
   const { apercuImage } = await import('../src/film/video.js');
   const r = await apercuImage({ scene, zonePath: zone.chemin, kitDir: kit, t, sortie, taille: opt.taille, surcharges, baseDir, zones: !!opt.zones, shader: reel ? null : shader, ...(reel ? { packShader: reel.chemin, optionsPack: reel.optionsPack, echelle: reel.echelle, log: dire } : {}) }).catch((e) => { if (/^--(t|taille)/.test(e.message)) throw new Usage(e.message); throw e; });
   const repli = r.skins.filter((s) => s.repli);
-  dire(`apercu ${r.sortie} | t=${r.t.toFixed(2)} s (image ${r.image}) | ${r.taille.join('x')} | ${sec(Date.now() - t0)} s | filigrane : ce n'est PAS le rendu final, mcanim rendre demande un jeton`);
+  dire(`apercu ${r.sortie} | t=${r.t.toFixed(2)} s (image ${r.image}) | ${r.taille.join('x')} ${r.format === 'jpeg' ? 'JPEG' : 'PNG'} ${Math.max(1, Math.round(r.octets / 1024))} Ko | ${sec(Date.now() - t0)} s | filigrane : ce n'est PAS le rendu final, mcanim rendre demande un jeton`);
   const notesA = (r.notes || []).filter((n) => /^options non prises/.test(n));
   if (repli.length) notesA.push(noteSkinsDeRepli(repli));
   if (notesA.length) dire('notes : ' + notesA.join(' ; '));
@@ -450,12 +471,48 @@ async function commandeSon(argv) {
 
 // Aide gratuite : cherche des identifiants d'objets (et de materiaux d'armure) pour ne pas deviner les noms.
 // Simulation du jeu pour une scene qui a un champ `monde` : gratuite, imprime un resume court (docs/SIMULATION.md 1.8).
+// mcanim decor verifier : apres le rapport du decor, une ligne par bloc pose par le decor que le jeu casse faute d'appui (meme regle que la
+// simulation : canSurvive de chaque famille), « ! comparator en x,y,z retiré : pas d'appui ». 5 lignes au plus.
+async function notesSansAppuiDecor(argv) {
+  const { pos, opt } = lireArgs(argv, { valeurs: ['zone', 'scene'] });
+  const fichier = pos[0], texte = lireTexte(fichier), baseDir = path.dirname(path.resolve(fichier));
+  let brut;
+  try { brut = JSON.parse(texte.replace(/^﻿/, '')); } catch { return; }
+  let scene;
+  if (brut && Array.isArray(brut.acteurs)) scene = lireScene(texte).scene;
+  else { const { zoneDuDecor } = await import('../src/decor/commande.js'); scene = { zone: zoneDuDecor({ fichier, opt, decor: brut, Usage }).zoneId, decor: [path.basename(fichier)] }; }
+  const { lireZone } = await import('../src/rendu/zone.js');
+  const { donneesDuJeu } = await import('../src/moteur/chargeur.js');
+  const { zoneAvecDecor } = await import('../src/decor/index.js');
+  const { blocsSansAppui } = await import('../src/moteur/index.js');
+  const donnees = await donneesDuJeu({ log: () => {} });
+  const avant = lireZone((await obtenirZone(scene.zone)).chemin);
+  const r = await zoneAvecDecor({ zone: avant, scene, baseDir, donnees });
+  const s = blocsSansAppui({ zone: r.zone, avant, donnees, max: 5 });
+  for (const b of s.liste) dire(`! ${b.nom} en ${b.x},${b.y},${b.z} retiré : pas d'appui (le jeu le casse des qu'un voisin change ; pose un bloc plein dessous ou derriere)`);
+  if (s.total > s.liste.length) dire(`(+ ${s.total - s.liste.length} autres blocs sans appui)`);
+}
+
+// Cellule x,y,z d'une option (--trace, --bloc) : trois entiers
+function lirePosition(v, option) {
+  const p = String(v ?? '').split(',').map(Number);
+  if (p.length !== 3 || !p.every(Number.isInteger)) throw new Usage(`${option} : trois entiers x,y,z attendus (ex. ${option} 10,64,-5)`);
+  return p;
+}
+
+// --tout : rapport complet (tous les types, tous les blocs retires, toutes les intentions, sans plafond d'octets) ;
+// --trace x,y,z : les changements de cette cellule tick par tick, avec leur cause (tick planifie, voisin, piston, joueur...)
 async function commandeSimuler(argv) {
-  const { pos } = lireArgs(argv);
-  if (pos.length !== 1) throw new Usage('usage : mcanim simuler <scene.json>');
+  const { pos, opt } = lireArgs(argv, { valeurs: ['trace'], drapeaux: ['tout'] });
+  if (pos.length !== 1) throw new Usage('usage : mcanim simuler <scene.json> [--tout] [--trace x,y,z]');
+  const diagnostic = { tout: !!opt.tout, ...(opt.trace !== undefined ? { trace: lirePosition(opt.trace, '--trace') } : {}) };
   const { scene } = lireScene(lireTexte(pos[0]), { sansCamera: true });   // la simulation n'a pas besoin de camera
   if (!scene.monde) return dire("la scene n'a pas de champ monde : rien a simuler (le rendu est le meme qu'avant)");
-  const baseDir = path.dirname(path.resolve(pos[0]));
+  dire(await simulerCli(scene, path.dirname(path.resolve(pos[0])), diagnostic));
+}
+
+// Simulation de `mcanim simuler` et `mcanim etat --bloc` (meme monde que le rendu : zone, decors, acteurs, meteo) ; rend le texte du rapport
+async function simulerCli(scene, baseDir, diagnostic = {}) {
   verifierFichiers(scene, baseDir);
   const zone = await obtenirZone(scene.zone);
   // donnees du jeu de la simulation (kit) : recettes, enchantements, etiquettes (groupe `recettes`) et caracteristiques du monde (`worldgen`).
@@ -474,8 +531,8 @@ async function commandeSimuler(argv) {
     void simuler; void evaluer;
     // les mods tournent dans un processus fils a permissions (src/moteur/isolement.js)
     const { simulerIsole } = await import('../src/moteur/isolement.js');
-    const r = await simulerIsole({ zone: zoneS, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene, typesC), baseDir, duree: scene.duree, options: { meteo: scene.ciel?.meteo ?? null, kitDir }, contexte: { heurePiste: hp ?? null, typesC } });
-    dire(r.rapport);
+    const r = await simulerIsole({ zone: zoneS, donnees, monde: scene.monde, acteurs: descripteursActeurs(scene, typesC), baseDir, duree: scene.duree, options: { meteo: scene.ciel?.meteo ?? null, kitDir, diagnostic }, contexte: { heurePiste: hp ?? null, typesC } });
+    return r.rapport;
   } catch (e) { if (e instanceof ErreurMonde) throw new Usage(e.message); throw e; }
 }
 
@@ -585,7 +642,11 @@ async function main() {
     case 'simuler': return commandeSimuler(reste);
     case 'regles': return commandeRegles(reste);
     case 'mods': return commandeMods(reste);
-    case 'decor': return (await import('../src/decor/commande.js')).commandeDecor(reste, { obtenirZone, trouverKit, lireArgs, dire, Usage, lireTexte, terrainDeScene });
+    case 'decor': {
+      await (await import('../src/decor/commande.js')).commandeDecor(reste, { obtenirZone, trouverKit, lireArgs, dire, Usage, lireTexte, terrainDeScene });
+      if (reste[0] === 'verifier') await notesSansAppuiDecor(reste.slice(1));   // blocs du decor que le jeu casserait faute d'appui
+      return;
+    }
     case '--version': case '-v': return dire(JSON.parse(fs.readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')).version);
     case undefined: case 'aide': case '--help': case '-h': return dire(AIDE);
     default: throw new Usage(`commande inconnue : ${cmd}\n${AIDE}`);

@@ -67,7 +67,9 @@ function decalageXZ(x, z) {
   return [f(s), f((s >> 8n))];
 }
 
-// Construit le maillage. options : { rayonMelange, aoActif, tailleSection, gamma, exportGPU, monde, lightmap }
+// Construit le maillage. options : { rayonMelange, aoActif, tailleSection, gamma, exportGPU, monde, lightmap, paresseux }
+// paresseux (grandes zones) : rien n'est maille d'avance ; `mailleColonne(a, c)` maille une colonne de sections (16 x 16, toute la hauteur) a la
+// demande (rendu/scene.js : les colonnes a portee de la camera). Memes quads, memes sections que le maillage complet : meme image.
 export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
   const gamma = options.gamma ?? 0.5;
   const courbe = new Float32Array(16).map((_, l) => courbeLumiere(l, gamma));
@@ -204,9 +206,10 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
   const stat = { quads: 0, cellules: 0, cullees: 0 };
   const rgb = (c) => [(c >> 16) & 255, (c >> 8) & 255, c & 255];
   // numero de section ABSOLU (ancre = origine de la zone) pour reperer une section meme apres un agrandissement de la boite
-  const A = monde ? monde.ancre : null;
+  const paresseux = !!options.paresseux;
+  const A = monde ? monde.ancre : paresseux ? [zone.x0, zone.y0, zone.z0] : null;
   const cleAbs = (a, b, c) => ((b + 64) * 4096 + (c + 2048)) * 4096 + (a + 2048);
-  const cleDe = monde ? (s) => {
+  const cleDe = A ? (s) => {
     const a = s % nsx, c = Math.floor(s / nsx) % nsz, b = Math.floor(s / (nsx * nsz));
     return cleAbs(a + (X0 - A[0]) / TS, b + (Y0 - A[1]) / TS, c + (Z0 - A[2]) / TS);
   } : null;
@@ -474,7 +477,7 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
       }
     }
   }
-  emettreCellules(0, sx, 0, sy, 0, sz);
+  if (!paresseux) emettreCellules(0, sx, 0, sy, 0, sz);
 
   // ---------- assemblage final ----------
   const atlas = textures.construireAtlas();
@@ -484,8 +487,31 @@ export function mailler({ zone, modeles, textures, couleurs, options = {} }) {
     atlas, couches: { opaque: couches[0], decoupe: couches[1], melange: couches[2], interne: couches[3] },
     stats: { ...stat, ms: Date.now() - t0, quadsParCouche: tampons.map((t) => t.n) },
     interne: { pal, lum, blk, PX, PY, PZ, etats, opaque, kind, x0: X0, y0: Y0, z0: Z0 },
-    lightmap,
+    lightmap, paresseux,
   };
+  if (paresseux) {
+    resultat.ancre = A;
+    let tamponsColonne = null;
+    // Colonne de sections (a, c : numeros de section depuis l'ancre) -> { opaque, decoupe, melange, interne } (une section par tranche de 16 en y,
+    // avec sa cle absolue ; chacun null s'il est vide), ou null hors de la boite
+    resultat.mailleColonne = (a, c) => {
+      majPalette();
+      const lx0 = a * TS + A[0] - X0, lz0 = c * TS + A[2] - Z0;
+      const xa = Math.max(0, lx0), xb = Math.min(sx, lx0 + TS), za = Math.max(0, lz0), zb = Math.min(sz, lz0 + TS);
+      if (xa >= xb || za >= zb) return null;
+      const b0 = Math.floor((Y0 - A[1]) / TS);
+      const sauveT = tampons, sauveS = secDe;
+      tampons = (tamponsColonne ||= nouveauxTampons()); for (const T of tampons) T.n = 0;   // tampons reutilises d'une colonne a l'autre (assembler copie)
+      secDe = (x, y) => (y / TS | 0);
+      try {
+        emettreCellules(xa, xb, 0, sy, za, zb);
+        const cs = tampons.map((T) => (T.n ? assembler(T, textures, atlas, nsy, (s) => cleAbs(a, b0 + s, c)) : null));
+        return { opaque: cs[0], decoupe: cs[1], melange: cs[2], interne: cs[3] };
+      } finally { tampons = sauveT; secDe = sauveS; }
+    };
+    resultat.cleAbs = cleAbs;
+    resultat.sectionDe = (x, y, z) => [Math.floor((x - A[0]) / TS), Math.floor((y - A[1]) / TS), Math.floor((z - A[2]) / TS)];
+  }
 
   // Section ABSOLUE (a, b, c : numeros de section de 16 cellules depuis l'ancre du monde) -> { opaque, decoupe, melange, interne }
   // (chacun : tableaux du mailleur avec UNE section, ou null s'il est vide) ; rend null si la section est hors de la boite.
@@ -531,10 +557,10 @@ function assembler(T, textures, atlas, nbSec, cleDe = null) {
   for (let i = 0; i < n; i++) {
     const s = T.sec[i];
     const o = suivant[s]++;
-    positions.set(T.pos.subarray(i * 12, i * 12 + 12), o * 12);
-    couleurs.set(T.col.subarray(i * 4, i * 4 + 4), o * 4);
-    ao.set(T.aob.subarray(i * 4, i * 4 + 4), o * 4); etiq.set(T.eti.subarray(i * 4, i * 4 + 4), o * 4);
-    if (niv) niv.set(T.nv.subarray(i * 8, i * 8 + 8), o * 8);
+    // copies a la main (pas de sous-tableau par quad : le maillage paresseux assemble des milliers de colonnes)
+    for (let k = 0; k < 12; k++) positions[o * 12 + k] = T.pos[i * 12 + k];
+    for (let k = 0; k < 4; k++) { couleurs[o * 4 + k] = T.col[i * 4 + k]; ao[o * 4 + k] = T.aob[i * 4 + k]; etiq[o * 4 + k] = T.eti[i * 4 + k]; }
+    if (niv) for (let k = 0; k < 8; k++) niv[o * 8 + k] = T.nv[i * 8 + k];
     const sp = textures.sprites[T.spr[i]];
     if (mid) { mid[o * 2] = (sp.ax + sp.w / 2) / AW; mid[o * 2 + 1] = (sp.ay + sp.h / 2) / AH; }
     for (let k = 0; k < 4; k++) {
@@ -542,9 +568,9 @@ function assembler(T, textures, atlas, nbSec, cleDe = null) {
       const v = Math.min(sp.h - eps, Math.max(eps, T.uv[i * 8 + k * 2 + 1] * sp.h));
       uvs[o * 8 + k * 2] = (sp.ax + u) / AW; uvs[o * 8 + k * 2 + 1] = (sp.ay + v) / AH;
     }
-    const b = o * 4;
-    if (T.flip[i]) indices.set([b + 1, b + 2, b + 3, b + 1, b + 3, b], o * 6);
-    else indices.set([b, b + 1, b + 2, b, b + 2, b + 3], o * 6);
+    const b = o * 4, j = o * 6;
+    if (T.flip[i]) { indices[j] = b + 1; indices[j + 1] = b + 2; indices[j + 2] = b + 3; indices[j + 3] = b + 1; indices[j + 4] = b + 3; indices[j + 5] = b; }
+    else { indices[j] = b; indices[j + 1] = b + 1; indices[j + 2] = b + 2; indices[j + 3] = b; indices[j + 4] = b + 2; indices[j + 5] = b + 3; }
     for (let k = 0; k < 4; k++) for (let a = 0; a < 3; a++) {
       const v = T.pos[i * 12 + k * 3 + a];
       if (v < bbox[s * 6 + a]) bbox[s * 6 + a] = v;

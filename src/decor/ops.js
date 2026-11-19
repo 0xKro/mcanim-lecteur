@@ -1,10 +1,15 @@
 // Execution des operations d'un decor sur la grille. Les coordonnees du decor sont RELATIVES a l'ancre : x vers l'est, y vers le haut,
 // z vers le sud ; y local 0 = la couche d'air juste au-dessus du sol de l'ancre (la ou se tiennent les pieds), y = -1 le bloc de surface.
+// Une operation venue d'un gabarit (`pose`) porte `op.tf` = { M, o } : ses coordonnees (gabarit) passent par la matrice M (miroir puis quart
+// de tour, transfo.js) puis sont decalees de o (position de la pose), avant la rotation `rot` du decor entier.
 import { choisir } from './lire.js';
-import { Classes, etatDe, orienter, tourner, OPPOSE, VECT, NOM_FR, traduireValeur } from './etats.js';
-import { ErreurDecor } from './grille.js';
+import { Classes, etatDe, orienter, OPPOSE, VECT, NOM_FR, MOTS, traduireValeur } from './etats.js';
+import { ErreurDecor, LIMITES } from './grille.js';
 import { toit } from './toit.js';
 import { D } from '../moteur/donnees.js';
+import { rotM, mul, det, dirT, transformerProps } from './transfo.js';
+import { OPS_VOLUMES } from './volumes.js';
+import { OPS_FORMES } from './formes.js';
 
 // d.drapeaux : COLLISION_PLEINE = 128 ; REMPLACABLE = 1
 export class Exec {
@@ -14,7 +19,7 @@ export class Exec {
     const [ax, az] = decor.ancre;
     this.ax = ax; this.az = az;
     this.ay = decor.niveau === 'sol' ? this.solAncre(ax, az) : decor.niveau;
-    this.stats = { fondMax: 0, fondN: 0, fondSansSol: 0, aplani: null, avert: [], dessus: null, dalleSansSol: 0 };
+    this.stats = { fondMax: 0, fondN: 0, fondSansSol: 0, aplani: null, avert: [], dessus: null, dalleSansSol: 0, notes: [], bannieres: [], blocsEntites: { panneaux: [], pots: [], contenus: [], pupitres: [], cadres: [], tetes: [], cages: [], objetsPoses: [], tableaux: [], noeuds: [], coussins: [], acteurs: [] } };
   }
 
   // ---- sol d'une colonne (comme rs.solEn : le plus haut bloc a collision, sans les feuilles ; l'eau et les plantes ne comptent pas). null si rien.
@@ -35,9 +40,22 @@ export class Exec {
     return s;
   }
 
-  // ---- coordonnees : local (avec le decalage de rep) -> monde
+  // ---- coordonnees : local (avec le decalage de rep, et la pose d'un gabarit) -> monde
   rotXZ(x, z) { switch (this.rot) { case 1: return [-z, x]; case 2: return [-x, -z]; case 3: return [z, -x]; default: return [x, z]; } }
-  pt(op, [x, y, z]) { const [rx, rz] = this.rotXZ(x + op.dec[0], z + op.dec[2]); return [this.ax + rx, this.ay + y + op.dec[1], this.az + rz]; }
+  pt(op, [x, y, z]) {
+    let lx = x + op.dec[0], lz = z + op.dec[2], ly = y + op.dec[1];
+    if (op.tf) { const M = op.tf.M, o = op.tf.o; const tx = M[0] * lx + M[1] * lz + o[0]; lz = M[2] * lx + M[3] * lz + o[2]; lx = tx; ly += o[1]; }
+    const [rx, rz] = this.rotXZ(lx, lz);
+    return [this.ax + rx, this.ay + ly, this.az + rz];
+  }
+  // matrice (plan horizontal) du repere de l'operation vers le monde : rotation du decor . pose du gabarit
+  matrice(op) { const R = rotM(this.rot); return op.tf ? mul(R, op.tf.M) : R; }
+  // decalage vertical de l'operation (rep + pose)
+  decY(op) { return op.dec[1] + (op.tf ? op.tf.o[1] : 0); }
+  // l'axe x du repere de l'operation devient-il l'axe z du monde ?
+  echangeAxes(op) { return this.matrice(op)[0] === 0; }
+  // proprietes ecrites par le modele dans un gabarit pose avec rotation ou miroir : tournees comme le bloc (les mots de direction le sont par motMonde)
+  propsPose(op, props, info) { return op.tf && props ? transformerProps(props, { M: op.tf.M, ys: 1 }, info.props) : props; }
   boite(op, b) {
     const p = this.pt(op, [b[0], b[1], b[2]]), q = this.pt(op, [b[3], b[4], b[5]]);
     return [Math.min(p[0], q[0]), Math.min(p[1], q[1]), Math.min(p[2], q[2]), Math.max(p[0], q[0]), Math.max(p[1], q[1]), Math.max(p[2], q[2])];
@@ -46,7 +64,7 @@ export class Exec {
   // direction d'une operation -> mot du jeu, en tenant compte de `rot` ; `vers` : le point cible est en coordonnees du decor
   motMonde(op, dir, X, Z) {
     if (!dir) return null;
-    if (dir.mot) return tourner(dir.mot, this.rot);
+    if (dir.mot) return dirT(dir.mot, { M: this.matrice(op), ys: 1 });
     const [tx, , tz] = this.pt(op, [dir.vers[0], 0, dir.vers[1]]);
     const dx = tx - X, dz = tz - Z;
     if (dx === 0 && dz === 0) throw new ErreurDecor(`${op.chemin} : ${op.nom} : ["vers", ${dir.vers}] est la cellule elle-meme (aucune direction)`);
@@ -56,7 +74,7 @@ export class Exec {
   // ---- ecriture d'un bloc (un Choix) avec tout ce que fait le jeu a la pose
   etatBloc(spec, X, Y, Z, mot, extra) {
     const d = this.d, info = this.cls.info(spec.bloc);
-    const props = { ...spec.props };
+    const props = { ...this.propsPose(this.opCourante, spec.props, info) };
     const forces = Object.keys(props);
     if (mot) {
       const o = orienter(info, mot);
@@ -82,10 +100,10 @@ export class Exec {
   }
   poserSpec(spec, X, Y, Z, mot = null, extra = null) {
     // chemin rapide (les grandes boites) : bloc sans orientation ni propriete ajoutee, hors eau : l'etat et la liste des proprietes ecrites sont calcules une fois par bloc
-    if (!mot && !extra) {
+    if (!mot && !extra && !this.opCourante?.tf) {
       let c = spec.cache;
       if (!c) { const r = this.etatBloc(spec, X, Y, Z, null, null); c = spec.cache = { id: r.id, forces: r.forces.length ? new Set(r.forces) : null, eau: this.cls.info(spec.bloc).props.has('waterlogged') && !('waterlogged' in spec.props) }; }
-      if (!c.eau) { this.g.poserEtat(X, Y, Z, c.id); if (c.forces) this.g.forces.set(this.g.cle(X, Y, Z), c.forces); else if (this.g.forces.size) this.g.forces.delete(this.g.cle(X, Y, Z)); return c.id; }
+      if (!c.eau) { this.g.poserEtat(X, Y, Z, c.id); if (c.forces) this.g.forces.set(this.g.cle(X, Y, Z), c.forces); else if (this.g.forces.size) this.g.forces.delete(this.g.cle(X, Y, Z)); if (this.g.fige) this.g.defiger(X, Y, Z); return c.id; }
     }
     const { id, forces } = this.etatBloc(spec, X, Y, Z, mot, extra);
     this.g.poserEtat(X, Y, Z, id);
@@ -132,7 +150,7 @@ export class Exec {
   boiteMonde(b, fn) { for (let y = b[1]; y <= b[4]; y++) for (let z = b[2]; z <= b[5]; z++) for (let x = b[0]; x <= b[3]; x++) fn(x, y, z); }
   verifierTaille(op, b) {
     const n = (b[3] - b[0] + 1) * (b[4] - b[1] + 1) * (b[5] - b[2] + 1);
-    if (n > 4_000_000) throw new ErreurDecor(`${op.chemin} : ${op.nom} : boite de ${n} cellules (trop grande ; limite d'un decor : 128 x 96 x 128)`);
+    if (n > LIMITES.volume) throw new ErreurDecor(`${op.chemin} : ${op.nom} : boite de ${n} cellules (trop grande ; ${LIMITES.volume} cellules au plus par operation, ${LIMITES.cellules} cellules changees par decor)`);
   }
   // le bloc est-il "terrain plein" (arrete une fondation) : cube plein sans feuilles ni liquide ; #hidden compte comme plein
   terrainPlein(e) {
@@ -163,7 +181,7 @@ const OPS = {
   ligne(ex, op) {
     const a = ex.pt(op, op.a), c = ex.pt(op, op.c);
     const dx = c[0] - a[0], dy = c[1] - a[1], dz = c[2] - a[2], n = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz));
-    if (n > 600) throw new ErreurDecor(`${op.chemin} : ligne : ${n + 1} blocs (maximum 601)`);
+    if (n >= LIMITES.ligne) throw new ErreurDecor(`${op.chemin} : ligne : ${n + 1} blocs (maximum ${LIMITES.ligne})`);
     let dernier = null;
     for (let i = 0; i <= n; i++) {
       const t = n === 0 ? 0 : i / n, p = [Math.round(a[0] + dx * t), Math.round(a[1] + dy * t), Math.round(a[2] + dz * t)];
@@ -173,7 +191,10 @@ const OPS = {
   },
   bloc(ex, op) {
     const [x, y, z] = ex.pt(op, op.p);
-    ex.poserChoix(op, x, y, z, op.B, ex.motMonde(op, op.dir, x, z), op.props);
+    // gabarit pose avec rotation ou miroir : les proprietes ecrites tournent avec lui (mots francais traduits d'abord)
+    const FR = { gauche: 'left', droite: 'right' };
+    const props = op.tf && op.props ? transformerProps(Object.fromEntries(Object.entries(op.props).map(([k, v]) => { const s = String(v).trim().toLowerCase(); return [k, k === 'facing' ? MOTS[s] || s : FR[s] || s]; })), { M: op.tf.M, ys: 1 }, new Map()) : op.props;
+    ex.poserChoix(op, x, y, z, op.B, ex.motMonde(op, op.dir, x, z), props);
   },
   pts(ex, op) {
     for (const q of op.pts) { const [x, y, z] = ex.pt(op, q.p); ex.poserChoix(op, x, y, z, op.B, ex.motMonde(op, q.dir, x, z)); }
@@ -196,7 +217,7 @@ const OPS = {
   // fondation : de y local `de` (defaut -1) vers le bas jusqu'au terrain plein
   fond(ex, op) {
     const r = ex.rectXZ(op, op.x1, op.z1, op.x2, op.z2), g = ex.g;
-    const y0 = ex.ay + op.opt.de + op.dec[1];
+    const y0 = ex.ay + op.opt.de + ex.decY(op);
     for (let z = r[1]; z <= r[3]; z++) for (let x = r[0]; x <= r[2]; x++) {
       let n = 0, arret = false;
       for (let y = y0; n < op.opt.profondeur; y--, n++) {
@@ -214,7 +235,7 @@ const OPS = {
   aplanir(ex, op) {
     const g = ex.g, d = ex.d;
     const r = ex.rectXZ(op, op.x1, op.z1, op.x2, op.z2);
-    const Y = ex.ay + op.y + op.dec[1], marge = op.opt.marge;
+    const Y = ex.ay + op.y + ex.decY(op), marge = op.opt.marge;
     const orig = g.orig;
     // bloc de surface par defaut : le plus frequent sous le plan, dans le rectangle (sinon l'herbe)
     let dessus = op.opt.dessus || null;
@@ -267,10 +288,13 @@ const OPS = {
     if (mot === 'up' || mot === 'down') throw new ErreurDecor(`${op.chemin} : porte : direction horizontale attendue (nord, sud, est, ouest)`);
     const spec = choisir(op.B, ex.graine, x - ex.ax, y - ex.ay, z - ex.az), info = ex.cls.info(spec.bloc);
     if (!info.porte) throw new ErreurDecor(`${op.chemin} : porte : "${spec.nom}" n'est pas une porte (essaie oak_door, iron_door...)`);
-    ex.porteEn(op, x, y, z, spec, OPPOSE[mot], { hinge: op.opt.charniere, open: op.opt.ouverte });
+    const charniere = op.tf && det(op.tf.M) < 0 ? (op.opt.charniere === 'left' ? 'right' : 'left') : op.opt.charniere;   // gabarit pose en miroir : DoorBlock.mirror
+    ex.porteEn(op, x, y, z, spec, OPPOSE[mot], { hinge: charniere, open: op.opt.ouverte });
   },
 
   toit,
+  ...OPS_VOLUMES,
+  ...OPS_FORMES,
 };
 
 export { NOM_FR };

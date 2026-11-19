@@ -12,6 +12,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { canonique, empreinte } from './empreinte.js';
 import { verifierFichiers } from './fichiers.js';
+import { fichiersImportes } from '../decor/lire.js';
 
 const normaliserMod = (t) => t.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');   // identique a moteur/mods.js (sans l'importer : le moteur ne se charge qu'a la demande)
 
@@ -58,6 +59,25 @@ export function fichiersDeMods(mods, baseDir) {
       if (rel.includes('..')) continue;
       const f = path.resolve(baseDir, rel);
       if (fs.existsSync(f) && fs.statSync(f).isFile()) vus.add(rel);
+    }
+  }
+  return [...vus].sort();
+}
+
+// Constructions importees par les decors (operation `importer` : .schem, .nbt, .litematic a cote du decor) : leur CONTENU change le monde,
+// donc l'image. Chemins rendus relatifs au fichier de scene (avec des "/"). Un decor illisible est ignore ici (il est refuse a la lecture).
+export function fichiersDeDecors(decors, baseDir) {
+  const vus = new Set();
+  for (const e of Array.isArray(decors) ? decors : []) {
+    let brut = e, dir = baseDir;
+    if (typeof e === 'string') {
+      const f = path.resolve(baseDir, e);
+      try { brut = JSON.parse(fs.readFileSync(f, 'utf8').replace(/^﻿/, '')); } catch { continue; }
+      dir = path.dirname(f);
+    }
+    for (const rel of fichiersImportes(brut)) {
+      if (typeof rel !== 'string' || rel.split(/[\\/]/).includes('..') || path.isAbsolute(rel)) continue;
+      vus.add(path.relative(baseDir, path.resolve(dir, rel)).split(path.sep).join('/'));
     }
   }
   return [...vus].sort();
@@ -140,6 +160,11 @@ export function empreinteComplete(brut, { scene = null, baseDir = process.cwd(),
     return { role, chemin, sha: sha256Chemin(f, { normaliser: normalise.has(role) }) };
   });
   for (const chemin of fichiersDeMods(brut?.monde?.mods, baseDir)) lignes.push({ role: 'mod-fichier', chemin, sha: sha256Chemin(path.resolve(baseDir, chemin)) });
+  for (const chemin of fichiersDeDecors(brut?.decor, baseDir)) {
+    const f = path.resolve(baseDir, chemin);
+    if (!fs.existsSync(f)) throw new Error(`decor-import : fichier introuvable : ${chemin} (cite par une operation importer ; chemin relatif au fichier de decor)`);
+    lignes.push({ role: 'decor-import', chemin, sha: sha256Chemin(f) });
+  }
   lignes.push(...lignesVirtuelles(brut));
   lignes.push(...lignesOptions(opt, cwd));
   const cle = (l) => l.role + '\u0000' + l.chemin;

@@ -16,15 +16,17 @@ export class Lumiere {
     const m = this.m, N = m.PX * m.PY * m.PZ;
     m.ciel = new Uint8Array(N); m.bloc = new Uint8Array(N);
     this.OFF = [-m.OY, m.OY, -m.OZ, m.OZ, -1, 1];
-    // masque de bordure
-    this.bord = new Uint8Array(N);
-    const { PX, PY, PZ } = m;
-    for (let y = 0; y < PY; y++) for (let z = 0; z < PZ; z++) for (let x = 0; x < PX; x++) {
-      if (x === 0 || x === PX - 1 || y === 0 || y === PY - 1 || z === 0 || z === PZ - 1) this.bord[(y * PZ + z) * PX + x] = 1;
-    }
+    // bordure : calculee depuis l'indice (pas de masque : 1 octet par cellule de moins, grandes zones)
+    const { PX, PY, PZ } = m, OY = m.OY, haut = (PY - 1) * OY;
+    this.estBord = (i) => { if (i < OY || i >= haut) return true; const x = i % PX; if (x === 0 || x === PX - 1) return true; const z = ((i - x) / PX) % PZ; return z === 0 || z === PZ - 1; };
     this.fileA = new Int32Array(1 << 16); this.dqI = new Int32Array(1 << 14); this.dqL = new Uint8Array(1 << 14);
-    this._initCiel();
-    if (this.blocs) this._initBloc();
+    // le calcul de depart ne salit rien (le rendu repart de zero apres : rendu/scene.js) ; sans cela, une grande zone mettait des centaines de
+    // millions de cellules dans la liste
+    const sales = m.sales; if (sales) m.sales = null;
+    try {
+      this._initCiel();
+      if (this.blocs) this._initBloc();
+    } finally { if (sales) m.sales = sales; }
   }
 
   // niveau qu'une cellule d'opacite `o` laisse passer vers le bas depuis le niveau `L` (le ciel a 15 ne s'affaiblit que par l'opacite)
@@ -32,28 +34,46 @@ export class Lumiere {
 
   _initCiel() {
     const m = this.m, { PX, PY, PZ, pal, tOpac, ciel } = m, OY = m.OY;
+    const fond = new Int16Array(PX * PZ);   // par colonne : la cellule ou la lumiere du ciel tombe a 0 (en dessous : 0)
     for (let z = 0; z < PZ; z++) for (let x = 0; x < PX; x++) {
-      let L = 15;
-      for (let y = PY - 1; y >= 0; y--) {
+      let L = 15, y = PY - 1;
+      for (; y >= 0; y--) {
         const i = (y * PZ + z) * PX + x;
         // une face pleine (dalle, escalier) de la cellule du dessus (bas) ou de celle-ci (haut) arrete la lumiere qui descend
         if (y < PY - 1 && m.occulte(pal[i + OY], pal[i], 0)) L = 0;
         else L = Lumiere.bas(L, tOpac[pal[i]]);
         ciel[i] = L;
+        if (L === 0) break;   // plus bas : 0 aussi (le tableau neuf est deja a 0) ; le sous-sol d'une grande zone n'est pas parcouru
+      }
+      fond[z * PX + x] = Math.max(0, y);
+    }
+    // graines : seulement les cellules qui peuvent eclairer un voisin plus sombre (un voisin a au plus lv - 1, ou 15 sous un ciel a 15) ;
+    // les autres ne changeraient rien (meme resultat : la propagation va au meme point fixe), et une grande zone en a des centaines de millions
+    let graines = new Int32Array(1 << 16), n = 0;
+    const OFF = this.OFF;
+    for (let z = 1; z < PZ - 1; z++) for (let x = 1; x < PX - 1; x++) {
+      for (let y = PY - 2, bas = Math.max(1, fond[z * PX + x]); y >= bas; y--) {
+        const i = (y * PZ + z) * PX + x;
+        const lv = ciel[i];
+        if (lv <= 1) continue;
+        let utile = ciel[i + OFF[0]] < (lv === 15 ? 15 : lv - 1);
+        for (let f = 1; f < 6 && !utile; f++) if (ciel[i + OFF[f]] < lv - 1) utile = true;
+        if (!utile) continue;
+        if (n >= graines.length) { const g = new Int32Array(graines.length * 2); g.set(graines); graines = g; }
+        graines[n++] = i;
       }
     }
-    const graines = [];
-    for (let y = 1; y < PY - 1; y++) for (let z = 1; z < PZ - 1; z++) {
-      let i = (y * PZ + z) * PX + 1;
-      for (let x = 1; x < PX - 1; x++, i++) if (ciel[i] > 1) graines.push(i);
-    }
-    this._propager(ciel, true, Int32Array.from(graines), graines.length);
+    this._propager(ciel, true, graines, n);
   }
   _initBloc() {
     const m = this.m, { pal, tEmis, bloc } = m, N = pal.length;
-    const g = [];
-    for (let i = 0; i < N; i++) { const e = tEmis[pal[i]]; if (e > 0) { bloc[i] = e; g.push(i); } }
-    this._propager(bloc, false, Int32Array.from(g), g.length);
+    if (!m.palette.some((_, k) => tEmis[k] > 0)) return;   // aucun bloc lumineux dans la palette : rien a parcourir
+    let g = new Int32Array(1 << 12), n = 0;
+    for (let i = 0; i < N; i++) {
+      const e = tEmis[pal[i]];
+      if (e > 0) { bloc[i] = e; if (n >= g.length) { const h = new Int32Array(g.length * 2); h.set(g); g = h; } g[n++] = i; }
+    }
+    this._propager(bloc, false, g, n);
   }
 
   // niveau que (to) recoit depuis (from, niveau lv) dans la direction f
@@ -81,13 +101,13 @@ export class Lumiere {
     if (file.length < n + 1024) file = this.fileA = new Int32Array(n * 2);
     for (let k = 0; k < n; k++) file[k] = depart[k];
     let tete = 0, fin = n;
-    const OFF = this.OFF, bord = this.bord, m = this.m;
+    const OFF = this.OFF, bord = this.estBord, m = this.m;
     const suivi = m.suivi && m.sales !== null;
     while (tete < fin) {
       const i = file[tete++];
       const lv = arr[i];
       if (lv < 2) continue;
-      if (bord[i]) continue;
+      if (bord(i)) continue;
       for (let f = 0; f < 6; f++) {
         const j = i + OFF[f];
         const nl = this._passe(lv, f, i, j, ciel);
@@ -104,14 +124,14 @@ export class Lumiere {
 
   // Retrait : la cellule i vient de perdre de la lumiere. Rend la liste des cellules a re-propager.
   _retirer(arr, ciel, i, ancien) {
-    const OFF = this.OFF, bord = this.bord, m = this.m;
+    const OFF = this.OFF, bord = this.estBord, m = this.m;
     const suivi = m.suivi && m.sales !== null;
     const aj = [];
     let dqI = this.dqI, dqL = this.dqL, tete = 0, fin = 0;
     dqI[fin] = i; dqL[fin++] = ancien;
     while (tete < fin) {
       const p = dqI[tete], lv = dqL[tete++];
-      if (bord[p]) continue;
+      if (bord(p)) continue;
       for (let f = 0; f < 6; f++) {
         const n = p + OFF[f];
         const ln = arr[n];

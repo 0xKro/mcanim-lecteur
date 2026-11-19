@@ -22,6 +22,7 @@ import { matriceAffichage } from '../objets/placement.js';
 import { cuire as cuireBloc, afficheDe } from '../objets/modele-objet.js';
 import { texture as textureObjet, teinter } from '../objets/fichiers.js';
 import { resoudreObjet } from '../objets/definition.js';
+import { maillagesTete, TETE_DE_OBJET, TETES, skinParDefautUUID } from '../film/tetes-modele.js';   // tetes portees (CustomHeadLayer)
 
 const RAD = Math.PI / 180;
 // ---------------------------------------------------------------- matrices 4x4 (ligne par ligne)
@@ -45,7 +46,7 @@ export function matricePartie(parent, p) {
 
 // ---------------------------------------------------------------- arbre de parties a plat (ordre en profondeur) : nom, parent, quads
 const POSE0 = [0, 0, 0, 0, 0, 0, 1, 1, 1];
-function aplatir(racine) {
+export function aplatir(racine) {
   const noeuds = [];
   const marche = (p, nom, parent) => {
     const i = noeuds.length;
@@ -136,6 +137,7 @@ export function couchesDe(o, modeles, kitDir) {
       break;
     }
     case 'copper_golem': corps('copper_golem', `copper_golem/copper_golem${ch[0] === 'unaffected' ? '' : '_' + ch[0]}`); break;
+    case 'armor_stand': if (bebe && modeles.armor_stand_small) corps('armor_stand_small', 'armorstand/armorstand'); break;   // porte-armure Small (ArmorStandRenderer : modele petit)
     case 'strider': corps(nomModele('strider'), b(`strider/strider${ch[0] === 'cold' ? '_cold' : ''}`)); break;
     case 'bee': corps(nomModele('bee'), b(`bee/bee${ch[0] === 'angry' ? '_angry' : ''}${ch[1] === 'nectar' ? '_nectar' : ''}`)); break;
     case 'ghast': corps('ghast', ch[0] === 'shooting' ? 'ghast/ghast_shooting' : 'ghast/ghast'); break;
@@ -241,6 +243,19 @@ function pulsation(nom, pose, et) {
   if (nom === 'coeur') { const m = et?.m; if (!m) return 0; const a = et.s?.partial ?? 0; return Math.max(0, (m.anim.vo[1] + (m.anim.v[1] - m.anim.vo[1]) * a) / 10); }
   if (nom === 'vrilles') { const m = et?.m; if (!m) return 0; const a = et.s?.partial ?? 0; return Math.max(0, (m.anim.vo[0] + (m.anim.v[0] - m.anim.vo[0]) * a) / 10); }
   return 1;
+}
+
+// skin d'une tete de joueur portee : { png } (profil resolu, decor/index.js) ou { uuid } ; sinon Steve (DefaultPlayerSkin.getDefaultTexture)
+const memoTetes = new Map();
+function textureTeteJoueur(kitDir, d) {
+  const cle = d ? (d.tex ? d.tex : 'uuid:' + (d.uuid ?? '')) : 'steve';
+  if (memoTetes.has(cle)) return memoTetes.get(cle);
+  let t = null;
+  if (d?.tex) t = d.tex;   // skin du profil deja lu (decor/index.js)
+  if (!t && d?.uuid) { const sd = skinParDefautUUID(d.uuid); t = textureEntite(kitDir, `player/${sd.modele}/${sd.nom}`); }
+  if (!t) t = textureEntite(kitDir, 'player/wide/steve');
+  memoTetes.set(cle, t);
+  return t;
 }
 
 // ---------------------------------------------------------------- la creature
@@ -455,6 +470,32 @@ export class Creature {
         const A = matriceAffichage(c.affiche, gauche);
         M = mul(M, [A[0], A[1], A[2], A[3], A[4], A[5], A[6], A[7], A[8], A[9], A[10], A[11], 0, 0, 0, 1]);
         for (const mo of c.morceaux) sorties.push(maillageObjet(mo, M, lumiere, brut, pose, this.entite));
+      }
+    }
+    // CustomHeadLayer : bloc ou objet porte sur la tete (citrouille, bloc, banniere...) d'une entite importee (decor) : repere de la tete,
+    // translate(0, -0,25, 0), Ry(180), scale(0,625, -0,625, -0,625), puis l'affichage "head" du modele de l'objet
+    if (et?.coiffe && this.kitDir) {
+      const Mh = this.matrice(pose, 'head', cachePoses.get(this.couches[0].racine));
+      const villageois = this.type === 'villager' || this.type === 'zombie_villager' || this.type === 'wandering_trader';
+      const typeTete = TETE_DE_OBJET[String(et.coiffe).replace(/^minecraft:/, '')];
+      if (Mh && typeTete) {
+        // tete (crane) portee : scale(1,1875, -1,1875, -1,1875), (villageois : +0,0625), translate(-0,5, 0, -0,5), puis le crane comme un bloc pose
+        // au sol tourne de 180 degres (SkullBlockRenderer.renderSkull(null, 180)) ; joueur : skin du profil, sinon celui du jeu par l'UUID
+        let M = mul(Mh, S(1.1875, -1.1875, -1.1875));
+        if (villageois) M = mul(M, T(0, 0.0625, 0));
+        M = mul(M, T(-0.5, 0, -0.5));
+        const tx = typeTete === 'player' ? textureTeteJoueur(this.kitDir, et.coiffeSkin) : textureEntite(this.kitDir, TETES[typeTete].tex.replace(/^entity\//, '').replace(/\.png$/, ''));
+        const ap = (q) => [M[0] * q[0] + M[1] * q[1] + M[2] * q[2] + M[3], M[4] * q[0] + M[5] * q[1] + M[6] * q[2] + M[7], M[8] * q[0] + M[9] * q[1] + M[10] * q[2] + M[11]];
+        for (const m of maillagesTete(typeTete, { rotation: 8, texture: tx, L: lumiere, u: age, place: ap, nom: et.coiffe })) { m.genre = 'entite'; if (brut) { m.couleurs.fill(1); m.normales = new Float32Array(m.positions.length); for (let i = 1; i < m.normales.length; i += 3) m.normales[i] = 1; } sorties.push(m); }
+      } else if (Mh) {
+        const o = objetPourNotes(this.kitDir, et.coiffe, false);
+        const ent = resoudreObjet(this.kitDir, et.coiffe, {}).entrees;
+        o.couches.forEach((c, i) => {
+          const aff = (ent[i]?.model && afficheDe(this.kitDir, ent[i].model, false, 'head')) || { rotation: [0, 0, 0], translation: [0, 0, 0], scale: [1, 1, 1] };   // sans affichage "head" : aucune transformation (ItemTransform.NO_TRANSFORM)
+          const A = matriceAffichage(aff, false);
+          const M = mul(mul(mul(mul(mul(Mh, T(0, -0.25, 0)), RY(Math.PI)), S(0.625, -0.625, -0.625)), T(0, villageois ? 0.1875 : 0, 0)), [A[0], A[1], A[2], A[3], A[4], A[5], A[6], A[7], A[8], A[9], A[10], A[11], 0, 0, 0, 1]);
+          for (const mo of c.morceaux) sorties.push(maillageObjet(mo, M, lumiere, brut, pose, this.entite));
+        });
       }
     }
     if (this.kitDir) sorties.push(...this.blocs(pose, lumiere, brut, cachePoses.get(this.couches[0].racine)));

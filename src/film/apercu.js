@@ -1,7 +1,17 @@
-// Image d'apercu (mcanim apercu) : petite, sans jeton, avec un filigrane en diagonale pour qu'elle ne remplace pas un vrai rendu.
+// Image d'apercu (mcanim apercu) : sans jeton, avec un filigrane en diagonale pour qu'elle ne remplace pas un vrai rendu.
+// 640x360 par defaut ; jusqu'a 1920 de large (avant : 640) pour juger un detail ; le fichier reste petit : JPEG au-dela de 640 de large
+// (rendu/jpeg.js, quelques centaines de Ko en 1920x1080), PNG compresse au maximum sinon (ou si la sortie finit par .png).
 
-export const APERCU_LARGEUR_MAX = 640;
-export const APERCU_HAUTEUR_MAX = 1140;     // 640 x 16/9 : vertical 360x640 permis, jamais plus grand
+export const APERCU_LARGEUR_MAX = 1920;
+export const APERCU_HAUTEUR_MAX = 1920;     // vertical 1080x1920 permis, jamais plus grand
+export const APERCU_LARGEUR_PNG = 640;      // au-dela, la sortie par defaut est un JPEG (apercu.jpg)
+
+// Format du fichier d'apercu : 'jpeg' (.jpg / .jpeg), 'png' (.png) ; sans extension connue : PNG jusqu'a 640 de large, JPEG au-dela.
+export function formatApercu(sortie, largeur) {
+  if (/\.jpe?g$/i.test(sortie ?? '')) return 'jpeg';
+  if (/\.png$/i.test(sortie ?? '')) return 'png';
+  return largeur > APERCU_LARGEUR_PNG ? 'jpeg' : 'png';
+}
 
 // Police 5x7 des seules lettres utiles (le mot "APERCU", sans accent : 5 colonnes, 7 lignes).
 const LETTRES = {
@@ -52,7 +62,7 @@ export function filigrane(rgba, W, H) {
 export function tailleApercu(texte, scene) {
   if (texte === undefined) return scene.largeur >= scene.hauteur ? [640, 360] : [360, 640];
   const m = /^(\d{2,4})x(\d{2,4})$/.exec(String(texte).trim());
-  if (!m) throw new Error('--taille : forme attendue 640x360');
+  if (!m) throw new Error('--taille : forme attendue 640x360 (jusqu\'a 1920x1080)');
   const l = Number(m[1]), h = Number(m[2]);
   if (l > APERCU_LARGEUR_MAX) throw new Error(`--taille : un apercu fait ${APERCU_LARGEUR_MAX} pixels de large au plus (recu ${l})`);
   if (h > APERCU_HAUTEUR_MAX) throw new Error(`--taille : un apercu fait ${APERCU_HAUTEUR_MAX} pixels de haut au plus (recu ${h})`);

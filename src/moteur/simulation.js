@@ -87,6 +87,33 @@ export class Simulation {
     this.vibrations = new Vibrations(this);      // vibrations (pas, blocs, projectiles, explosions) : capteurs de sculk et wardens (vibrations.js)
     this.boss = new Boss(this);                   // cristaux de l'End, nuages de souffle du dragon, motif du wither (ia-boss.js)
     this.creatures = config.creatures ?? null;    // table des creatures pour les entites nees en cours de route : { gabarit(c), stats(type) } (film/video.js)
+    // outils de debogage (docs/SIMULATION.md partie 33) : blocs casses faute d'appui (BlockState.canSurvive faux) ; suivi d'une cellule
+    this.retraits = []; this.nbRetraits = 0;      // { tick, nom, x, y, z } (500 au plus ; nbRetraits compte tout)
+    this.trace = null;                            // mcanim simuler --trace x,y,z : { x, y, z, lignes: [{ tick, avant, apres, cause }] }
+    this.phase = ''; this.causeMaj = null;        // cause courante d'un changement (phase du tick, mise a jour de voisin en cours) : lue par la trace
+  }
+
+  // mcanim simuler --trace x,y,z : chaque ecriture de la cellule (monde.ecrire) est notee avec sa cause
+  suivre(x, y, z) {
+    const T = this.trace = { x, y, z, lignes: [], depart: null };
+    this.monde.espion = (cx, cy, cz, ancien, nouveau) => {
+      if (cx !== x || cy !== y || cz !== z) return;
+      const cause = this.causeMaj ? `${this.causeMaj}${this.phase ? ' ; pendant : ' + this.phase : ''}` : this.phase || 'debut de la scene';
+      if (T.lignes.length < 2000) T.lignes.push({ tick: this.temps, avant: this.texteIndice(ancien), apres: this.texteIndice(nouveau), cause });
+    };
+  }
+  // texte d'etat du jeu (proprietes dans l'ordre du jeu) d'un indice de palette du monde
+  texteIndice(i) { const e = this.monde.tEtat[i]; return e === undefined ? '?' : e < 0 ? '#hidden' : this.d.chaine(e); }
+
+  // Un bloc va etre casse : si le jeu le casse parce qu'il n'a plus d'appui (canSurvive faux), on le note (rapport de mcanim simuler)
+  _noterSansAppui(x, y, z) {
+    const e = this.monde.etatEn(x, y, z);
+    if (e < 0) return;
+    const b = this.d.blocDe(e);
+    if (!this.reg.a('survit', b) || this.survit(x, y, z)) return;
+    if (this.d.prop(e, 'half') === 'upper') return;   // porte, plante haute : une seule ligne (la moitie basse)
+    this.nbRetraits++;
+    if (this.retraits.length < 500) this.retraits.push({ tick: this.temps, nom: this.d.nomBloc(e), x, y, z });
   }
 
   // heure du jour de la scene (ciel.heure, 0 a 24 ; midi = 12) au tick courant : le detecteur de lumiere du jour la lit
@@ -166,6 +193,7 @@ export class Simulation {
   // opt.outil : objet tenu (le bon outil decide du butin des blocs qui exigent un outil) ; opt.acteur : nom de celui qui casse
   casser(x, y, z, { butin = true, outil = null, acteur = null, outilOk } = {}) {
     this._butinCtx = { outil, acteur, outilOk };
+    if (!acteur) this._noterSansAppui(x, y, z);   // poudre, repeteur, comparateur, rail... casses par leur neighborChanged (dropResources + removeBlock)
     try { return this._casserLimite(x, y, z, butin ? 0 : F.SANS_BUTIN, LIMITE_FORMES); } finally { this._butinCtx = null; }
   }
   _casserLimite(x, y, z, drapeaux, limite) {
@@ -232,6 +260,14 @@ export class Simulation {
   }
   // execute l'etape suivante d'une mise a jour ; rend vrai s'il en reste
   _executerMaj(m) {
+    if (this.trace) {   // --trace : la mise a jour en cours est la cause de ce qu'elle change
+      const avant = this.causeMaj;
+      this.causeMaj = m.k === 'forme' ? `mise a jour de forme (voisin ${m.nx},${m.ny},${m.nz} change)` : m.k === 'multi' ? `mise a jour de voisin (${m.x},${m.y},${m.z} a change)` : `mise a jour de voisin (${m.bloc >= 0 ? this.d.noms[m.bloc] : 'bloc'} a cote)`;
+      try { return this._executerMajBrut(m); } finally { this.causeMaj = avant; }
+    }
+    return this._executerMajBrut(m);
+  }
+  _executerMajBrut(m) {
     this.stats.voisins++;
     if (m.k === 'multi') {
       const f = ORDRE_VOISINS[m.i++];
@@ -292,7 +328,7 @@ export class Simulation {
   // Block.updateOrDestroy
   _majOuDetruire(x, y, z, ancien, nouveau, drapeaux, limite) {
     const eN = this.monde.tEtat[nouveau];
-    if (eN >= 0 && this.d.nomBloc(eN) === 'air') this._casserLimite(x, y, z, drapeaux, limite);
+    if (eN >= 0 && this.d.nomBloc(eN) === 'air') { this._noterSansAppui(x, y, z); this._casserLimite(x, y, z, drapeaux, limite); }
     else this._poserIndice(x, y, z, nouveau, drapeaux & ~F.SANS_BUTIN, limite);
   }
 
@@ -674,7 +710,10 @@ export class Simulation {
     this.posesCeTick = 0;
     this.horloge = t - 1;
     // 0. commandes datees et debut de tick
+    const tr = !!this.trace;                      // --trace : la phase en cours est la cause des changements (texte construit seulement alors)
+    if (tr) this.phase = 'debut de tick (mods)';
     if (this.reg.aMonde('debutTick')) this.reg.lancerMonde('debutTick', evenement({ tick: t }), this.api);
+    if (tr) this.phase = 'commande de la scene (monde.blocs / monde.cmd)';
     this._commandes();
     this.horloge = t;                             // tickTime : l'heure du jeu passe au tick t
     // 2. ticks planifies de blocs
@@ -688,6 +727,7 @@ export class Simulation {
       if (b !== x.type) continue;                 // le bloc a change entre-temps : le tick est ignore
       this.stats.ticks++;
       const e = this.monde.etatEn(x.x, x.y, x.z);
+      if (tr) this.phase = `tick planifie de ${this.d.nomBloc(e)} ${x.x},${x.y},${x.z}`;
       if (this.reg.a('tick', b)) this.reg.lancerBloc('tick', b, evenement({ pos: [x.x, x.y, x.z], etat: this.d.chaine(e), bloc: this.d.nomBloc(e) }), this.api);
     }
     // 2b. ticks planifies de fluides (apres ceux des blocs, comme le jeu) : l'ecoulement est ecrit avec l'API des mods (familles/fluides.js)
@@ -696,26 +736,35 @@ export class Simulation {
         const f = this.fluide(x.x, x.y, x.z);
         if (f.type !== (x.type === 1 ? 'water' : 'lava')) continue;     // le fluide a change de famille ou a disparu
         this.nbFluides++;
+        if (tr) this.phase = `tick de fluide (${f.type}) ${x.x},${x.y},${x.z}`;
         this.reg.lancerMonde('fluide.tick', evenement({ pos: [x.x, x.y, x.z], type: f.type }), this.api);
       }
     }
     // 3. meteo (precipitations, foudre : avant les ticks aleatoires, comme tickChunk) puis ticks aleatoires dans la region active
+    if (tr) this.phase = 'meteo (pluie, neige, foudre)';
     if (this.meteo) this.meteo.tick();
     this._suivreRegion();
+    if (tr) this.phase = 'tick aleatoire';
     this._aleatoires();
     this.enTick = false;
     // 4. evenements de blocs (pistons, blocs musicaux, cloches) : ceux ajoutes pendant la boucle sont traites dans la meme phase
+    if (tr) this.phase = 'evenement de bloc (piston qui demarre, bloc musical, cloche)';
     this._evenementsBlocs();
     // 5. entites : les acteurs (intentions, marche, interactions) ; leurs blocs touches (plaques) sont traites a la fin de leur deplacement
-    if (this.acteurs) this.acteurs.tick();
+    if (this.acteurs) this.acteurs.tick();         // --trace : chaque acteur pose sa phase (moteur/acteurs.js)
+    if (tr) this.phase = 'entite (objet au sol, TNT, bloc qui tombe, projectile)';
     if (this.entites.liste.length) this.entites.tick();
+    if (tr) this.phase = 'foudre, capteur de sculk, boss';
     if (this.meteo) this.meteo.tickEclairs();
     this.vibrations.tick(); this.boss.tick();
     // 6. blocs a entite qui changent des blocs (pistons en mouvement) : apres les entites ; fours
+    if (tr) this.phase = 'four, alambic';
     if (this.contenus.m.size) this.fours.tick();
     if (this.alambics?.m.size) this.alambics.tick();   // alambics (alambic.js, partie 26)
+    if (tr) this.phase = 'piston (bloc en mouvement qui se pose) ou bloc a entite';
     if (this.reg.aMonde('tickBlocsEntites')) this.reg.lancerMonde('tickBlocsEntites', evenement({ tick: t }), this.api);
     // 8. fin de tick
+    if (tr) this.phase = 'fin de tick (mods)';
     if (this.reg.aMonde('finTick')) this.reg.lancerMonde('finTick', evenement({ tick: t }), this.api);
     this._ecrireReplay();
   }
@@ -832,6 +881,7 @@ export class Simulation {
     for (const [t, verbe, x, y, z, v] of cfg.cmd || []) if (verbe === 'alimente' || verbe === 'allume' || verbe === 'explose' || verbe === 'frappe' || verbe === 'page') this.cmds.push({ tick: Math.floor(t * 20 * ralenti + 1e-9), x, y, z, bloc: v, tipo: verbe, i: this.cmds.length });
     this.cmds.sort((p, q) => p.tick - q.tick || p.i - q.i);
     this.iCmd = 0;
+    if (this.trace) { this.phase = 'debut de la scene (pupitres, redstone)'; this.trace.depart = this.texteIndice(this.monde.indiceEn(this.trace.x, this.trace.y, this.trace.z)); }
     this.region = this.cmds.map((c) => [c.x, c.y, c.z]);
     if (this.acteurs) for (const a of this.acteurs.liste) this.region.push([a.x, a.y, a.z]);
     this.aTickAleatoire = this.reg.entrees.some((e) => e.genre === 'bloc' && e.evt === 'tickAleatoire');
@@ -856,9 +906,10 @@ export class Simulation {
   // Avance de `n` ticks (essais, ou boucle de `executer`)
   avancer(n = 1) { for (let k = 0; k < n; k++) { this._tick(); this.temps++; } }
 
-  executer({ duree, ralenti = 1 } = {}) {
+  // jusqua (mcanim etat --bloc) : dernier tick joue (la simulation s'arrete apres lui)
+  executer({ duree, ralenti = 1, jusqua } = {}) {
     const cfg = this.config;
-    const n = this.initialiser({ duree, ralenti });
+    const n = Math.min(this.initialiser({ duree, ralenti }), jusqua === undefined ? Infinity : jusqua + 1);
     const t0 = performance.now();
     for (this.temps = 0; this.temps < n; this.temps++) {
       this._tick();

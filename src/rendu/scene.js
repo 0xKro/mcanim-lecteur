@@ -19,6 +19,8 @@ import { analyser, calculerBloom, calculerRayons, composer, creerTampons } from 
 const ICI = path.dirname(fileURLToPath(import.meta.url));
 const DIST_INTERNE = 32;   // distance horizontale (blocs) au-dela de laquelle les faces internes des feuilles ne sont plus dessinees
 const BRUME_MIN = 32, BRUME_MARGE = 4;   // brouillard automatique : fin minimale, marge avant le bord de la zone (blocs)
+export const SEUIL_PARESSEUX = 257 * 257;   // colonnes : au-dela (zones de rayon > 128), maillage paresseux
+const GARDE_COLONNES = 64;   // maillage paresseux : une colonne maillee est oubliee au-dela de la portee de la vue + 64 blocs
 const MODES = { opaque: MODE_OPAQUE, decoupe: MODE_DECOUPE, melange: MODE_MELANGE };
 
 // Brume de pluie du jeu (AtmosphericFogEnvironment) : debut - 160 x m, fin = max(min(fin, 96), fin - 256 x m), m = rainFogMultiplier (0..1) ;
@@ -40,6 +42,9 @@ export async function chargerScene({ zonePath, zone, kitDir, travailleurs, optio
   const t0 = performance.now();
   const kit = dossierKit(kitDir);
   const z = zone || lireZone(zonePath);
+  // grande zone (plus de 257 x 257 colonnes) : maillage paresseux, colonne par colonne, seulement a portee de la camera (assurerVue) ;
+  // les commandes sans image (terrain, trajet, empreinte) ne maillent rien. Memes sections, meme image que le maillage complet.
+  if (options.paresseux === undefined) options = { ...options, paresseux: z.sx * z.sz > SEUIL_PARESSEUX };
   // scene avec un champ `monde` (options.monde = { donnees, replay, lumiere }) : le maillage lit les tableaux d'un Monde modifiable, la lumiere de blocs
   // est calculee et les sections sont refaites quand le replay change des blocs. Le moteur n'est charge que dans ce cas.
   let monde = null, optionsM = options, curseur = 0, tickInitial = -1;
@@ -84,6 +89,7 @@ class Scene {
     this.prochainePiece = 1; this.statsMaj = { sections: 0, ms: 0, quads: 0, lots: 0, maxMs: 0 };
     this.zone = zone; this.modeles = modeles; this.textures = textures; this.maillage = maillage;
     this.options = options;
+    this.paresseux = !!maillage.paresseux; this.colonnesM = new Map();   // maillage paresseux : cle de colonne -> { a, c, ids }
     this.nTrav = travailleurs ?? Math.max(1, Math.min(os.availableParallelism(), 4));
     // draws statiques
     this.draws = [];
@@ -129,8 +135,10 @@ class Scene {
     // lumiereVue (film/lumiere-vue.js) : vision nocturne et assombrissement des boss de celui qui regarde ; dimension : monde de l'End
     // End : l'eclair du ciel eclaire le monde (sky_light_factor += intensite, / 3 sous la brume du dragon)
     const fl = dim === 'end' ? eclairEnd((this.tempsMonde ?? 0) * 20).intensite / (v?.brumeDragon ? 3 : 1) : 0;
-    const cle = heure + '|' + g + (facteurCiel !== 1 ? '|' + facteurCiel : '') + (v ? `|${v.visionNuit}|${v.boss}` : '') + (dim !== 'overworld' ? `|${dim}|${fl}` : '');
-    if (this._lmCle !== cle) { this._lm = tableLumiere(ticksDepuisHeure(heure), g, { facteurCiel, nightVision: v?.visionNuit ?? 0, boss: v?.boss ?? 0, dimension: dim, eclairEnd: fl }); this._lmCle = cle; }
+    // multBlocs : regle de scene monde.regles.lumiere.blocs (rendu seulement ; 1 = le jeu)
+    const mb = this.options.monde?.multBlocs ?? 1;
+    const cle = heure + '|' + g + (facteurCiel !== 1 ? '|' + facteurCiel : '') + (v ? `|${v.visionNuit}|${v.boss}` : '') + (dim !== 'overworld' ? `|${dim}|${fl}` : '') + (mb !== 1 ? '|b' + mb : '');
+    if (this._lmCle !== cle) { this._lm = tableLumiere(ticksDepuisHeure(heure), g, { facteurCiel, nightVision: v?.visionNuit ?? 0, boss: v?.boss ?? 0, dimension: dim, eclairEnd: fl, blocs: mb }); this._lmCle = cle; }
     return this._lm;
   }
 
@@ -166,11 +174,74 @@ class Scene {
     return n;
   }
 
+  // ---- maillage paresseux (grandes zones) : colonnes de sections (16 x 16, toute la hauteur) maillees quand la camera s'en approche
+  _cleCol(a, c) { return (c + 4096) * 8192 + (a + 4096); }
+  // Maille (ou remaille) la colonne (a, c) : ses pieces remplacent les anciennes. Rend le nombre de quads.
+  _maillerColonne(a, c, maj) {
+    const k = this._cleCol(a, c), ancien = this.colonnesM.get(k);
+    if (ancien) this._oublierColonne(k, maj);
+    const res = this.maillage.mailleColonne(a, c);
+    const ids = [];
+    let quads = 0;
+    for (const nom of ['opaque', 'decoupe', 'melange', 'interne']) {
+      const cc = res && res[nom];
+      if (!cc) continue;
+      const mode = nom === 'opaque' ? MODE_OPAQUE : nom === 'melange' ? MODE_MELANGE : MODE_DECOUPE;
+      const draw = { positions: cc.positions, uvs: cc.uvs, couleurs: cc.couleurs, indices: cc.indices, sections: cc.sections, ao: cc.ao, etiq: cc.etiq, niv: cc.niv, tex: this.texAtlas, mode, deuxFaces: false, partage: false, ...(nom === 'interne' ? { interne: true, distMax: this.options.distInterne ?? DIST_INTERNE } : {}) };
+      const id = this.prochainePiece++;
+      if (this.moteur && this.moteur.cuirePiece) this.moteur.cuirePiece(draw);   // ombres cuites de la piece (shader)
+      this.pieces.set('c' + k + '|' + nom, { id, draw });
+      maj.ajouts.push({ id, draw: { ...draw, tex: undefined } });
+      if (this.options.exportGPU) this._pendantGPU(id, nom, cc, k);
+      ids.push(id); quads += cc.nbQuads;
+    }
+    this.colonnesM.set(k, { a, c, ids });
+    return quads;
+  }
+  _oublierColonne(k, maj) {
+    const col = this.colonnesM.get(k);
+    if (!col) return;
+    for (const nom of ['opaque', 'decoupe', 'melange', 'interne']) {
+      const p = this.pieces.get('c' + k + '|' + nom);
+      if (!p) continue;
+      this.pieces.delete('c' + k + '|' + nom); maj.retraits.push(p.id);
+      if (this.options.exportGPU) { const g = (this.majGPU ||= { mortes: new Set(), retraits: new Set(), ajouts: new Map() }); if (!g.ajouts.delete(p.id)) g.retraits.add(p.id); }
+    }
+    this.colonnesM.delete(k);
+  }
+  // Colonnes a moins de `rayon` blocs (distance horizontale, comme la brume) de la camera : maillees si besoin ; celles au-dela de `garde` : oubliees.
+  // Rend le nombre de colonnes maillees. Sans effet hors du mode paresseux.
+  assurerVue(cam, rayon, garde = rayon + GARDE_COLONNES) {
+    if (!this.paresseux) return 0;
+    const t0 = performance.now();
+    const A = this.maillage.ancre, B = this.boite();
+    const dist2 = (a, c) => {
+      const xa = a * 16 + A[0], za = c * 16 + A[2];
+      const ex = Math.max(xa - cam.x, 0, cam.x - (xa + 16)), ez = Math.max(za - cam.z, 0, cam.z - (za + 16));
+      return ex * ex + ez * ez;
+    };
+    const maj = { mortes: [], retraits: [], ajouts: [] };
+    for (const [k, col] of this.colonnesM) if (dist2(col.a, col.c) > garde * garde) this._oublierColonne(k, maj);
+    const r = Math.max(0, rayon);
+    const a0 = Math.floor((Math.max(B.x0, cam.x - r) - A[0]) / 16), a1 = Math.floor((Math.min(B.x0 + B.sx - 1, cam.x + r) - A[0]) / 16);
+    const c0 = Math.floor((Math.max(B.z0, cam.z - r) - A[2]) / 16), c1 = Math.floor((Math.min(B.z0 + B.sz - 1, cam.z + r) - A[2]) / 16);
+    let n = 0, quads = 0;
+    for (let c = c0; c <= c1; c++) for (let a = a0; a <= a1; a++) {
+      if (this.colonnesM.has(this._cleCol(a, c)) || dist2(a, c) > r * r) continue;
+      quads += this._maillerColonne(a, c, maj); n++;
+    }
+    this._envoyerMaj(maj);
+    const s = (this.statsParesseux ||= { colonnes: 0, quads: 0, ms: 0 });
+    s.colonnes += n; s.quads += quads; s.ms += performance.now() - t0;
+    return n;
+  }
+
   // Refait les sections dont les cellules (blocs ou lumiere) ont change : une cellule salit sa section et celles a moins d'une cellule.
   async remailler() {
     const m = this.monde, mail = this.maillage, t0 = performance.now();
     if (m.sales === null) return this.rebatir();
     if (!m.sales.length) return 0;
+    if (this.paresseux) return this._remaillerColonnes(t0);
     const A = m.ancre, PX = m.PX, PZ = m.PZ, cles = new Map();
     for (const i of m.sales) {
       const lx = i % PX - 1, t = (i - (lx + 1)) / PX, lz = t % PZ - 1, ly = (t - (lz + 1)) / PZ - 1;
@@ -193,6 +264,30 @@ class Scene {
     this._envoyerMaj(maj);
     const ms = performance.now() - t0;
     const s = this.statsMaj;
+    s.sections += cles.size; s.ms += ms; s.quads += quads; s.lots++; s.maxMs = Math.max(s.maxMs, ms);
+    return cles.size;
+  }
+
+  // maillage paresseux : les colonnes deja maillees qui contiennent une section salie sont refaites entieres ; les autres le seront a la demande
+  _remaillerColonnes(t0) {
+    const m = this.monde, mail = this.maillage, A = m.ancre, PX = m.PX, PZ = m.PZ, cles = new Map(), cols = new Map();
+    for (const i of m.sales) {
+      const lx = i % PX - 1, t = (i - (lx + 1)) / PX, lz = t % PZ - 1, ly = (t - (lz + 1)) / PZ - 1;
+      const x = m.x0 + lx, y = m.y0 + ly, z = m.z0 + lz;
+      for (let a = Math.floor((x - 1 - A[0]) / 16); a <= Math.floor((x + 1 - A[0]) / 16); a++) {
+        for (let c = Math.floor((z - 1 - A[2]) / 16); c <= Math.floor((z + 1 - A[2]) / 16); c++) {
+          cols.set(this._cleCol(a, c), [a, c]);
+          for (let b = Math.floor((y - 1 - A[1]) / 16); b <= Math.floor((y + 1 - A[1]) / 16); b++) cles.set(mail.cleAbs(a, b, c), [a, b, c]);
+        }
+      }
+    }
+    m.sales = [];
+    this._derniersCles = [...cles.keys()];
+    const maj = { mortes: [], retraits: [], ajouts: [] };
+    let quads = 0, n = 0;
+    for (const [k, [a, c]] of cols) if (this.colonnesM.has(k)) { quads += this._maillerColonne(a, c, maj); n++; }
+    this._envoyerMaj(maj);
+    const ms = performance.now() - t0, s = this.statsMaj;
     s.sections += cles.size; s.ms += ms; s.quads += quads; s.lots++; s.maxMs = Math.max(s.maxMs, ms);
     return cles.size;
   }
@@ -246,7 +341,7 @@ class Scene {
     this.maillage = mailler({ zone: this.zone, modeles: this.modeles, textures: this.textures, couleurs: this.couleurs, options: { ...this.options, monde: m, lightmap: this.maillage.lightmap } });
     m.sales = [];
     this.draws = this._construireDraws(this.maillage);
-    this.pieces.clear(); this.mortes = new Set();
+    this.pieces.clear(); this.mortes = new Set(); this.colonnesM.clear();   // paresseux : les colonnes seront remaillees a la demande
     await this.fermer();
     this.travailleursListe = [];
     if (this.nTrav > 0) await this.demarrer();
@@ -421,6 +516,8 @@ class Scene {
       params.vanille = null; params.eau = null; params.fogLut = null; params.fogH = null; params.ven = null;
       params.brumeDebut = 0; params.brumeFin = fin; params.loin = loin ?? fin + 1; params.brumeCiel = true; params.brume = c; params.cielZenith = c; params.cielHorizon = c; params.cielBas = c; params.soleil = null;
     }
+    // maillage paresseux : les colonnes a portee de la vue (au-dela de `loin` rien n'est dessine) ; garde : la portee hors de l'eau (pas d'oubli en plongee)
+    if (this.paresseux) this.assurerVue(cam, params.loin, Math.max(params.loin, b.fin + 1) + GARDE_COLONNES);
     const id = ++this.idImage;
     const tp = postSh ? this._tampons(largeur, hauteur, postSh.F) : null;
     const sw = this.local || !this.travailleursListe.length;

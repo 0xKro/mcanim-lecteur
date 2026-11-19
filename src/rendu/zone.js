@@ -11,7 +11,7 @@ export class Zone {
     this.biomesNoms = hdr.biomes;
     [this.x0, this.y0, this.z0] = hdr.origine;
     [this.sx, this.sy, this.sz] = hdr.taille;
-    this.cellules = cellules; // Uint32Array, indice (y*sz+z)*sx+x en coordonnees locales
+    this.cellules = cellules; // Uint16Array (Uint32Array si la palette depasse 65536 entrees), indice (y*sz+z)*sx+x en coordonnees locales
     this.biomes = biomes; // Uint8Array sx*sz
     this.hauteurs = hauteurs; // Int16Array sx*sz (Y monde)
   }
@@ -60,7 +60,8 @@ export function lireZone(source) {
     } while (b & 0x80);
     return v;
   };
-  const cellules = new Uint32Array(N);
+  // 2 octets par cellule (palette de 65536 entrees au plus, comme le moteur) : une zone de 1025 x 1025 x 384 tient en 0,8 Go
+  const cellules = hdr.palette.length <= 65536 ? new Uint16Array(N) : new Uint32Array(N);
   for (let i = 0; i < N;) {
     const run = leb(), id = leb();
     if (run < 1 || i + run > N) throw new Error('.mcz : séquence hors limites');

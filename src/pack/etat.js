@@ -16,5 +16,8 @@ export function etatImage({ scene, camera, heure = 12, jour = 0, largeur, hauteu
     largeur, hauteur, camera: { x: camera.x, y: camera.y, z: camera.z, lacet: camera.lacet ?? 0, tangage: camera.tangage ?? 0, fov: camera.fov ?? 70 },
     heure, ticks, angleSoleil: angleSoleil(ticks), jour, ciel: sky, brume: fog, luminosite: [0, niveau], jourLumiere,
     frame, temps, dt: 1 / 30, pluie: meteo ? meteo.pluie : 0, orage: meteo ? meteo.orage : 0, humidite: meteo ? meteo.humidite ?? 0 : 0,
+    // regle de scene monde.regles.lumiere.blocs : appliquee au niveau de lumiere de bloc des SOMMETS (export-gpu.js niveauBlocRegle), que les
+    // packs lisent par lmcoord ou par la texture lightmap ; la texture de l'hote reste donc celle du jeu (1), sinon la regle compterait deux fois
+    lumiereBlocs: 1,
   };
 }

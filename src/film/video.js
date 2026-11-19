@@ -21,7 +21,8 @@ import { lireMasque } from '../perso/masque.js';
 import { Sons, planifierSons, mixer, FREQUENCE, VOLUME_MIXAGE } from './sons.js';
 import { trouverFfmpeg } from './ffmpeg.js';
 import { appliquerTextures } from './cache.js';
-import { filigrane, tailleApercu } from './apercu.js';
+import { filigrane, tailleApercu, formatApercu } from './apercu.js';
+import { encoderJPEG } from '../rendu/jpeg.js';
 import { lireShader } from '../shader/format.js';
 import { creerComposition } from '../montage/composition.js';
 import { melangerCouleur } from '../montage/effets-image.js';   // montage : effets d'image, transitions, incrustations (rien sans ces champs)
@@ -36,8 +37,16 @@ export function fichierShader(scene, baseDir, option) {
 // Prepare les skins de tous les acteurs. `surcharges` : { nomActeur: "fichier.png" } (option --skin).
 // Retourne { personnages (le skin de base de chaque acteur), parRef (par acteur : Map "reference de skin" -> Personnage, pour la
 // piste `skins`), infos }. Le masque de couleur selective (champ `masque`) est lu une fois par acteur et partage par tous ses skins.
-export async function preparerPersonnages(scene, { kitDir, surcharges = {}, baseDir, resoudre = resoudreSkin, creatures = null }) {
+export async function preparerPersonnages(scene, { kitDir, surcharges = {}, baseDir, resoudre: resoudreBrut = resoudreSkin, creatures = null }) {
   const personnages = [], parRef = [], infos = [];
+  // cache des skins (foule de 40 joueurs, 150 acteurs) : un meme skin (pseudo, fichier, skin par defaut) n'est lu, decode ou telecharge
+  // qu'une fois ; les acteurs qui le portent partagent ses pixels (lecture seule)
+  const memo = new Map();
+  const resoudre = (args) => {
+    const cle = JSON.stringify([args.description, args.modele ?? null, args.surcharge ?? null]);
+    if (!memo.has(cle)) memo.set(cle, resoudreBrut(args));
+    return memo.get(cle);
+  };
   for (const a of scene.acteurs) {
     if (a.creature) {   // creature (champ `type`) : modele et textures du jeu (creatures/rendu.js), pas de skin
       const { Creature } = await import('../creatures/rendu.js');
@@ -154,7 +163,7 @@ export async function preparerFilm({ scene, zonePath, kitDir, surcharges = {}, b
   // scene avec un champ `monde` : la simulation tourne AVANT le premier rendu (elle produit le replay des changements de blocs) ; le moteur
   // n'est charge que dans ce cas (une scene sans `monde` ne change pas d'un bit et ne paie rien)
   const sim = scene.monde ? await simulerScene({ scene, zonePath, baseDir, env, kitDir }) : null;
-  const rs = await chargerScene({ zonePath, zone: sim?.zone, kitDir: kit, travailleurs, options: sim ? { monde: { donnees: sim.donnees, replay: sim.replay, lumiere: scene.monde.lumiere, perso: sim.replay.perso?.blocs?.length ? { blocs: sim.replay.perso.blocs, baseDir } : null } } : {} });
+  const rs = await chargerScene({ zonePath, zone: sim?.zone, kitDir: kit, travailleurs, options: sim ? { monde: { donnees: sim.donnees, replay: sim.replay, lumiere: scene.monde.lumiere, multBlocs: scene.monde.regles?.lumiere?.blocs ?? 1, perso: sim.replay.perso?.blocs?.length ? { blocs: sim.replay.perso.blocs, baseDir } : null } } : {} });
   if (sim?.replay.perso?.entites?.length) appliquerEntitesScene(scene, sim.replay.perso.entites, baseDir);   // entites de mods : echelle et texture au rendu
   try {
     // shader (facultatif) : lu et controle ici ; sans fichier, ou avec {}, le rendu est celui d'avant au pixel pres
@@ -387,7 +396,7 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
 }
 
 // Une seule image de la scene, petite et filigranee, SANS jeton (mcanim apercu). Ecrit un PNG ; retourne { sortie, image, t, taille, secondes }.
-//   t : secondes (0 a la duree). taille : "WxH" (640 de large au plus). Le rendu complet, lui, demande toujours un jeton.
+//   t : secondes (0 a la duree). taille : "WxH" (1920 de large au plus ; JPEG au-dela de 640, voir film/apercu.js). Le rendu complet, lui, demande toujours un jeton.
 export async function apercuImage({ scene, zonePath, kitDir, t, sortie, taille, surcharges = {}, baseDir = process.cwd(), env = process.env, shader, packShader, optionsPack, echelle = 1, zones = false, log = () => {} }) {
   const t0 = Date.now();
   if (!(t >= 0 && t <= scene.duree)) throw new Error(`--t : entre 0 et ${scene.duree} secondes (duree de la scene)`);
@@ -407,7 +416,10 @@ export async function apercuImage({ scene, zonePath, kitDir, t, sortie, taille, 
     if (zones) { const { dessinerMasques } = await import('../montage/zones.js'); const { chargerPolice } = await import('../incrust/police.js'); dessinerMasques(rgba, largeur, hauteur, await chargerPolice(film.kit)); }   // --zones : silhouettes de l'interface des applications
     filigrane(rgba, largeur, hauteur);
     fs.mkdirSync(path.dirname(sortie), { recursive: true });
-    fs.writeFileSync(sortie, encoderPNG({ largeur, hauteur, rgba }));
-    return { sortie, image: i, t: film.anim.images[i].t, taille: [largeur, hauteur], secondes: (Date.now() - t0) / 1000, skins: film.infos, notes: [...film.anim.notes, ...film.notes] };
+    // fichier petit : JPEG (qualite 85, 4:2:0) au-dela de 640 de large ou pour une sortie .jpg ; PNG compresse au maximum sinon
+    const format = formatApercu(sortie, largeur);
+    const octets = format === 'jpeg' ? encoderJPEG({ largeur, hauteur, rgba }, { qualite: 85 }) : encoderPNG({ largeur, hauteur, rgba }, { niveau: 9 });
+    fs.writeFileSync(sortie, octets);
+    return { sortie, image: i, t: film.anim.images[i].t, taille: [largeur, hauteur], format, octets: octets.length, secondes: (Date.now() - t0) / 1000, skins: film.infos, notes: [...film.anim.notes, ...film.notes] };
   } finally { await film.fermer(); }
 }

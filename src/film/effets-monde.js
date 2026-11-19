@@ -12,7 +12,9 @@ import { Aleatoire } from '../moteur/aleatoire.js';
 import { deplacerBoite } from '../moteur/collision.js';
 import { creerMeteoRendu } from './meteo-rendu.js';   // pluie, neige, foudre
 import { creerEntites } from './entites-monde.js';   // TNT amorce, blocs qui tombent (vrai modele), objets au sol
-import { creerMachinesRendu } from './machines-rendu.js';   // faisceau de balise, cadres, livre du pupitre (partie 27)
+import { creerMachinesRendu } from './machines-rendu.js';
+import { creerBlocsEntites } from './blocs-entites.js';   // tetes, pots decores, texte des panneaux
+import { creerEntitesDecor } from './entites-decor.js';   // entites des constructions importees   // faisceau de balise, cadres, livre du pupitre (partie 27)
 import { Creature, mul, T, S, RX, RY } from '../creatures/rendu.js';   // fantome du gardien ancien (ElderGuardianParticle)
 import { etatInitial } from '../creatures/anim.js';
 
@@ -272,6 +274,8 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain, creatu
   const entites = creerEntites({ rs, replay, kit, texOf, lum, notes, creatures: creaturesDonnees });
   const machines = creerMachinesRendu({ rs, replay, kit, texOf, lum, creatures: creaturesDonnees, notes });   // balise, cadres, livre du pupitre (partie 27) ; null sans eux   // TNT amorce, blocs qui tombent, objets au sol
   const meteoR = creerMeteoRendu({ rs, replay, scene, donnees, terrain, texOf, lum });   // pluie, neige, foudre (null sans meteo ni foudre)
+  const blocsE = creerBlocsEntites({ rs, replay, kit, texOf, lum, scene, notes });   // tetes, pots decores, texte des panneaux (null sans eux)
+  const entitesD = creerEntitesDecor({ rs, replay, kit, texOf, lum, scene, creatures: creaturesDonnees, notes });   // constructions importees : geniteurs, statues, tableaux, noeuds, coussins, objets poses
   // malediction du gardien ancien (ElderGuardianParticle) : 30 ticks, le modele du gardien ancien dans le repere de la camera (voir
   // matriceFantome), opacite 0,05 + 0,5 x sin(f x pi)
   const fantomes = [];
@@ -328,6 +332,8 @@ export function creerEffetsMonde({ rs, scene, sim, kit, donnees, terrain, creatu
       out.push(...particules.maillages(u, camera));
       if (fantomes.length && camera) out.push(...fantomeAncien(u, camera));
       if (meteoR) out.push(...meteoR.maillages(tm, camera));
+      if (blocsE) out.push(...blocsE.maillages(u));
+      if (entitesD) out.push(...entitesD.maillages(u));
       return out;
     },
   };

@@ -16,6 +16,7 @@ from . import glsl, gpu, matrices as M, png, uniformes
 from .dyn import Dyn
 from .passes import PassesMixin
 from .idmap import analyser_etat
+from .lumiere import pixels_lightmap
 
 FORMATS = {
     "RGBA8": (0x8058, 0x1908, 0x1401), "RGBA16": (0x805B, 0x1908, 0x1403), "RGBA16F": (0x881A, 0x1908, 0x1406), "RGBA32F": (0x8814, 0x1908, 0x1406),
@@ -211,19 +212,8 @@ class Rendu(PassesMixin):
     def _lightmap(self, e):
         """Texture de lumiere 16x16 (x = lumiere de bloc, y = lumiere du ciel), a la maniere du jeu."""
         gl = self.gl
-        jour = max(0.0, min(1.0, float(e.get("jourLumiere", 1.0))))
-        px = bytearray()
-        for sky in range(16):
-            for blk in range(16):
-                def courbe(v):
-                    v = v / 15.0
-                    return v / (4 - 3 * v)
-                b = courbe(blk)
-                s = courbe(sky) * (0.25 + 0.75 * jour)
-                r = min(1.0, max(b * 1.0 + 0.0, 0) * (1.0) + s * 0.95 * (1 - 0.0))
-                g = min(1.0, b * 0.85 + s * 0.97)
-                bl = min(1.0, b * 0.65 + s * 1.0)
-                px += bytes((int(r * 255), int(g * 255), int(bl * 255), 255))
+        # lumiereBlocs : regle de scene monde.regles.lumiere.blocs (0 a 3, 1 = le jeu), rendu seulement (mcpack/lumiere.py)
+        px = pixels_lightmap(e.get("jourLumiere", 1.0), e.get("lumiereBlocs", 1.0))
         buf = ctypes.create_string_buffer(bytes(px), len(px))
         if self.tex_lightmap:
             t = ctypes.c_uint(self.tex_lightmap)

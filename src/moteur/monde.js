@@ -21,7 +21,9 @@ export const FACE_OPPOSEE = [1, 0, 3, 2, 5, 4];
 export const ORDRE_VOISINS = [4, 5, 0, 1, 2, 3];     // ouest, est, bas, haut, nord, sud
 export const ORDRE_FORMES = [4, 5, 2, 3, 0, 1];      // ouest, est, nord, sud, bas, haut
 export const Y_MIN = -64, Y_MAX = 320;               // hauteur du monde (Y_MAX exclu)
-export const LIMITES = { cotes: 512, cellules: 60_000_000 };
+// boite du monde : 1536 de cote au plus ; cellules : la plus grande zone (1025 x 1025, rayon 512) agrandie de 16 de chaque cote, sur toute la hauteur
+// du monde (1057 x 1057 x 386 = 431 M, 2 octets par cellule ; meme borne que decor/grille.js)
+export const LIMITES = { cotes: 1536, cellules: 432_000_000 };
 
 const NIVEAU_MAX = 15;
 
@@ -63,6 +65,7 @@ export class Monde {
     this.ciel = null; this.bloc = null; this.lumiere = null;
     this.version = 0;                         // +1 a chaque ecriture
     this.changes = [];                        // journal en cours : [x, y, z, ancienIndice, nouveauIndice, ...] mis a plat
+    this.espion = null;                       // fonction (x, y, z, ancien, nouveau) appelee a chaque ecriture (suivi d'une cellule : --trace)
     this.suivi = suivi; this.sales = [];      // cellules (indice rembourre) changees depuis le dernier `viderSales` (rendu)
     this.agrandissements = 0;
   }
@@ -167,6 +170,7 @@ export class Monde {
     this.pal[i] = indice;
     this.version++;
     this.changes.push(x, y, z, ancien, indice);
+    if (this.espion) this.espion(x, y, z, ancien, indice);   // mcanim simuler --trace (simulation.js suivre)
     // les cellules de la bordure copient leur voisin de la boite (cache sous la surface) : on ne les touche pas
     if (this.suivi && this.sales) this.sales.push(i);
     if (this.lumiere) this.lumiere.changer(x, y, z, ancien, indice);

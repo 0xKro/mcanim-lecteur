@@ -1,0 +1,14 @@
+{
+  "v": 1, "format": "1920x1080", "duree": 4, "zone": "2xJIf06JksIKHlYTzEiCPw",
+  "decor": ["chateau.decor.json"],
+  "acteurs": [
+    { "nom": "garde", "skin": "steve", "lacet": [[0, 0]], "pos": [[0, 469.5, 376.5], [4, 469.5, 366.5]],
+      "boucles": [{ "de": 0, "a": 4, "periode": 0.55, "fondu": 0.2, "jambeD": [[0, 40], [0.5, -40]], "jambeG": [[0, -40], [0.5, 40]], "brasD": [[0, -30], [0.5, 30]], "brasG": [[0, 30], [0.5, -30]] }] }
+  ],
+  "camera": {
+    "pos": [[0, 530, 118, 410], [4, 488, 112, 425, "d"]],
+    "cible": [[0, 469, 82, 343], [4, 466, 82, 343, "d"]],
+    "fov": [[0, 60]]
+  },
+  "ciel": { "brume": [[0, 220]] }
+}

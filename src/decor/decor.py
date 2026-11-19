@@ -19,13 +19,17 @@ Usage (Python 3.8 ou plus, aucune dependance) :
         d.bloc(3, 0, 1, "lantern")
     d.ecrire("maison.decor.json")                       # ou d.ecrire() quand le script est lance par `mcanim decor executer`
 
+Formes et volumes : d.cyl / d.cone / d.sphere / d.ellipsoide (epaisseur=1 : creux), d.copier / d.miroir / d.rotation d'une boite,
+gabarits (with d.gab("tour"): ... puis d.pose("tour", x, y, z, rot=90)), blocs denses (v = Volume(sx, sy, sz) ; v.poser(...) ; d.grille(x, y, z, v)),
+d.importer("donjon.schem", x, y, z, rot=180) pour un .schem / .nbt / .litematic.
+
 Directions : "nord" (-z), "sud" (+z), "est" (+x), "ouest" (-x), "haut", "bas", ou d.vers(x, z) ("tourne vers ce point").
-Lancer : mcanim decor executer script.py --sortie maison.decor.json   (python -I, 20 s) puis mcanim decor verifier maison.decor.json --zone <id>
+Lancer : mcanim decor executer script.py --sortie maison.decor.json   (python -I, 60 s, 1 Go) puis mcanim decor verifier maison.decor.json
 """
 import json
 import os
 
-__all__ = ["Decor", "vers"]
+__all__ = ["Decor", "Volume", "vers"]
 
 
 def vers(x, z):
@@ -49,6 +53,75 @@ class _Rep:
         if type_ is None:
             self.decor._ajouter(["rep", int(self.n), int(self.d[0]), int(self.d[1]), int(self.d[2]), self.ops])
         return False
+
+
+class _Gab:
+    """Contexte `with d.gab("nom"):` : les operations ecrites dedans forment le gabarit ["gab", nom, [...]]."""
+
+    def __init__(self, decor, nom):
+        self.decor, self.nom, self.ops = decor, nom, []
+
+    def __enter__(self):
+        self.decor._piles.append(self.ops)
+        return self
+
+    def __exit__(self, type_, valeur, trace):
+        self.decor._piles.pop()
+        if type_ is None:
+            self.decor._ajouter(["gab", self.nom, self.ops])
+        return False
+
+
+class Volume:
+    """Blocs denses pour l'operation grille : v = Volume(sx, sy, sz) ; v.poser(x, y, z, "stone_bricks") ; v.boite(...) ; d.grille(x, y, z, v).
+
+    Coordonnees de 0 a sx-1 (est), 0 a sy-1 (haut), 0 a sz-1 (sud). Une cellule jamais posee laisse le terrain tel quel (palette : null) ;
+    poser "air" la vide. Les donnees sont ecrites en base64 d'un gzip de varints (x le plus rapide, puis z, puis y), comme le lecteur les lit.
+    """
+
+    def __init__(self, sx, sy, sz):
+        self.taille = (int(sx), int(sy), int(sz))
+        self.palette = [None]
+        self._index = {None: 0}
+        self._larges = [0] * (self.taille[0] * self.taille[1] * self.taille[2])
+
+    def _i(self, x, y, z):
+        sx, sy, sz = self.taille
+        if not (0 <= x < sx and 0 <= y < sy and 0 <= z < sz):
+            raise ValueError("Volume.poser : (%d, %d, %d) hors du volume %dx%dx%d" % (x, y, z, sx, sy, sz))
+        return (y * sz + z) * sx + x
+
+    def entree(self, bloc):
+        i = self._index.get(bloc)
+        if i is None:
+            i = len(self.palette)
+            self.palette.append(bloc)
+            self._index[bloc] = i
+        return i
+
+    def poser(self, x, y, z, bloc):
+        self._larges[self._i(x, y, z)] = self.entree(bloc)
+
+    def boite(self, x1, y1, z1, x2, y2, z2, bloc):
+        e = self.entree(bloc)
+        for y in range(min(y1, y2), max(y1, y2) + 1):
+            for z in range(min(z1, z2), max(z1, z2) + 1):
+                for x in range(min(x1, x2), max(x1, x2) + 1):
+                    self._larges[self._i(x, y, z)] = e
+
+    def lire(self, x, y, z):
+        return self.palette[self._larges[self._i(x, y, z)]]
+
+    def donnees(self):
+        import base64
+        import gzip
+        o = bytearray()
+        for v in self._larges:
+            while v >= 0x80:
+                o.append((v & 0x7F) | 0x80)
+                v >>= 7
+            o.append(v)
+        return "gz:" + base64.b64encode(gzip.compress(bytes(o), 9, mtime=0)).decode("ascii")
 
 
 class Decor:
@@ -145,6 +218,58 @@ class Decor:
     def rep(self, n, dx=0, dy=0, dz=0):
         """A utiliser avec `with` : les operations du bloc sont repetees n fois, decalees de (dx, dy, dz)."""
         return _Rep(self, n, dx, dy, dz)
+
+    # ---- formes rondes (centre entier ou demi-entier ; epaisseur > 0 : creux ; dedans : bloc ou "air" dans le creux)
+    def sphere(self, cx, cy, cz, r, b, epaisseur=None, dedans=None, moitie=None):
+        """Sphere de rayon r ; moitie="haut" : dome, "bas" : bol."""
+        return self._ajouter(self._avec(["sphere", cx, cy, cz, r, b], epaisseur=epaisseur, dedans=dedans, moitie=moitie))
+
+    def ellipsoide(self, cx, cy, cz, rx, ry, rz, b, epaisseur=None, dedans=None, moitie=None):
+        return self._ajouter(self._avec(["ellipsoide", cx, cy, cz, rx, ry, rz, b], epaisseur=epaisseur, dedans=dedans, moitie=moitie))
+
+    def cyl(self, x, y, z, r, h, b, axe=None, epaisseur=None, dedans=None):
+        """Cylindre : base centree en (x, y, z), h couches le long de l'axe ("y" defaut, "x", "z" ; h negatif : sens inverse). Creux = tube ouvert aux bouts."""
+        return self._ajouter(self._avec(["cyl", x, y, z, r, h, b], axe=axe, epaisseur=epaisseur, dedans=dedans))
+
+    def cone(self, x, y, z, r, h, b, axe=None, epaisseur=None, dedans=None):
+        """Cone : base de rayon r en (x, y, z), pointe a la couche h (toit de tour : cone(x, y, z, 4, 7, "spruce_planks"))."""
+        return self._ajouter(self._avec(["cone", x, y, z, r, h, b], axe=axe, epaisseur=epaisseur, dedans=dedans))
+
+    # ---- volumes
+    def grille(self, x, y, z, volume, rot=None, miroir=None, air=None):
+        """Pose un Volume (blocs denses) avec son coin bas en (x, y, z). Les cellules jamais posees du Volume laissent la place telle quelle."""
+        sx, sy, sz = volume.taille
+        return self._ajouter(self._avec(["grille", x, y, z, sx, sy, sz, list(volume.palette), volume.donnees()], rot=rot, miroir=miroir, air=air))
+
+    def importer(self, fichier, x, y, z, rot=None, miroir=None, air=None, inconnu=None, etats=None):
+        """Construction .schem / .nbt / .litematic (a cote du decor), coin bas en (x, y, z) ; rot 0/90/180/270, miroir "x" ou "z"."""
+        return self._ajouter(self._avec(["importer", fichier, x, y, z], rot=rot, miroir=miroir, air=air, inconnu=inconnu, etats=etats))
+
+    def copier(self, x1, y1, z1, x2, y2, z2, dx, dy, dz, rot=None, miroir=None, air=None):
+        """Copie la boite (deja construite) ; coin bas de la copie = coin bas + (dx, dy, dz) ; rot, miroir "x"/"y"/"z"."""
+        return self._ajouter(self._avec(["copier", x1, y1, z1, x2, y2, z2, dx, dy, dz], rot=rot, miroir=miroir, air=air))
+
+    def miroir(self, x1, y1, z1, x2, y2, z2, axe, decalage=None, air=None):
+        """Miroir de la boite ("x" est<->ouest, "z" nord<->sud, "y" haut<->bas) : sur place, ou copie decalee de decalage=(dx, dy, dz)."""
+        return self._ajouter(self._avec(["miroir", x1, y1, z1, x2, y2, z2, axe], decalage=list(decalage) if decalage else None, air=air))
+
+    def rotation(self, x1, y1, z1, x2, y2, z2, angle, miroir=None, air=None):
+        """Tourne la boite sur place (90, 180, 270, sens horaire vu d'en haut)."""
+        return self._ajouter(self._avec(["rotation", x1, y1, z1, x2, y2, z2, angle], miroir=miroir, air=air))
+
+    def gab(self, nom):
+        """A utiliser avec `with d.gab("tourelle"):` : les operations ecrites dedans forment un gabarit (rien n'est pose)."""
+        return _Gab(self, nom)
+
+    def pose(self, nom, x, y, z, rot=None, miroir=None):
+        """Pose le gabarit `nom` (defini plus haut) avec son origine en (x, y, z), tourne (rot) ou en miroir ("x", "z")."""
+        return self._ajouter(self._avec(["pose", nom, x, y, z], rot=rot, miroir=miroir))
+
+    def _avec(self, op, **kw):
+        o = self._opts(**kw)
+        if o:
+            op.append(o)
+        return op
 
     @staticmethod
     def vers(x, z):

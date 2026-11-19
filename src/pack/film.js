@@ -89,7 +89,7 @@ export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {
   const kit = Object.keys(scene.textures ?? {}).length ? appliquerTextures(kitDir, scene.textures, baseDir, { env }) : kitDir;
   // scene avec un champ `monde` : simulation avant le premier rendu ; les sections de terrain refaites sont envoyees a l'hote entre les images
   const sim = scene.monde ? await simulerScene({ scene, zonePath, baseDir, env, kitDir }) : null;
-  const rs = await chargerScene({ zonePath, zone: sim?.zone, kitDir: kit, travailleurs, options: { exportGPU: true, ...(sim ? { monde: { donnees: sim.donnees, replay: sim.replay, lumiere: scene.monde.lumiere } } : {}) } });
+  const rs = await chargerScene({ zonePath, zone: sim?.zone, kitDir: kit, travailleurs, options: { exportGPU: true, ...(sim ? { monde: { donnees: sim.donnees, replay: sim.replay, lumiere: scene.monde.lumiere, multBlocs: scene.monde.regles?.lumiere?.blocs ?? 1 } } : {}) } });
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mcanim-pack-'));
   let hote = null;
   try {
@@ -140,9 +140,11 @@ export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {
     // etat complet d'une image (acteurs et ciel compris)
     // Blocs changes jusqu'a l'instant du monde `tm` : sections refaites, puis envoyees a l'hote (cout mesure dans stats.majMs)
     const dirMaj = path.join(tmp, 'maj');
-    const appliquerMaj = async (tm) => {
-      if (!sim) return;
-      const n = await rs.appliquerReplay(sim.replay.tickDe(tm));
+    const appliquerMaj = async (tm, camera) => {
+      // grande zone (maillage paresseux) : les colonnes a portee de la camera sont maillees puis envoyees a l'hote comme des pieces
+      if (rs.paresseux && camera) { const b = rs.brumeAuto(camera, []); rs.assurerVue(camera, b.fin + 1); }
+      if (!sim && !rs.paresseux) return;
+      const n = sim ? await rs.appliquerReplay(sim.replay.tickDe(tm)) : 0;
       if (n === -1) throw new Error('monde : la boite de blocs a grandi pendant la scene ; ce cas n\'est pas encore gere avec un vrai pack de shaders (rendu de base : ok)');
       const maj = rs.prendreMajGPU();
       if (!maj.ajouts.length && !maj.mortes.length && !maj.retraits.length) return;
@@ -174,7 +176,7 @@ export async function preparerFilmPack({ scene, zonePath, kitDir, surcharges = {
     };
     const etatDe = async (i, { sansActeurs = false, temps } = {}) => {
       const im = anim.images[i];
-      await appliquerMaj(im.tm);
+      await appliquerMaj(im.tm, im.camera);
       const ciel = cielEn(scene, im.t);
       const heure = ciel?.heure ?? 12, jour = ciel?.jour ?? 0;
       // meteo : rainStrength, thunderStrength et wetness du pack (humidite = pluie moyenne des 10 dernieres secondes, le jeu l'adoucit) ; ciel du jeu terni comme dans le rendu de base

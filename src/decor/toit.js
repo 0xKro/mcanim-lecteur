@@ -13,9 +13,9 @@ export function toit(ex, op) {
   if (!info.escalier) throw new ErreurDecor(`${op.chemin} : toit : "${spec.nom}" n'est pas un escalier (essaie oak_stairs, stone_brick_stairs...)`);
   const o = op.opt, deb = o.debord;
   const r = ex.rectXZ(op, op.x1, op.z1, op.x2, op.z2);
-  const axe = ex.rot % 2 === 1 ? (op.axe === 'x' ? 'z' : 'x') : op.axe;
+  const axe = ex.echangeAxes(op) ? (op.axe === 'x' ? 'z' : 'x') : op.axe;
   const X0 = r[0] - deb, X1 = r[2] + deb, Z0 = r[1] - deb, Z1 = r[3] + deb;
-  const Yb = ex.ay + op.y + op.dec[1];
+  const Yb = ex.ay + op.y + ex.decY(op);
   const marche = (x, y, z, facing) => ex.poserSpec(spec, x, y, z, null, { facing, half: 'bottom' });
 
   // blocs de remplissage : pignon et sous le faite (par defaut le bloc plein qui va avec l'escalier)

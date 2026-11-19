@@ -257,6 +257,8 @@ export function appliquerCreatures(scene, parImage, { DT = 1 / 30, terrain = {},
       if (type === 'iron_golem' && etat.s.speed >= 0.01) { const wp = etat.s.pos + 6; etat.inclinaison = 6.5 * ((Math.abs((wp % 13) - 6.5) - 3.25) / 3.25); }
       if (['donkey', 'mule', 'llama', 'trader_llama'].includes(type) && !c.coffre) etat.cacher.push('left_chest', 'right_chest');
       if (['horse', 'donkey', 'mule', 'skeleton_horse', 'zombie_horse', 'camel'].includes(type) && !montePar[k][i]) etat.cacher.push('left_saddle_line', 'right_saddle_line');
+      if (c.coiffe) { etat.coiffe = c.coiffe; etat.coiffeSkin = c.coiffeSkin ?? null; }   // bloc ou tete porte sur la tete (CustomHeadLayer, creatures/rendu.js)
+      if (c.cacher) etat.cacher.push(...c.cacher);   // entite importee (decor/entites-import.js) : porte-armure sans bras, sans socle, invisible
       if (type === 'spider' || type === 'cave_spider') etat.retourne = true;
       if (type === 'wither') {   // WitherBossRenderer.scale : x 2, plus petit pendant la charge (2 - (charge - partiel) / 220 x 0,5) ; texture bleue qui clignote
         const inv = sn.m?._invul ?? 0;

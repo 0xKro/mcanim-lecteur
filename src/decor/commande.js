@@ -13,11 +13,14 @@ import { ErreurDecor } from './grille.js';
 
 export const AIDE_DECOR = `mcanim decor verifier <decor.json|scene.json> [--scene scene.json] [--zone id]   (zone : prise de la scene, du decor ou de la scene du dossier ; --zone seulement si rien de cela) lit, controle et applique le decor EN MEMOIRE (sans rendre) : emprise, blocs, etats recalcules, avertissements (flottants, portes bloquees, sans appui) ; 15 lignes au plus ; gratuit
   mcanim decor apercu <decor.json|scene.json> [--vue iso|dessus|face] [--cote sud|nord|est|ouest|sud-est|...] [--contexte] [--taille 512x384] [--sortie a.png]   petite image filigranee du decor seul (6 blocs de terrain autour) ou dans son contexte ; gratuit
-  mcanim decor executer <script.py> --sortie decor.json   lance le script Python (module decor.py, python -I, 20 s) qui ECRIT le decor, puis le controle ; le lecteur n'execute jamais de code au rendu
-  mcanim decor module                                       chemin du module decor.py (a copier a cote de ton script) ; fiches decor_bases, decor_operations, decor_terrain, decor_maison
+  mcanim decor executer <script.py> --sortie decor.json   lance le script Python (module decor.py, python -I, 60 s, 1 Go) qui ECRIT le decor, puis le controle ; le lecteur n'execute jamais de code au rendu
+  mcanim decor module                                       chemin du module decor.py (a copier a cote de ton script : Decor, Volume pour les grilles) ; fiches decor_bases, decor_operations, decor_grille, decor_terrain, decor_maison
+  operations : plein creux mur coins ligne bloc pts remplacer effacer fond aplanir rep porte toit | sphere ellipsoide cyl cone {epaisseur, dedans, moitie, axe} | grille x,y,z,sx,sy,sz,[palette],"donnees" | importer "f.schem|.nbt|.litematic" x,y,z {rot, miroir} | copier miroir rotation | gab "nom" [ops] + pose "nom" x,y,z {rot, miroir}
+  limites : 50000 ops, 8 000 000 cellules changees par decor, emprise 1025 x 384 x 1025, 32 decors, 4 Mo par fichier de decor (64 Mo en tout), fichier importe 32 Mo
   mcanim terrain --scene scene.json                         le resume du terrain APRES les decors de la scene (chemins, clairieres)`;
 
-const DELAI_MS = 20000;
+const DELAI_MS = 60000;   // un script qui calcule un chateau en blocs denses (Volume de decor.py) prend quelques secondes en Python
+const MEMOIRE_PY = 1024 * 1024 * 1024;
 
 // Zone d'un decor : --zone, puis --scene, puis le champ "zone" du decor, puis la scene du meme dossier (celle dont le champ decor cite ce fichier, sinon la seule scene du dossier).
 // Retourne { zoneId, source } ; leve Usage avec la marche a suivre si rien ne la donne.
@@ -58,7 +61,7 @@ async function preparer(fichier, opt, o) {
       zoneId = scene.zone;
       decors = lireDecorsScene(scene.decor, { baseDir, d: donnees, zoneId });
     } else {
-      const decor = lireDecorTexte(texte, donnees, path.basename(fichier));
+      const decor = lireDecorTexte(texte, donnees, path.basename(fichier), { baseDir });
       zoneId = zoneDuDecor({ fichier, opt, decor, Usage }).zoneId;
       decors = [{ decor, nom: path.basename(fichier) }];
     }
@@ -90,7 +93,8 @@ export async function commandeDecor(argv, o) {
         const milieu = L.slice(1, -1).slice(0, parDecor - 2);
         lignes.push(L[0], ...milieu, L[L.length - 1]);
       }
-      // acteurs de la scene : un trajet qui traverse un mur
+      // acteurs de la scene : un trajet qui traverse un mur (la zone avec decor est refaite par terrainDeScene : on libere la premiere avant)
+      r.zone = null; p.zone = null;
       if (p.scene && p.scene.acteurs.length) {
         try {
           const t = await o.terrainDeScene(p.scene, { telecharger: true, baseDir: p.baseDir });
@@ -130,7 +134,7 @@ export async function commandeDecor(argv, o) {
       const script = path.resolve(pos[0]), sortie = path.resolve(opt.sortie);
       if (!fs.existsSync(script)) throw new Usage(`script introuvable : ${pos[0]}`);
       const modDir = path.dirname(fileURLToPath(new URL('./decor.py', import.meta.url)));
-      const lanceur = 'import sys, runpy\nsys.path.insert(0, sys.argv[1])\ntry:\n    import resource\n    resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))\nexcept Exception:\n    pass\nrunpy.run_path(sys.argv[2], run_name="__main__")\n';
+      const lanceur = `import sys, runpy\nsys.path.insert(0, sys.argv[1])\ntry:\n    import resource\n    resource.setrlimit(resource.RLIMIT_AS, (${MEMOIRE_PY}, ${MEMOIRE_PY}))\nexcept Exception:\n    pass\nrunpy.run_path(sys.argv[2], run_name="__main__")\n`;
       for (const py of process.platform === 'win32' ? ['python', 'py'] : ['python3', 'python']) {
         const r = spawnSync(py, ['-I', '-c', lanceur, modDir, script], { cwd: path.dirname(script), timeout: DELAI_MS, encoding: 'utf8', env: { ...process.env, MCANIM_DECOR_SORTIE: sortie, PYTHONIOENCODING: 'utf-8' } });
         if (r.error && r.error.code === 'ENOENT') continue;
@@ -139,7 +143,7 @@ export async function commandeDecor(argv, o) {
         if (!fs.existsSync(sortie)) throw new Usage(`le script n'a pas ecrit ${opt.sortie} : termine-le par decor.ecrire() (ou d.ecrire("fichier.json"))`);
         const { donneesDuJeu } = await import('../moteur/chargeur.js');
         const donnees = await donneesDuJeu({ log: dire });
-        try { const decor = lireDecorTexte(fs.readFileSync(sortie, 'utf8'), donnees, path.basename(sortie)); return dire(`decor ${path.basename(sortie)} ecrit et controle : ${decor.ops.length} operation(s) apres developpement, ${fs.statSync(sortie).size} octets ; suite : mcanim decor verifier ${opt.sortie} --scene scene.json`); } catch (e) { if (e instanceof ErreurDecor) throw new Usage(e.message); throw e; }
+        try { const decor = lireDecorTexte(fs.readFileSync(sortie, 'utf8'), donnees, path.basename(sortie), { baseDir: path.dirname(sortie) }); return dire(`decor ${path.basename(sortie)} ecrit et controle : ${decor.ops.length} operation(s) apres developpement, ${fs.statSync(sortie).size} octets ; suite : mcanim decor verifier ${opt.sortie} --scene scene.json`); } catch (e) { if (e instanceof ErreurDecor) throw new Usage(e.message); throw e; }
       }
       throw new Usage('Python est introuvable (python / python3) : ecris le decor en JSON, ou installe Python 3.8+');
     }

@@ -1211,6 +1211,7 @@ export class Acteurs {
     for (let i = 0; i < n; i++) {
       const a = this.liste[i];
       if (a.monte) continue;
+      if (sim.trace) sim.phase = `${a.typeCreature ? 'creature' : 'joueur'} ${a.nom}`;   // mcanim simuler --trace : cause des changements
       a.tick();
       for (const c of [...a.passagers]) { if (c.monte !== a) continue; c.tick(); if (c.monte === a) placerCavalier(c, a); c.ecrire(); }
     }

@@ -11,10 +11,20 @@ export class ErreurDecor extends Error {
   }
 }
 
-// Limites (docs/FORMAT-DECOR.md B2.3)
-export const LIMITES = { ops: 2000, cellules: 300000, largeur: 128, hauteur: 96, decors: 8, alias: 32, melange: 8, octets: 64 * 1024, octetsTotal: 4 * 1024 * 1024 };
 export const Y_MIN = -64, Y_MAX = 320;
-const COTES_MAX = 512, CELLULES_MAX = 60_000_000;
+// Boite de travail : 1536 de cote au plus ; cellules : une zone de 1025 x 1025 (rayon 512, la plus grande) agrandie de 16 de chaque cote, sur toute la
+// hauteur du monde (1057 x 1057 x 386 = 431 M ; 2 octets par cellule, comme moteur/monde.js)
+const COTES_MAX = 1536, CELLULES_MAX = 432_000_000;
+// Limites (docs/FORMAT-DECOR.md B2.3 et partie D) : un chateau detaille tient dans un decor. Emprise : le cote de la plus grande zone
+// (rayon 512 : 1025 ; 768 au moins), 384 de haut (tout le monde, y -64..319). `volume` : boite parcourue par une seule operation (plein,
+// grille, importer, copier...) ; `palette` : entrees d'une grille ; `importOctets` : fichier .schem/.nbt/.litematic cite par `importer`.
+const ZONE_COTE_MAX = 2 * 512 + 1;
+export const LIMITES = {
+  ops: 50000, cellules: 8_000_000, largeur: Math.max(768, ZONE_COTE_MAX), hauteur: Y_MAX - Y_MIN, decors: 32, alias: 256, melange: 16,
+  octets: 4 * 1024 * 1024, octetsTotal: 64 * 1024 * 1024, ligne: 2000, volume: 16_000_000, palette: 4096, importOctets: 32 * 1024 * 1024,
+};
+// "toutes les proprietes sont figees" (blocs importes : etats gardes tels que le fichier les donne)
+export const TOUT = Object.freeze({ tout: true, has: () => true });
 
 export class Grille {
   constructor(zone, d) {
@@ -22,7 +32,7 @@ export class Grille {
     this.hdr = zone.hdr; this.biomesNoms = zone.biomesNoms;
     this.palette = zone.palette.slice(); this.pidx = new Map(this.palette.map((p, i) => [p, i]));
     this.x0 = zone.x0; this.y0 = zone.y0; this.z0 = zone.z0; this.sx = zone.sx; this.sy = zone.sy; this.sz = zone.sz;
-    this.cells = Uint32Array.from(zone.cellules); this.biomes = zone.biomes.slice(); this.hauteurs = zone.hauteurs.slice();
+    this.cells = new Uint16Array(zone.cellules);this.biomes = zone.biomes.slice(); this.hauteurs = zone.hauteurs.slice();
     this.ancre = [zone.x0, zone.y0, zone.z0];
     this.etatPal = [];                 // indice de palette -> numero d'etat du jeu (-1 : #hidden)
     this.palEtat = new Map();          // numero d'etat du jeu -> indice de palette (memo de poserEtat)
@@ -37,6 +47,8 @@ export class Grille {
     this.marque = new Uint8Array(this.cells.length);
     this.journal = [];                 // indices lineaires des cellules ecrites au moins une fois
     this.forces.clear();
+    this.fige = null;                  // proprietes figees EN MASSE (grille, importer, copier) : numero de jeu de cles par cellule, 0 = aucun (cree a la demande)
+    this.jeux = [null]; this.jeuxIdx = new Map();
     this.colonnes = new Set();         // colonnes touchees (hauteurs a recalculer)
     this.cachees = 0;                  // cellules cachees comblees
   }
@@ -114,11 +126,11 @@ export class Grille {
     const ny1 = Math.max(this.y0 + this.sy, (Math.floor((y - a[1]) / 16) + 1) * 16 + a[1]);
     const sx = nx1 - nx0, sy = ny1 - this.y0, sz = nz1 - nz0;
     if (sx > COTES_MAX || sz > COTES_MAX || (sx + 2) * (sy + 2) * (sz + 2) > CELLULES_MAX) throw new ErreurDecor(`le decor sort de la zone trop loin : bloc (${x},${y},${z}) ; la boite ne peut pas depasser ${COTES_MAX} de cote`);
-    const vieux = { x0: this.x0, z0: this.z0, sx: this.sx, sy: this.sy, sz: this.sz, cells: this.cells, orig: this.orig, marque: this.marque, biomes: this.biomes, hauteurs: this.hauteurs, journal: this.journal.map((i) => this.xyz(i)), cols: [...this.colonnes].map((c) => [c % this.sx + this.x0, Math.floor(c / this.sx) + this.z0]) };
+    const vieux = { x0: this.x0, z0: this.z0, sx: this.sx, sy: this.sy, sz: this.sz, cells: this.cells, orig: this.orig, marque: this.marque, fige: this.fige, biomes: this.biomes, hauteurs: this.hauteurs, cols: [...this.colonnes].map((c) => [c % this.sx + this.x0, Math.floor(c / this.sx) + this.z0]) };
     const hv = (xx, zz) => { const lx = Math.min(vieux.sx - 1, Math.max(0, xx - vieux.x0)), lz = Math.min(vieux.sz - 1, Math.max(0, zz - vieux.z0)); return lz * vieux.sx + lx; };
     this.x0 = nx0; this.z0 = nz0; this.sx = sx; this.sy = sy; this.sz = sz;
     const N = sx * sy * sz;
-    this.cells = new Uint32Array(N); this.orig = new Uint32Array(N); this.marque = new Uint8Array(N);
+    this.cells = new Uint16Array(N); this.orig = new Uint16Array(N); this.marque = new Uint8Array(N); this.fige = vieux.fige ? new Uint16Array(N) : null;
     this.biomes = new Uint8Array(sx * sz); this.hauteurs = new Int16Array(sx * sz);
     for (let zz = 0; zz < sz; zz++) for (let xx = 0; xx < sx; xx++) {   // colonnes : celles de la colonne la plus proche de l'ancienne boite
       const k = hv(xx + nx0, zz + nz0);
@@ -133,20 +145,50 @@ export class Grille {
       this.cells.set(vieux.cells.subarray(src, src + vieux.sx), dst);
       this.orig.set(vieux.orig.subarray(src, src + vieux.sx), dst);
       this.marque.set(vieux.marque.subarray(src, src + vieux.sx), dst);
+      if (this.fige) this.fige.set(vieux.fige.subarray(src, src + vieux.sx), dst);
     }
     for (let zz = 0; zz < vieux.sz; zz++) for (let xx = 0; xx < vieux.sx; xx++) {   // hauteurs et biomes d'origine
       const k = (zz + vieux.z0 - nz0) * sx + (xx + vieux.x0 - nx0);
       this.biomes[k] = vieux.biomes[zz * vieux.sx + xx]; this.hauteurs[k] = vieux.hauteurs[zz * vieux.sx + xx];
     }
-    this.journal = vieux.journal.map(([xx, yy, zz]) => this.idx(xx, yy, zz));
+    // journal : indices recalcules sur place (des millions d'entrees pour un grand decor : pas de tableau intermediaire)
+    const osxz = vieux.sx * vieux.sz, dx = vieux.x0 - nx0, dz = vieux.z0 - nz0, J = this.journal;
+    for (let k = 0; k < J.length; k++) {
+      const i = J[k], ly = Math.floor(i / osxz), r = i - ly * osxz, lz = Math.floor(r / vieux.sx), lx = r - lz * vieux.sx;
+      J[k] = (ly * sz + lz + dz) * sx + lx + dx;
+    }
     this.colonnes = new Set(vieux.cols.map(([xx, zz]) => (zz - this.z0) * this.sx + (xx - this.x0)));
     const forces = new Map(this.forces); this.forces = forces;   // cles absolues : inchangees
     this.agrandissements++;
   }
 
   // ---- proprietes d'un bloc ecrit par le modele
-  forcer(x, y, z, cles) { if (cles.length) this.forces.set(this.cle(x, y, z), new Set(cles)); else this.forces.delete(this.cle(x, y, z)); }
-  forces_(x, y, z) { return this.forces.get(this.cle(x, y, z)) || null; }
+  forcer(x, y, z, cles) { if (cles.length) this.forces.set(this.cle(x, y, z), new Set(cles)); else this.forces.delete(this.cle(x, y, z)); this.defiger(x, y, z); }
+  forces_(x, y, z) {
+    const f = this.forces.get(this.cle(x, y, z));
+    if (f) return f;
+    if (this.fige && this.dans(x, y, z)) { const j = this.fige[this.idx(x, y, z)]; if (j) return this.jeux[j]; }
+    return null;
+  }
+  // jeu de cles figees (Set ou TOUT) -> numero (memoise ; 65535 jeux differents au plus)
+  numeroJeu(jeu) {
+    if (!jeu || (jeu !== TOUT && !jeu.size)) return 0;
+    const k = jeu === TOUT ? '*' : [...jeu].sort().join(',');
+    let n = this.jeuxIdx.get(k);
+    if (n === undefined) {
+      if (this.jeux.length >= 65535) throw new ErreurDecor('trop de jeux de proprietes figees differents (65535)');
+      n = this.jeux.length; this.jeux.push(jeu === TOUT ? TOUT : new Set(jeu)); this.jeuxIdx.set(k, n);
+    }
+    return n;
+  }
+  // fige les proprietes de la cellule (n : numero de jeu ; 0 : rien). La cellule doit etre dans la boite (apres une ecriture).
+  figer(x, y, z, n) {
+    if (this.forces.size) this.forces.delete(this.cle(x, y, z));
+    if (!n) { this.defiger(x, y, z); return; }
+    if (!this.fige) this.fige = new Uint16Array(this.cells.length);
+    this.fige[this.idx(x, y, z)] = n;
+  }
+  defiger(x, y, z) { if (this.fige && this.dans(x, y, z)) this.fige[this.idx(x, y, z)] = 0; }
 
   // ---- hauteurs (carte MOTION_BLOCKING du jeu : bloc qui arrete le mouvement ou fluide) des colonnes touchees
   recalculerHauteurs() {
@@ -168,10 +210,13 @@ export class Grille {
     }
   }
 
-  // la zone resultat (nouvelles tables ; la zone d'origine n'est pas touchee)
+  // la zone resultat (la zone d'origine n'est pas touchee). Les tables de la grille sont CEDEES a la zone (pas de copie : une grande zone
+  // pese des centaines de Mo) : la grille ne doit plus servir ensuite.
   versZone() {
     const hdr = { ...this.hdr, origine: [this.x0, this.y0, this.z0], taille: [this.sx, this.sy, this.sz], palette: this.palette.slice() };
-    return new Zone(hdr, this.cells.slice(), this.biomes.slice(), this.hauteurs.slice());
+    const z = new Zone(hdr, this.cells, this.biomes, this.hauteurs);
+    this.cells = null; this.orig = null; this.marque = null; this.fige = null;
+    return z;
   }
 
   // cellules dont la valeur finale differe de celle du debut du decor : [indice lineaire, ...]

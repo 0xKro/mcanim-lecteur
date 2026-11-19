@@ -414,7 +414,7 @@ export class BibliothequeModeles {
         const boite = BOITES_SPECIALES.find(([re]) => re.test(nom));
         const part = this._resoudreTexture(m, '#particle');
         this.speciaux.set(chaine, boite ? 'boite de remplacement' : 'non dessine (dessine par code dans le jeu)');
-        if (boite && part && !(this.coffresDynamiques && /(^|_)chest$/.test(nom))) e.geo = this._boite(boite[1], part, v.y || 0);   // coffres : dessines par film/effets-monde.js (couvercle anime) dans une scene avec monde
+        if (boite && part && !(this.coffresDynamiques && /(^|_)chest$|^decorated_pot$/.test(nom))) e.geo = this._boite(boite[1], part, v.y || 0);   // coffres (couvercle anime) et pots decores (tessons, film/blocs-entites.js) : dessines par film/effets-monde.js dans une scene avec monde
         else e.type = 0;
       }
     }

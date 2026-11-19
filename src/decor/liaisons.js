@@ -143,16 +143,24 @@ export class Liaisons {
 export function passeLiaisons(g, d, cls, cellules) {
   const L = new Liaisons(g, d, cls);
   const marq = new Uint8Array(g.cells.length);
+  const cells = g.cells, sx = g.sx, sz = g.sz, sy = g.sy, sxz = sx * sz;
+  // poudre de redstone : memo par indice de palette (les millions de cellules d'un grand decor ne passent pas par les tables du jeu)
+  const filP = new Int8Array(65536).fill(-1);
+  const fil = (p) => { let v = filP[p]; if (v < 0) { const e = g.etatDePal(p); v = e >= 0 && cls.infoEtat(e).fil ? 1 : 0; filP[p] = v; } return v === 1; };
   for (const i of cellules) {
     marq[i] = 1;
-    const [x, y, z] = g.xyz(i);
-    for (const dir in VECT) { const v = VECT[dir], nx = x + v[0], ny = y + v[1], nz = z + v[2]; if (g.dans(nx, ny, nz)) marq[g.idx(nx, ny, nz)] = 1; }
-    // la poudre depend aussi des cellules en diagonale (une marche plus haut ou plus bas)
-    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
-      const nx = x + dx, ny = y + dy, nz = z + dz;
-      if (!g.dans(nx, ny, nz)) continue;
-      const e = g.etat(nx, ny, nz);
-      if (e >= 0 && cls.infoEtat(e).fil) marq[g.idx(nx, ny, nz)] = 1;
+    const ly = Math.floor(i / sxz), r = i - ly * sxz, lz = Math.floor(r / sx), lx = r - lz * sx;
+    // les 6 voisins ; la poudre depend aussi des cellules en diagonale (une marche plus haut ou plus bas)
+    for (let dy = -1; dy <= 1; dy++) {
+      const yy = ly + dy; if (yy < 0 || yy >= sy) continue;
+      for (let dz = -1; dz <= 1; dz++) {
+        const zz = lz + dz; if (zz < 0 || zz >= sz) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = lx + dx; if (xx < 0 || xx >= sx) continue;
+          const j = (yy * sz + zz) * sx + xx;
+          if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) <= 1 || fil(cells[j])) marq[j] = 1;
+        }
+      }
     }
   }
   // quels etats ont un calcul automatique (memo par indice de palette)
@@ -210,8 +218,13 @@ export function passeBulles(g, d, cellules) {
   if (colonne < 0 || eau < 0 || monte < 0 || descend < 0 || source < 0) return 0;
   // BubbleColumnBlock.canOccupy : une colonne, ou de l'eau source pleine (water level 0)
   const occupe = (e) => e >= 0 && (d.blocDe(e) === colonne || (d.blocDe(e) === eau && d.prop(e, 'level') === '0'));
+  // memo par indice de palette : une cellule ne compte que si elle (ou celle du dessus) est de l'eau source ou une colonne
+  const occP = new Int8Array(65536).fill(-1);
+  const occ = (p) => { let v = occP[p]; if (v < 0) { v = occupe(g.etatDePal(p)) ? 1 : 0; occP[p] = v; } return v === 1; };
+  const sxz = g.sx * g.sz;
   const bases = new Map();
   for (const i of cellules) {
+    if (!occ(g.cells[i]) && !(i + sxz < g.cells.length && occ(g.cells[i + sxz]))) continue;
     const [x, y, z] = g.xyz(i);
     let yb = y;
     while (g.dans(x, yb, z) && occupe(g.etat(x, yb, z))) yb--;   // la base : le premier bloc sous l'eau
@@ -235,11 +248,16 @@ export function passeBulles(g, d, cellules) {
 export function passeNettoyage(g, d, cls, cellules) {
   let plantes = 0, feuilles = 0;
   const air = 0;
-  // plantes dont le bloc dessous n'a plus de face haute pleine (ou n'est plus la)
+  // plantes dont le bloc dessous n'a plus de face haute pleine (ou n'est plus la) ; memo par indice de palette
+  const appuiP = new Int8Array(65536).fill(-1);
+  const sxz = g.sx * g.sz;
   for (const i of cellules) {
+    const p = g.cells[i];
+    let ap = appuiP[p];
+    if (ap < 0) { const e = g.etatDePal(p); ap = e >= 0 && d.solideFace(e, 1, 1) ? 1 : 0; appuiP[p] = ap; }
+    if (ap === 1) continue;                                    // appui possible (centre au moins)
+    if (i + sxz < g.cells.length && g.cells[i + sxz] === 0) continue;   // de l'air au-dessus : rien a retirer
     const [x, y, z] = g.xyz(i);
-    const sous = g.etat(x, y, z);
-    if (sous >= 0 && d.solideFace(sous, 1, 1)) continue;      // appui possible (centre au moins)
     for (let yy = y + 1; ; yy++) {
       const e = g.etat(x, yy, z);
       if (e < 0) break;

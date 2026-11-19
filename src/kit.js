@@ -50,7 +50,7 @@ export const SOUND_EVENTS = [...new Set([...SOUND_EVENTS_PAS, ...SOUND_EVENTS_MO
 // Sons des creatures (groupe a la demande `sons_creatures`) : cris, blessure, mort, pas de chaque type (src/creatures/especes.js)
 export { SOUND_EVENTS_CREATURES } from './creatures/especes.js';
 // Version de chaque groupe du kit : un cache plus ancien (kit.json) est complete la prochaine fois (sons du monde, textures de coffre et de cloche, particules)
-export const GROUP_VERSIONS = { sons: 8, textures: 2, objets: 4, projectiles: 2, recettes: 2 };   // sons 8 : blocs et machines (partie 27) ; objets 3 : reflet d'enchantement (textures/misc/enchanted_glint_*.png), 4 : galons (textures/trims, palettes, atlases/items.json) ; recettes 2 : trim_material, trim_pattern ; projectiles 2 : bouchon de la canne a peche
+export const GROUP_VERSIONS = { sons: 8, textures: 2, objets: 4, projectiles: 2, recettes: 2, entites: 2 };   // entites 2 : textures des tableaux (textures/painting)   // sons 8 : blocs et machines (partie 27) ; objets 3 : reflet d'enchantement (textures/misc/enchanted_glint_*.png), 4 : galons (textures/trims, palettes, atlases/items.json) ; recettes 2 : trim_material, trim_pattern ; projectiles 2 : bouchon de la canne a peche
 
 // groupe -> prefixes de chemin dans le jar (et dans le cache, qui reprend les memes chemins)
 export const GROUPS = {
@@ -74,7 +74,7 @@ export const GROUPS = {
     'data/minecraft/tags/damage_type/', 'data/minecraft/damage_type/', 'data/minecraft/loot_table/gameplay/', 'data/minecraft/predicate/', 'data/minecraft/context_int_provider/brewing/', 'data/minecraft/context_float_provider/brewing/', 'data/minecraft/trim_material/', 'data/minecraft/trim_pattern/'],
   // interface (montage : textes, incrustations) : police du jeu (fournisseurs + textures), sprites de l'interface (coeurs, barre d'objets, infobulle, succes...), fonds de conteneurs
   // creatures (champ d'acteur `type`) : textures des entites (0,4 Mo) et sons des creatures (evenements de SOUND_EVENTS_CREATURES seulement)
-  entites: ['assets/minecraft/textures/entity/'],
+  entites: ['assets/minecraft/textures/entity/', 'assets/minecraft/textures/painting/'],   // + tableaux (entites `painting` des constructions importees)
   sons_creatures: ['assets/minecraft/sounds/mob/', 'assets/minecraft/sounds/entity/'],
   interface: ['assets/minecraft/font/', 'assets/minecraft/textures/font/', 'assets/minecraft/textures/gui/sprites/', 'assets/minecraft/textures/gui/container/'],
 };

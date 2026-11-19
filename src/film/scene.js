@@ -262,6 +262,11 @@ export function validerScene(s, { sansCamera = false } = {}) {
     if (!estObjet(s.sons)) err('sons', 'un objet est attendu, par exemple {"pas": true}');
     if (s.sons.pas !== undefined) { if (typeof s.sons.pas !== 'boolean') err('sons.pas', 'true ou false attendu'); sons.pas = s.sons.pas; }
     if (s.sons.ambiance !== undefined) { if (typeof s.sons.ambiance !== 'boolean') err('sons.ambiance', 'true ou false attendu (sons d ambiance du monde : eau qui coule, lave, feu, pres de la camera)'); if (s.sons.ambiance) sons.ambiance = true; }
+    // auditeur des sons du monde : "camera" (defaut, la camera active de chaque plan) ou le nom d'un acteur (ses oreilles, vue a la 1re personne)
+    if (s.sons.ecoute !== undefined && s.sons.ecoute !== 'camera') {
+      if (typeof s.sons.ecoute !== 'string' || !noms.has(s.sons.ecoute)) err('sons.ecoute', `"camera" ou le nom d'un acteur attendu${typeof s.sons.ecoute === 'string' ? ` (acteur "${s.sons.ecoute}" inconnu)` : ''}`);
+      sons.ecoute = s.sons.ecoute;
+    }
     if (s.sons.volume !== undefined) {
       if (!estNombre(s.sons.volume) || s.sons.volume < 0 || s.sons.volume > 4) err('sons.volume', 'nombre de 0 a 4 attendu (1 = normal)');
       sons.volume = s.sons.volume;

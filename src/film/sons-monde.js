@@ -1,13 +1,16 @@
 // Sons du MONDE SIMULE : les evenements `son` du replay (portes, coffres, cloche, pose et casse de blocs, coups de pioche, notes...) sont mixes
-// comme les autres sons du film, avec l'affaiblissement du jeu : un son de volume v s'entend jusqu'a 16 x max(1, v) blocs, lineairement.
+// comme les autres sons du film : des sons PLACES, entendus depuis l'auditeur de chaque image (film/ecoute.js) avec l'affaiblissement du
+// jeu : un son de volume v s'entend jusqu'a max(1, v) x attenuation_distance (16 par defaut) blocs, lineairement, au gain min(1, v).
 // La hauteur (pitch) change la vitesse de lecture (reechantillonnage dans film/sons.js). Un son absent du kit est ignore et signale une fois.
-import { choisir } from './sons.js';
+// `ecoute` : l'auditeur de chaque image (planifierSons) ; sans lui, la camera.
+import { choisir, tirer, sonMonde } from './sons.js';
 import { niveauxMeteo } from './meteo.js';
 import { eclairEnd } from '../rendu/ciel-vanille.js';   // eclairs du ciel de l'End (memes tirages que le dessin)
 
 const DT = 1 / 30;
 
-export function sonsDuReplay({ replay, images, sons, evenements, gel = [], remap = null }) {
+export function sonsDuReplay({ replay, images, sons, evenements, gel = [], remap = null, ecoute = null }) {
+  const ec = ecoute ?? images.map((im) => im.camera);
   const S = replay.sons, n = S.length / 7;
   const absents = new Set();
   const musiques = new Map();   // juke-box : 'x,y,z' -> evenement de la musique en cours ; '!stop' (familles/musique.js) la coupe a son instant
@@ -22,18 +25,12 @@ export function sonsDuReplay({ replay, images, sons, evenements, gel = [], remap
     const cle = `${x},${y},${z}`;
     if (nom === '!stop') { const m = musiques.get(cle); if (m) { m.duree = Math.max(0, t - m.t); musiques.delete(cle); } continue; }
     if (t < 0 || !images.length) continue;
-    const im = images[Math.min(images.length - 1, Math.max(0, Math.round(t / DT)))];
-    const cam = im.camera, dx = x - cam.x, dy = y - cam.y, dz = z - cam.z, d = Math.hypot(dx, dy, dz);
-    // feux d'artifice (ClientLevel.createFireworks) : la variante lointaine quand la camera est a 16 blocs ou plus
+    const cam = ec[Math.min(images.length - 1, Math.max(0, Math.round(t / DT)))], d = Math.hypot(x - cam.x, y - cam.y, z - cam.z);
+    // feux d'artifice (ClientLevel.createFireworks) : la variante lointaine quand l'auditeur est a 16 blocs ou plus
     const nomJoue = /^entity\.firework_rocket\.(large_blast|blast|twinkle)$/.test(nom) && d >= 16 ? nom + '_far' : nom;
-    const liste = sons.fichiers(nomJoue);
-    if (!liste.length) { absents.add(nomJoue); continue; }
-    const portee = 16 * Math.max(1, vol);
-    const gain = Math.min(2, vol * Math.max(0, 1 - d / portee));
-    if (gain < 0.01) continue;
-    const psi = (cam.lacet * Math.PI) / 180, fx = -Math.sin(psi), fz = Math.cos(psi), dh = Math.hypot(dx, dz);
-    const pan = dh > 0.3 ? Math.max(-1, Math.min(1, (dx * -fz + dz * fx) / dh)) : 0;
-    const ev = { t, fichier: choisir(liste, `monde|${nomJoue}|${i}`), gain, pan, hauteur };
+    const v = tirer(sons, nomJoue, `monde|${nomJoue}|${i}`);
+    if (!v) { absents.add(nomJoue); continue; }
+    const ev = sonMonde({ t, variante: v, volume: vol, hauteur, pos: [x, y, z] });   // place : affaibli et panoramique depuis l'auditeur au mixage
     if (nom.startsWith('music_disc.')) musiques.set(cle, ev);
     evenements.push(ev);
   }
@@ -54,14 +51,9 @@ function sonsEclairsEnd({ replay, images, sons, evenements, reel, remap, absents
     let t = reel(tk / (20 * (replay.ralenti || 1)));
     if (remap) t = remap.filmDe(t);
     if (t < 0) continue;
-    const cam = images[Math.min(images.length - 1, Math.max(0, Math.round(t / DT)))].camera;
-    // direction de l'eclair : rotation Y (180 - ay) apres rotation X (-90 - ax) du vecteur (0, 1, 0)
+    // direction de l'eclair : rotation Y (180 - ay) apres rotation X (-90 - ax) du vecteur (0, 1, 0) ; son directionnel, sans affaiblissement
     const a = ((180 - e.ay) * Math.PI) / 180, b = ((-90 - e.ax) * Math.PI) / 180, y1 = Math.cos(b), z1 = Math.sin(b);
-    const dx = z1 * Math.sin(a), dz = z1 * Math.cos(a), dh = Math.hypot(dx, dz);
-    const psi = (cam.lacet * Math.PI) / 180, fx = -Math.sin(psi), fz = Math.cos(psi);
-    const pan = dh > 0.05 ? Math.max(-1, Math.min(1, (dx * -fz + dz * fx) / dh)) : 0;
-    void y1;
-    evenements.push({ t, fichier: choisir(liste, `end_flash|${tk}`), gain: 1, pan, hauteur: 1 });
+    evenements.push({ t, fichier: choisir(liste, `end_flash|${tk}`), volume: 1, dir: [z1 * Math.sin(a), y1, z1 * Math.cos(a)] });
   }
 }
 
@@ -84,6 +76,7 @@ function sonsElytres({ replay, images, sons, evenements, reel, remap, absents })
       // un son par vol (ticks consecutifs) ; il vit tant que le vol dure, et au moins 20 ticks
       let j = i; while (j + 1 < ticks.length && ticks[j + 1] === ticks[j] + 1) j++;
       const t0 = ticks[i], fichier = choisir(liste, `elytres|${id}|${t0}`);
+      const vv = sons.variantes?.('item.elytra.flying').find((x) => x.fichier === fichier)?.volume ?? 1;   // volume de la variante (sounds.json : 0,6)
       let decal = 0, dernier = vols.get(ticks[j]);
       for (let tk = t0, time = 1; tk <= Math.max(ticks[j], t0 + 19); tk++, time++) {
         const v = vols.get(tk) ?? dernier, sp = Math.fround(v[2] * v[2] + v[3] * v[3] + v[4] * v[4]);
@@ -93,16 +86,8 @@ function sonsElytres({ replay, images, sons, evenements, reel, remap, absents })
         let t = reel(tk / (20 * replay.ralenti)); if (remap) t = remap.filmDe(t);
         const dt = 1 / (20 * replay.ralenti);
         if (vol > 0.001 && t >= 0) {
-          const im = images[Math.min(images.length - 1, Math.max(0, Math.round(t / DT)))], cam = im.camera;
-          const p = posDe.get(tk);
-          if (p) {
-            const dx = p[0] - cam.x, dy = p[1] - cam.y, dz = p[2] - cam.z, d = Math.hypot(dx, dy, dz), gain = vol * Math.max(0, 1 - d / 16);
-            if (gain > 0.005) {
-              const psi = (cam.lacet * Math.PI) / 180, fx = -Math.sin(psi), fz = Math.cos(psi), dh = Math.hypot(dx, dz);
-              const pan = dh > 0.3 ? Math.max(-1, Math.min(1, (dx * -fz + dz * fx) / dh)) : 0;
-              evenements.push({ t, fichier, gain, pan, hauteur: Math.round(hauteur * 100) / 100, boucle: true, decalage: decal, duree: dt });
-            }
-          }
+          const p = posDe.get(tk);   // morceau place a la position du joueur a ce tick (le son le suit)
+          if (p) evenements.push({ t, fichier, volume: vol * vv, pos: p, portee: 16, hauteur: Math.round(hauteur * 100) / 100, boucle: true, decalage: decal, duree: dt });
         }
         decal += dt * hauteur;
       }
@@ -129,13 +114,7 @@ function sonsWagonnets({ replay, images, sons, evenements, reel, remap, absents 
       const v = Math.hypot(p[0] - q[0], p[2] - q[2]), vol = v >= 0.01 ? Math.min(0.5, v) * 0.7 : 0;
       let t = reel(tk / (20 * replay.ralenti)); if (remap) t = remap.filmDe(t);
       if (vol > 0.001 && t >= 0) {
-        const im = images[Math.min(images.length - 1, Math.max(0, Math.round(t / DT)))], cam = im.camera;
-        const dx = p[0] - cam.x, dy = p[1] - cam.y, dz = p[2] - cam.z, d = Math.hypot(dx, dy, dz), gain = vol * Math.max(0, 1 - d / 16);
-        if (gain > 0.005) {
-          const psi = (cam.lacet * Math.PI) / 180, fx = -Math.sin(psi), fz = Math.cos(psi), dh = Math.hypot(dx, dz);
-          const pan = dh > 0.3 ? Math.max(-1, Math.min(1, (dx * -fz + dz * fx) / dh)) : 0;
-          evenements.push({ t, fichier, gain, pan, hauteur: 1, boucle: true, decalage: decal, duree: dt });
-        }
+        evenements.push({ t, fichier, volume: vol, pos: p, portee: 16, boucle: true, decalage: decal, duree: dt });
       }
       decal += dt;
     }

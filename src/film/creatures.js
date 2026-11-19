@@ -302,6 +302,13 @@ export function appliquerCreatures(scene, parImage, { DT = 1 / 30, terrain = {},
 // pas : un pas par bloc parcouru x 0,6 (Entity.moveDist, nextStep), son de pas du type (sinon celui du bloc) ;
 // cri : Mob.baseTick (nextInt(1000) < ambientSoundTime++, puis -80 ticks), hauteur (r1 - r2) x 0,2 + 1 ; blessure (anim "blesse") ;
 // creeper : amorce quand gonfle quitte 0 ; bateau : un coup de pagaie toutes les 16 ticks quand il avance. `cris: false` coupe les cris.
+// Volumes du jeu (Horizon mobs/ai/step.rs, ai.rs sound_volume, equine.rs ; MIT) : un pas vaut 0,15 (son du type ou du bloc x 0,15), sauf
+// golem de fer et de cuivre, arpenteur, dromadaire 1, dromadaire momifie 0,4 ; cris et blessures : getSoundVolume (ghast 5, warden 4,
+// slime et cube de magma 0,4 x taille, chauve-souris 0,1, calmar, vache, abeille, allay, loup 0,4, equides 0,8, sinon 1).
+const VOLUME_PAS_TYPE = { iron_golem: 1, copper_golem: 1, strider: 1, camel: 1, camel_husk: 0.4 };
+const VOLUME_CRI = { ghast: 5, warden: 4, bat: 0.1, squid: 0.4, glow_squid: 0.4, cow: 0.4, mooshroom: 0.4, bee: 0.4, allay: 0.4, wolf: 0.4,
+  horse: 0.8, donkey: 0.8, mule: 0.8, skeleton_horse: 0.8, zombie_horse: 0.8, camel: 0.8, camel_husk: 0.8, llama: 0.8, trader_llama: 0.8 };
+const volumeCri = (c) => (/^(slime|magma_cube)$/.test(c.type) ? 0.4 * Math.max(1, c.taille ?? 1) : c.type === 'happy_ghast' ? (c.bebe ? 1 : 4) : VOLUME_CRI[c.type] ?? 1);
 export function sonsCreature({ a, k, images, sons, ajouter, blocSous, pasAuto }) {
   const c = a.creature, e = ESPECES[c.type], DT = 1 / 30;
   if (!e) return 0;
@@ -321,7 +328,7 @@ export function sonsCreature({ a, k, images, sons, ajouter, blocSous, pasAuto })
         const t = images[i - 1].t + DT * Math.min(1, Math.max(0, (suivant - avant) / (mouvement - avant)));
         suivant = Math.floor(mouvement) + 1;
         const evt = e[4] ? 'entity.' + e[4] : blocSous(p);
-        if (ajouter(evt, t, [p.x, p.y + 0.2, p.z], 1, `pasc|${k}|${n}`)) n++;
+        if (ajouter(evt, t, [p.x, p.y + 0.2, p.z], VOLUME_PAS_TYPE[c.type] ?? 0.15, `pasc|${k}|${n}`)) n++;
       }
     }
   }
@@ -331,10 +338,10 @@ export function sonsCreature({ a, k, images, sons, ajouter, blocSous, pasAuto })
   if (c.cris !== false && e[3][0]) {
     let temps = 0;
     for (let j = 0; j < nt; j++) {
-      if (Math.floor(alea() * 1000) < temps++) { temps = -80; ajouter('entity.' + e[3][0], j / 20, place(iDe(j)), 1, `cri|${k}|${j}`, (alea() - alea()) * 0.2 + 1); }
+      if (Math.floor(alea() * 1000) < temps++) { temps = -80; ajouter('entity.' + e[3][0], j / 20, place(iDe(j)), volumeCri(c), `cri|${k}|${j}`, (alea() - alea()) * 0.2 + 1); }
     }
   }
-  for (const kf of c.anim ?? []) if (kf.v === 'blesse' && e[3][1]) ajouter('entity.' + e[3][1], kf.t, place(iDe(kf.t * 20)), 1, `blesse|${k}|${kf.t}`, (alea() - alea()) * 0.2 + 1);
+  for (const kf of c.anim ?? []) if (kf.v === 'blesse' && e[3][1]) ajouter('entity.' + e[3][1], kf.t, place(iDe(kf.t * 20)), volumeCri(c), `blesse|${k}|${kf.t}`, (alea() - alea()) * 0.2 + 1);
   if (c.type === 'creeper' && c.gonfle) { let avant = 0; for (const kf of c.gonfle) { if (avant === 0 && kf.v > 0) ajouter('entity.creeper.primed', kf.t, place(iDe(kf.t * 20)), 1, `amorce|${k}|${kf.t}`, 0.5); avant = kf.v; } }
   if (c.type.includes('boat')) {
     let phase = 0;

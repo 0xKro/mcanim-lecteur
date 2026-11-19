@@ -337,8 +337,9 @@ export async function rendreVideo({ scene, zonePath, kitDir, sortie, surcharges 
     // --- son
     const sons = new Sons(film.kit, ffmpeg);
     const plan = planifierSons({ scene, images, zone: rs.zone, sons, sims: anim.sims, remap: anim.remap });
-    if (film.sim) { const { sonsDuReplay, sonsMeteo } = await import('./sons-monde.js'); plan.notes.push(...sonsDuReplay({ replay: film.sim.replay, images, sons, evenements: plan.evenements, gel: scene.gel, remap: anim.remap }), ...sonsMeteo({ scene, sons, evenements: plan.evenements })); plan.evenements.sort((a, b) => a.t - b.t); }   // sons du monde simule (portes, coups de pioche, cloche...)
-    let pcm = mixer({ evenements: plan.evenements, duree: scene.duree, sons, volume: VOLUME_MIXAGE * (scene.sons.volume ?? 1) });
+    if (film.sim) { const { sonsDuReplay, sonsMeteo } = await import('./sons-monde.js'); plan.notes.push(...sonsDuReplay({ replay: film.sim.replay, images, sons, evenements: plan.evenements, gel: scene.gel, remap: anim.remap, ecoute: plan.ecoute }), ...sonsMeteo({ scene, sons, evenements: plan.evenements })); plan.evenements.sort((a, b) => a.t - b.t); }   // sons du monde simule (portes, coups de pioche, cloche...)
+    let pcm = mixer({ evenements: plan.evenements, duree: scene.duree, sons, volume: VOLUME_MIXAGE * (scene.sons.volume ?? 1), ecoute: plan.ecoute });   // sons places entendus depuis l'auditeur (film/ecoute.js)
+    if (pcm.voix && (pcm.voix.horsPortee || pcm.voix.saturees)) plan.notes.push(`sons du monde : ${pcm.voix.jouees} joues, ${pcm.voix.horsPortee} hors de portee de l'auditeur (non joues)${pcm.voix.saturees ? `, ${pcm.voix.saturees} perdus (247 voies du jeu prises)` : ''}`);
     // fichiers audio du montage (voix, musique, effets) : mixes par-dessus les bruits du jeu, ducking et sonie finale (montage/audio.js)
     let notesAudio = [];
     if (scene.sons.fichiers?.length) {

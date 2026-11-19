@@ -1,16 +1,22 @@
 // Sons : bruits de pas selon le bloc et la distance parcourue, sons ponctuels du jeu, mixage en PCM.
 // Les fichiers .ogg viennent du kit ; ffmpeg les decode, le melange est fait ici (simple et sur).
+// Les sons du monde sont PLACES (position, volume, portee) ; le mixage les entend depuis l'auditeur de chaque image (film/ecoute.js) :
+// affaiblissement lineaire du jeu jusqu'a la portee, panoramique d'OpenAL Soft, voies limitees comme le moteur de son du jeu.
 import { sonsCreature } from './creatures.js';   // sons des creatures
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { instantsDePas, jambesAnimees } from './pas.js';
+import { ecouteDe, gainsPour, choisirVoix, estPlace, borneHauteur, porteeDe, coupeApres, ATTENUATION_DEFAUT } from './ecoute.js';
 
 export const FREQUENCE = 44100;
 export const VOLUME_MIXAGE = 2.5;       // gain du mixage ; le champ sons.volume de la scene le multiplie
 export const DISTANCE_PAS = 1 / 0.6;   // blocs par pas : le jeu ajoute 0,6 par bloc parcouru et sonne a chaque entier
-const PORTEE = 24;                       // blocs : au dela, le son est tres faible
+// Pas (Entity.playStepSound) : son de pas du bloc, volume du type de son du bloc x 0,15, hauteur du type. Les types de son des familles
+// ci-dessous ont tous volume 1 et hauteur 1 (gameplay-facts.json du jeu 26.3 : seuls METAL, hauteur 1,5, et ANVIL, volume 0,3, different).
+export const VOLUME_PAS = 0.15;
+const IPS = 30;                          // images par seconde du film (auditeur : une position par image)
 
 // Table ecrite a la main : morceau du nom de bloc -> famille de pas. Le premier qui correspond gagne.
 const FAMILLES = [
@@ -42,7 +48,11 @@ export class Sons {
   }
 
   // evenement -> liste de chemins de fichiers .ogg presents dans le kit (vide si inconnu)
-  fichiers(evenement, vus = new Set()) {
+  fichiers(evenement) { return this.variantes(evenement).map((v) => v.fichier); }
+
+  // evenement -> variantes { fichier, volume, hauteur, attenuation, flux } de sounds.json, repetees selon leur poids. Une reference a un
+  // autre evenement (type "event") prend les variantes de celui-ci, comme le jeu (seul le poids de la reference compte).
+  variantes(evenement, vus = new Set()) {
     evenement = String(evenement).replace(/^minecraft:/, '');
     if (vus.has(evenement)) return [];
     vus.add(evenement);
@@ -52,10 +62,11 @@ export class Sons {
     for (const s of e.sounds || []) {
       const o = typeof s === 'string' ? { name: s } : s;
       const nom = o.name.replace(/^minecraft:/, '');
-      if (o.type === 'event') out.push(...this.fichiers(nom, vus));
+      if (o.type === 'event') { const r = this.variantes(nom, vus); for (let i = 0; i < (o.weight || 1); i++) out.push(...r); }
       else {
         const f = path.join(this.dossier, 'sounds', nom + '.ogg');
-        if (fs.existsSync(f)) for (let i = 0; i < (o.weight || 1); i++) out.push(f);
+        const v = { fichier: f, volume: o.volume ?? 1, hauteur: o.pitch ?? 1, attenuation: o.attenuation_distance ?? ATTENUATION_DEFAUT, flux: !!o.stream };
+        if (fs.existsSync(f)) for (let i = 0; i < (o.weight || 1); i++) out.push(v);
       }
     }
     return out;
@@ -87,22 +98,38 @@ export function choisir(liste, graine) {
   return liste[h.readUInt32BE(0) % liste.length];
 }
 
+// Tire une variante de l'evenement (null s'il n'est pas dans le kit). `sons` sans variantes (essais) : volume, hauteur, portee par defaut.
+export function tirer(sons, evenement, graine) {
+  const vs = sons.variantes ? sons.variantes(evenement) : sons.fichiers(evenement).map((fichier) => ({ fichier }));
+  return vs.length ? choisir(vs, graine) : null;
+}
+
+// Son du MONDE place en `pos` (SoundEngine.play) : volume de l'instance x volume de la variante (le gain de la voie le borne a 1, la
+// portee vaut max(volume, 1) x attenuation_distance), hauteur x hauteur de la variante. Voir film/ecoute.js.
+export function sonMonde({ t, variante: v, volume = 1, hauteur = 1, pos, ...reste }) {
+  const vol = volume * (v.volume ?? 1), h = Math.round(hauteur * (v.hauteur ?? 1) * 100) / 100;   // hauteur au centieme (cache des fichiers reechantillonnes)
+  return { t, fichier: v.fichier, volume: vol, pos, portee: porteeDe(vol, v.attenuation ?? ATTENUATION_DEFAUT), ...(h !== 1 ? { hauteur: h } : {}), ...(v.flux ? { flux: true } : {}), ...reste };
+}
+
 // ---------------------------------------------------------------- planification
-// images : sortie de animer(). zone : objet Zone (bloc(x,y,z)). Retourne { evenements, notes, nbPas }.
-// evenement : { t, fichier, gain, pan (-1 gauche .. +1 droite) }
+// images : sortie de animer(). zone : objet Zone (bloc(x,y,z)). Retourne { evenements, notes, nbPas, ecoute }.
+// evenement place : { t, fichier, volume, pos: [x,y,z], portee, hauteur? } ; relatif (sans affaiblissement) : { t, fichier, gain, pan (-1..1) }.
+// ecoute : l'auditeur de chaque image (film/ecoute.js), a donner a mixer().
 // ---------------------------------------------------------------- ambiance du monde (sons.ambiance : true)
 // Le jeu (ClientLevel.animateTick) tire chaque tick 667 cellules au hasard a 16 blocs de la camera et 667 a 32 ; chaque bloc tire joue
 // son animateTick : eau qui coule (pas une source, pas une chute) 1 sur 64 -> block.water.ambient (volume 0,75..1, hauteur 0,5..1,5) ;
 // lave sous de l'air 1 sur 100 -> block.lava.pop, 1 sur 200 -> block.lava.ambient (volume 0,2..0,4, hauteur 0,9..1,05) ; feu 1 sur 24 ->
 // block.fire.ambient (volume 1..2, hauteur 0,3..1). Les blocs sont ceux de la zone ; le hasard est tire d'une graine fixe (deterministe).
-export function sonsAmbiance({ images, zone, sons, gainPan, evenements }) {
+// `ecoute` : auditeur par image (defaut : la camera).
+export function sonsAmbiance({ images, zone, sons, evenements, ecoute = null }) {
   const DT = 1 / 30, absents = new Set(), sources = new Map();
+  const ec = ecoute ?? images.map((im) => im.camera);
   let g = 0x9e3779b9;
   const alea = () => { g = (Math.imul(g, 1664525) + 1013904223) >>> 0; return g / 4294967296; };
   const nom = (e) => String(e || '').replace(/^minecraft:/, '');
-  // sources : une fois par seconde de film, les blocs a 32 blocs de la camera (eau qui coule, lave a l'air libre, feu)
+  // sources : une fois par seconde de film, les blocs a 32 blocs de l'auditeur (eau qui coule, lave a l'air libre, feu)
   for (let i = 0; i < images.length; i += 30) {
-    const c = images[i].camera, X = Math.floor(c.x), Y = Math.floor(c.y), Z = Math.floor(c.z);
+    const c = ec[i], X = Math.floor(c.x), Y = Math.floor(c.y), Z = Math.floor(c.z);
     for (let y = Y - 12; y <= Y + 12; y++) for (let z = Z - 32; z <= Z + 32; z++) for (let x = X - 32; x <= X + 32; x++) {
       const k = `${x},${y},${z}`; if (sources.has(k)) continue;
       const e = nom(zone.bloc(x, y, z));
@@ -119,13 +146,12 @@ export function sonsAmbiance({ images, zone, sons, gainPan, evenements }) {
   const p16 = 667 / 33 ** 3, p32 = 667 / 65 ** 3;
   let n = 0;
   const jouer = (evt, t, pos, vol, haut, cle) => {
-    const f = sons.fichiers(evt);
-    if (!f.length) { absents.add(evt); return; }
-    const im = images[Math.min(images.length - 1, Math.round(t / DT))], gp = gainPan(pos, im.camera);
-    evenements.push({ t, fichier: choisir(f, cle), gain: Math.min(1, gp.gain * vol), pan: gp.pan, hauteur: Math.round(haut * 50) / 50 }); n++;
+    const v = tirer(sons, evt, cle);
+    if (!v) { absents.add(evt); return; }
+    evenements.push(sonMonde({ t, variante: v, volume: vol, hauteur: Math.round(haut * 50) / 50, pos })); n++;
   };
   for (let j = 0; j < nt; j++) {
-    const t = j / 20, c = images[Math.min(images.length - 1, Math.round(t / DT))].camera;
+    const t = j / 20, c = ec[Math.min(images.length - 1, Math.round(t / DT))];
     for (const s of liste) {
       const d = Math.max(Math.abs(s.p[0] - c.x), Math.abs(s.p[1] - c.y), Math.abs(s.p[2] - c.z));
       if (d > 32) continue;
@@ -142,15 +168,14 @@ export function planifierSons({ scene, images, zone, sons, sims = null, remap = 
   const evenements = [], notes = [];
   let nbPas = 0;
   const DT = 1 / 30;
-  const gainPan = (A, cam) => {
-    const dx = A[0] - cam.x, dy = A[1] - cam.y, dz = A[2] - cam.z;
-    const d = Math.hypot(dx, dy, dz);
-    const gain = Math.max(0.04, 1 - d / PORTEE);
-    const psi = (cam.lacet * Math.PI) / 180;
-    const fx = -Math.sin(psi), fz = Math.cos(psi);
-    const dh = Math.hypot(dx, dz);
-    const pan = dh > 0.3 ? Math.max(-1, Math.min(1, (dx * -fz + dz * fx) / dh)) : 0; // composante vers la droite de la camera
-    return { gain, pan };
+  const ecoute = ecouteDe(scene, images);
+  // pas d'un acteur : son de pas du bloc, place au pied, volume x 0,15 (Entity.playStepSound)
+  const pasDe = (fam, t, pos, graine, manquantes) => {
+    let v = tirer(sons, evenementPas(fam), graine);
+    if (!v) { manquantes.add(fam); v = tirer(sons, evenementPas('grass'), graine); }
+    if (!v) return false;
+    evenements.push(sonMonde({ t, variante: v, volume: VOLUME_PAS, pos }));
+    return true;
   };
   // l'acteur k parcourt-il au moins une foulee au sol hors gel ? (sert quand les pieds ne donnent aucun contact)
   const deplacement = (k) => {
@@ -174,14 +199,7 @@ export function planifierSons({ scene, images, zone, sons, sims = null, remap = 
           const bloc = (x, z) => (zone ? zone.bloc(Math.floor(x), Math.floor(pas.sol - 0.2), Math.floor(z)) : null);
           let etat = bloc(pas.x, pas.z);                                 // bloc sous le pied ; en l'air (bord de marche) : bloc sous le corps
           if (!etat || /(^|:)(cave_|void_)?air$/.test(String(etat).replace(/\[.*$/, ''))) etat = bloc(pas.ax, pas.az);
-          let fam = familleDeBloc(etat);
-          let liste = sons.fichiers(evenementPas(fam));
-          if (!liste.length) { manquantes.add(fam); fam = 'grass'; liste = sons.fichiers(evenementPas('grass')); }
-          if (!liste.length) continue;
-          const fichier = choisir(liste, `pas|${k}|${n}`);
-          const im = images[Math.min(images.length - 1, Math.max(0, Math.round(pas.t / DT)))];
-          n++; nbPas++;
-          evenements.push({ t: pas.t, fichier, ...gainPan([pas.x, pas.y + 0.3, pas.z], im.camera) });
+          if (pasDe(familleDeBloc(etat), pas.t, [pas.x, pas.y + 0.3, pas.z], `pas|${k}|${n}`, manquantes)) { n++; nbPas++; }
         }
         if (nbContacts > 0 || !deplacement(k)) return;
         // aucun contact trouve (pieds qui ne se levent presque pas) mais l'acteur avance : regle de la distance
@@ -198,40 +216,33 @@ export function planifierSons({ scene, images, zone, sons, sims = null, remap = 
           suivant = Math.floor(mouvement) + 1;
           const t = images[i - 1].t + DT * Math.min(1, Math.max(0, frac));
           const etat = zone ? zone.bloc(Math.floor(p.x), Math.floor(p.sol - 0.2), Math.floor(p.z)) : null;
-          let fam = familleDeBloc(etat);
-          let liste = sons.fichiers(evenementPas(fam));
-          if (!liste.length) { manquantes.add(fam); fam = 'grass'; liste = sons.fichiers(evenementPas('grass')); }
-          if (!liste.length) continue;
-          const fichier = choisir(liste, `pas|${k}|${n}`);
-          n++; nbPas++;
-          evenements.push({ t, fichier, ...gainPan([p.x, p.y + 0.5, p.z], images[i].camera) });
+          if (pasDe(familleDeBloc(etat), t, [p.x, p.y + 0.5, p.z], `pas|${k}|${n}`, manquantes)) { n++; nbPas++; }
         }
       }
     });
-    if (sims) { const absents = new Set(); sonsDeTrajet({ scene, images, zone, sons, sims, evenements, gainPan, manquantes: absents, remap }); if (absents.size) notes.push(`sons de la physique absents du kit, ignores : ${[...absents].join(', ')}`); }
+    if (sims) { const absents = new Set(); sonsDeTrajet({ images, zone, sons, sims, evenements, manquantes: absents, remap }); if (absents.size) notes.push(`sons de la physique absents du kit, ignores : ${[...absents].join(', ')}`); }
     if (manquantes.size) notes.push(`sons de pas absents du kit : ${[...manquantes].join(', ')} (herbe utilisee)`);
   }
   // creatures (champ `type`) : pas, cris, blessures, amorce du creeper, pagaies (film/creatures.js)
   if (scene.acteurs.some((a) => a.creature)) {
     const absents = new Set();
-    const ajouter = (evt, t, pos, gain, graine, hauteur = 1) => {
-      const liste = sons.fichiers(evt);
-      if (!liste.length) { if (sons.defs[evt]?.sounds?.length !== 0) absents.add(evt); return false; }   // evenement muet dans le jeu (poissons : sounds vide) : rien a dire
-      const im = images[Math.min(images.length - 1, Math.max(0, Math.round(t / DT)))], gp = gainPan(pos, im.camera);
-      evenements.push({ t, fichier: choisir(liste, graine), gain: Math.min(1, gp.gain * gain), pan: gp.pan, ...(hauteur !== 1 ? { hauteur: Math.round(hauteur * 50) / 50 } : {}) });
+    const ajouter = (evt, t, pos, volume, graine, hauteur = 1) => {
+      const v = tirer(sons, evt, graine);
+      if (!v) { if (sons.defs?.[evt]?.sounds?.length !== 0) absents.add(evt); return false; }   // evenement muet dans le jeu (poissons : sounds vide) : rien a dire
+      evenements.push(sonMonde({ t, variante: v, volume, hauteur, pos }));
       return true;
     };
     const blocSous = (p) => evenementPas(familleDeBloc(zone ? zone.bloc(Math.floor(p.x), Math.floor(p.sol - 0.2), Math.floor(p.z)) : null));
     scene.acteurs.forEach((a, k) => { if (a.creature) nbPas += sonsCreature({ a, k, images, sons, ajouter, blocSous, pasAuto: !!scene.sons.pas }); });
     if (absents.size) notes.push(`sons de creatures absents du kit, ignores : ${[...absents].slice(0, 6).join(', ')}`);
   }
-  if (scene.sons.ambiance && zone) { const r = sonsAmbiance({ images, zone, sons, gainPan, evenements }); if (r.absents.size) notes.push(`sons d'ambiance absents du kit, ignores : ${[...r.absents].join(', ')}`); }
+  if (scene.sons.ambiance && zone) { const r = sonsAmbiance({ images, zone, sons, evenements, ecoute }); if (r.absents.size) notes.push(`sons d'ambiance absents du kit, ignores : ${[...r.absents].join(', ')}`); }
   for (const s of scene.sons.liste) {
-    const liste = sons.fichiers(s.nom);
-    if (!liste.length) { notes.push(`son "${s.nom}" absent du kit : ignore`); continue; }
+    const v = tirer(sons, s.nom, `liste|${s.nom}|${s.t}`);
+    if (!v) { notes.push(`son "${s.nom}" absent du kit : ignore`); continue; }
     if (s.t < 0 || s.t > scene.duree) { notes.push(`son "${s.nom}" a ${s.t} s : hors de la scene, ignore`); continue; }
-    // meme chemin que les pas automatiques : la cible (acteur ou point) donne distance et panoramique, le volume multiplie
-    let place = { gain: 1, pan: 0 };
+    // avec cible (acteur ou point) : son du monde, comme les pas (volume du jeu : au-dela de 1 il allonge la portee) ; sans cible : son
+    // relatif, au premier plan, le volume multiplie le niveau
     if (s.cible) {
       const im = images[Math.min(images.length - 1, Math.max(0, Math.round(s.t / DT)))];
       let pos = s.cible.pos;
@@ -239,57 +250,98 @@ export function planifierSons({ scene, images, zone, sons, sims = null, remap = 
         const k = scene.acteurs.findIndex((a) => a.nom === s.cible.acteur), p = im.acteurs[k];
         pos = [p.x, p.y + 0.3, p.z];
       }
-      place = gainPan(pos, im.camera);
-    }
-    evenements.push({ t: s.t, fichier: choisir(liste, `liste|${s.nom}|${s.t}`), gain: place.gain * (s.volume ?? 1), pan: place.pan });
+      evenements.push(sonMonde({ t: s.t, variante: v, volume: s.volume ?? 1, pos }));
+    } else evenements.push({ t: s.t, fichier: v.fichier, gain: s.volume ?? 1, pan: 0 });
   }
   evenements.sort((a, b) => a.t - b.t);
-  return { evenements, notes, nbPas };
+  return { evenements, notes, nbPas, ecoute };
 }
 
 // ---------------------------------------------------------------- mixage
-// Retourne un Buffer PCM s16le stereo 44100 Hz de `duree` secondes (silence s'il n'y a rien).
-export function mixer({ evenements, duree, sons, volume = VOLUME_MIXAGE }) {
+// Retourne un Buffer PCM s16le stereo 44100 Hz de `duree` secondes (silence s'il n'y a rien). `ecoute` : auditeur de chaque image
+// (planifierSons) ; les sons places sont entendus depuis lui, image par image (film/ecoute.js). Le Buffer porte `voix` :
+// { jouees, horsPortee, saturees } (sons places inaudibles ou au-dela des voies du jeu : ni joues ni decodes).
+export function mixer({ evenements, duree, sons, volume = VOLUME_MIXAGE, ecoute = null }) {
   const n = Math.ceil(duree * FREQUENCE);
   const mix = new Float32Array(n * 2);
-  for (const e of evenements) {
-    const pcm = e.hauteur && e.hauteur !== 1 ? sons.pcm(e.fichier, e.hauteur) : sons.pcm(e.fichier);
+  const SPI = FREQUENCE / IPS;   // echantillons par image
+  const hauteurDe = (e) => (estPlace(e) ? borneHauteur(e.hauteur ?? 1) : (e.hauteur || 1));
+  // fin de chaque son (s) : boucle -> sa duree ou la fin du film ; sinon la longueur du fichier a sa hauteur
+  const longueur = (e) => {
+    if (e.boucle) return e.duree !== undefined ? e.duree : duree - e.t;
+    return Math.min(e.duree !== undefined ? e.duree : Infinity, Math.max(0, pcmDe(e).length - k0De(e)) / FREQUENCE);
+  };
+  const pcmDe = (e) => { const h = hauteurDe(e); return h !== 1 ? sons.pcm(e.fichier, h) : sons.pcm(e.fichier); };
+  const k0De = (e) => (e.decalage ? Math.round(e.decalage * FREQUENCE / hauteurDe(e)) : 0);
+  // choix des voix : les sons places inaudibles tout du long ne sont ni decodes ni mixes (portee : borne haute de la duree sans decoder)
+  // (hors de portee de l'auditeur a chaque image d'ici la fin du film : inutile de decoder le fichier pour le savoir)
+  const fins = evenements.map((e) => (e.pos && ecoute?.length && horsDePorteeToujours(e, ecoute) ? e.t : e.t + longueur(e)));
+  const { joues, horsPortee, satures } = choisirVoix(evenements, fins, ecoute ?? [], IPS);
+  evenements.forEach((e, i) => {
+    if (!joues.has(i)) return;
+    const pcm = pcmDe(e);
+    if (!pcm.length) return;
     const debut = Math.round(e.t * FREQUENCE);
-    const angle = ((e.pan + 1) * Math.PI) / 4;     // puissance constante
-    const gl = Math.cos(angle) * e.gain * volume * 1.4142, gd = Math.sin(angle) * e.gain * volume * 1.4142;
     // boucle : le son repart au debut (son en boucle du jeu, elytres) ; decalage : on reprend le fichier a cet instant (secondes du fichier)
-    const k0 = e.decalage ? Math.round(e.decalage * FREQUENCE / (e.hauteur || 1)) : 0;
+    const k0 = k0De(e);
     const fin = Math.min(n, e.boucle ? Infinity : debut + pcm.length - k0, e.duree !== undefined ? debut + Math.round(e.duree * FREQUENCE) : Infinity);   // duree : musique du juke-box coupee
-    if (!pcm.length) continue;
-    for (let i = Math.max(0, debut); i < fin; i++) {
-      const v = pcm[(i - debut + k0) % pcm.length] / 32768;
-      mix[2 * i] += v * gl; mix[2 * i + 1] += v * gd;
+    const i0 = Math.max(0, debut);
+    if (fin <= i0) return;
+    if (!estPlace(e) || !ecoute?.length) {
+      const [gl, gd] = gainsPour(estPlace(e) ? { ...e, pos: null, dir: null, gain: Math.min(1, e.volume ?? 1), pan: 0 } : e, null);
+      for (let i = i0; i < fin; i++) { const v = pcm[(i - debut + k0) % pcm.length] / 32768; mix[2 * i] += v * gl * volume; mix[2 * i + 1] += v * gd * volume; }
+      return;
     }
-  }
+    // son place : gains a chaque image, interpoles entre deux images (sauf a une coupe : l'auditeur saute)
+    const der = ecoute.length - 1, cache = new Map();
+    const g = (f) => { const c = Math.min(der, Math.max(0, f)); let r = cache.get(c); if (!r) { r = gainsPour(e, ecoute[c]); cache.set(c, r); } return r; };
+    for (let i = i0; i < fin;) {
+      const f = Math.floor(i / SPI), bout = Math.max(i + 1, Math.min(fin, Math.ceil((f + 1) * SPI)));
+      const a = g(f), b = f < der && !coupeApres(ecoute, f) ? g(f + 1) : a;
+      if (a[0] === 0 && a[1] === 0 && b[0] === 0 && b[1] === 0) { i = bout; continue; }
+      for (; i < bout; i++) {
+        const u = i / SPI - f, gl = (a[0] + (b[0] - a[0]) * u) * volume, gd = (a[1] + (b[1] - a[1]) * u) * volume;
+        const v = pcm[(i - debut + k0) % pcm.length] / 32768;
+        mix[2 * i] += v * gl; mix[2 * i + 1] += v * gd;
+      }
+    }
+  });
   const out = Buffer.alloc(n * 4);
   for (let i = 0; i < n * 2; i++) out.writeInt16LE(Math.round(Math.tanh(mix[i]) * 32767), i * 2); // limiteur doux
+  out.voix = { jouees: joues.size, horsPortee, saturees: satures };
   return out;
 }
 
-// Sons de la physique (aucun pas en l'air : pas.js). Atterrissage : le pas du bloc touche, plus fort avec la vitesse d'arrivee ; le jeu n'a
-// pas de son de chute sans degats (living_fall.rs : sons seulement si degats > 0, "small_fall" jusqu'a 4, "big_fall" au dela) ; eau :
-// "splash" a l'entree, "swim" tous les 1,67 bloc nage (movement_emission.rs:116-146) ; echelle : "block.ladder.step" tous les 1,67 bloc monte.
-// Un son absent du kit est ignore.
-function sonsDeTrajet({ scene, images, zone, sons, sims, evenements, gainPan, manquantes, remap = null }) {
-  const DT = 1 / 30, TICK = 1 / 20;
-  const ajouter = (evt, t, pos, gain, graine) => {
+// le son place `e` est-il hors de portee de l'auditeur a chaque image du film ? (test rapide, sans connaitre sa duree)
+function horsDePorteeToujours(e, ecoute) {
+  const p = e.portee ?? porteeDe(e.volume ?? 1);
+  if (!(Math.min(1, e.volume ?? 1) > 0)) return true;
+  for (let f = Math.max(0, Math.floor(e.t * IPS)); f < ecoute.length; f++) {
+    const l = ecoute[f];
+    if (Math.hypot(e.pos[0] - l.x, e.pos[1] - l.y, e.pos[2] - l.z) < p) return false;
+  }
+  return true;
+}
+
+// Sons de la physique (aucun pas en l'air : pas.js). Atterrissage : le pas du bloc touche (volume des pas, x 0,5 a 1 selon la vitesse
+// d'arrivee) ; le jeu n'a pas de son de chute sans degats (living_fall.rs : sons seulement si degats > 0, "small_fall" jusqu'a 4,
+// "big_fall" au dela) ; eau : "splash" a l'entree, "swim" tous les 1,67 bloc nage (movement_emission.rs:116-146) ; echelle : le pas de
+// l'echelle (volume des pas) tous les 1,67 bloc monte. Un son absent du kit est ignore. Tous sont des sons places.
+function sonsDeTrajet({ images, zone, sons, sims, evenements, manquantes, remap = null }) {
+  const TICK = 1 / 20;
+  void images;
+  const ajouter = (evt, t, pos, volume, graine) => {
     if (remap) t = remap.filmDe(t);   // montage : le temps d'action (ralenti, arret) est converti en instant du film
-    const liste = sons.fichiers(evt);
-    if (!liste.length) { manquantes.add(evt); return; }
-    const im = images[Math.min(images.length - 1, Math.max(0, Math.round(t / DT)))];
-    evenements.push({ t, fichier: choisir(liste, graine), ...gainPan(pos, im.camera), gain: Math.min(1, gainPan(pos, im.camera).gain * gain) });
+    const v = tirer(sons, evt, graine);
+    if (!v) { manquantes.add(evt); return; }
+    evenements.push(sonMonde({ t, variante: v, volume, pos }));
   };
   const bloc = (x, y, z) => (zone ? zone.bloc(Math.floor(x), Math.floor(y), Math.floor(z)) : null);
   sims.forEach((sim, k) => {
     sim.atterrissages.forEach((a, n) => {
       if (a.impact < 0.15) return;
       const fam = familleDeBloc(bloc(a.x, a.y - 0.2, a.z));
-      ajouter(evenementPas(fam), a.t, [a.x, a.y + 0.3, a.z], 0.5 + 0.5 * Math.min(1, a.impact / 0.7), `atterrit|${k}|${n}`);
+      ajouter(evenementPas(fam), a.t, [a.x, a.y + 0.3, a.z], VOLUME_PAS * (0.5 + 0.5 * Math.min(1, a.impact / 0.7)), `atterrit|${k}|${n}`);
       if (a.chute > 3) ajouter(a.chute > 7 ? 'entity.player.big_fall' : 'entity.player.small_fall', a.t, [a.x, a.y + 0.3, a.z], 1, `chute|${k}|${n}`);
     });
     sim.brut.filter((b) => b.type === 'eau' && b.vitesse > 0.1).forEach((b, n) => ajouter('entity.player.splash', sim.reel(b.k * TICK), [b.x, b.y, b.z], 0.6 + Math.min(0.4, b.vitesse), `plouf|${k}|${n}`));
@@ -306,7 +358,7 @@ function sonsDeTrajet({ scene, images, zone, sons, sims, evenements, gainPan, ma
         cumulEch += d;
         if (Math.floor(cumulEch) > Math.floor(avant)) {
           const e = bloc(sim.x[i], sim.y[i] + 0.1, sim.z[i]);
-          ajouter(/vine/.test(String(e)) ? 'block.vine.step' : 'block.ladder.step', t, [sim.x[i], sim.y[i] + 0.5, sim.z[i]], 0.8, `echelle|${k}|${nEch++}`);
+          ajouter(/vine/.test(String(e)) ? 'block.vine.step' : 'block.ladder.step', t, [sim.x[i], sim.y[i] + 0.5, sim.z[i]], VOLUME_PAS, `echelle|${k}|${nEch++}`);
         }
       }
     }
